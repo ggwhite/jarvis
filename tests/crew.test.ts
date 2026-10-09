@@ -2,7 +2,7 @@ import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import type { CrewAgent, CrewEvent, CrewMain } from '../types'
+import type { CrewAgent, CrewEvent, CrewInflight, CrewMain } from '../types'
 import {
   MAX_EVENTS,
   STALE_MS,
@@ -15,6 +15,7 @@ import {
   describeCall,
   dispatchStats,
   healthOf,
+  healthOfState,
   modelShares,
   paceBuckets,
   roleOf,
@@ -896,6 +897,111 @@ describe('event stream logic', () => {
   })
 })
 
+describe('health: in-flight calls and per-executor loops', () => {
+  const fail = (actor: string, tool = 'Bash', ts = 0) =>
+    ev({ actor, isMain: actor === 'main', source: actor === 'main' ? '主線' : 'worker', tool, ok: false, ts })
+  const flight = (over: Partial<CrewInflight> = {}): CrewInflight => ({
+    key: 'c1',
+    actor: 'main',
+    source: '主線',
+    tool: 'Bash',
+    startedAt: 0,
+    ...over,
+  })
+  const mainRunning: CrewMain = {
+    model: '',
+    chain: 0,
+    ok: 0,
+    fail: 0,
+    lastTool: '',
+    lastDesc: '',
+    isRunning: true,
+    runSince: 0,
+  }
+
+  test('a call still in flight is never stuck, however quiet', () => {
+    expect(healthOf([], 10 * MIN, 0, { inFlight: 1 })).toBe('ok')
+    expect(healthOf([ev({ ts: 0, ms: 10 })], 10 * MIN, 0, { inFlight: 2 })).toBe('ok')
+    const state = { agents: [], main: mainRunning, events: [], inflight: [flight()] }
+    expect(healthOfState(state, 10 * MIN)).toBe('ok')
+  })
+
+  test('nothing in flight, running, quiet over 5 minutes: still stuck', () => {
+    expect(healthOf([], 10 * MIN, 0, { inFlight: 0 })).toBe('stuck')
+    expect(healthOf([], 10 * MIN, 0)).toBe('stuck')
+    const state = { agents: [], main: mainRunning, events: [], inflight: [] }
+    expect(healthOfState(state, 10 * MIN)).toBe('stuck')
+    expect(healthOfState({ ...state, inflight: [flight()] }, 10 * MIN)).toBe('ok')
+  })
+
+  test('a call in flight in a subagent also keeps the run from being stuck', () => {
+    const state = {
+      agents: [agent({ id: 'w1', status: 'running', runStartedAt: 0 })],
+      main: { ...mainRunning, isRunning: false },
+      events: [],
+      inflight: [flight({ actor: 'w1', source: 'worker' })],
+    }
+    expect(healthOfState(state, 10 * MIN)).toBe('ok')
+    expect(healthOfState({ ...state, inflight: [] }, 10 * MIN)).toBe('stuck')
+  })
+
+  test('two agents failing the same tool, three failures in all, is not a loop', () => {
+    const live = new Set(['a1', 'a2'])
+    expect(healthOf([fail('a1'), fail('a2'), fail('a1')], 0, undefined, { liveAgents: live })).toBe('ok')
+    expect(
+      healthOf([fail('a1'), fail('a2'), fail('main')], 0, undefined, { liveAgents: live }),
+    ).toBe('ok')
+  })
+
+  test("one agent's three failures with other agents' successes between is a loop", () => {
+    const live = new Set(['a1', 'a2'])
+    const list = [
+      fail('a1'),
+      ev({ actor: 'a2', isMain: false, source: 'worker' }),
+      fail('a1'),
+      ev({ actor: 'main' }),
+      fail('a1'),
+      ev({ actor: 'a2', isMain: false, source: 'worker' }),
+    ]
+    expect(healthOf(list, 0, undefined, { liveAgents: live })).toBe('loop')
+    // the same agent no longer running: no loop is left behind
+    expect(healthOf(list, 0, undefined, { liveAgents: new Set(['a2']) })).toBe('ok')
+  })
+
+  test('main loop interleaved with a subagent success still loops', () => {
+    const list = [fail('main'), ev({ actor: 'a1', isMain: false }), fail('main'), fail('main')]
+    expect(healthOf(list, 0, undefined, { liveAgents: new Set(['a1']) })).toBe('loop')
+    expect(healthOf(list, 0, undefined)).toBe('loop')
+  })
+
+  test('two workers of the same type with different agentIds are not merged', () => {
+    const live = new Set(['w1', 'w2'])
+    const split = [fail('w1'), fail('w2'), fail('w1'), fail('w2')]
+    expect(healthOf(split, 0, undefined, { liveAgents: live })).toBe('ok')
+    expect(healthOf([...split, fail('w1')], 0, undefined, { liveAgents: live })).toBe('loop')
+  })
+
+  test('a finished subagent leaves no loop; a running one does', () => {
+    const events = [fail('w1'), fail('w1'), fail('w1')]
+    const base = { main: { ...mainRunning, isRunning: false }, events }
+    const done = { ...base, agents: [agent({ id: 'w1', status: 'done' })] }
+    const failed = { ...base, agents: [agent({ id: 'w1', status: 'failed' })] }
+    const running = { ...base, agents: [agent({ id: 'w1', status: 'running' })] }
+    expect(healthOfState(done, 0)).toBe('ok')
+    expect(healthOfState(failed, 0)).toBe('ok')
+    expect(healthOfState(running, 0)).toBe('loop')
+    // a subagent the list no longer knows is not live either
+    expect(healthOfState({ ...base, agents: [] }, 0)).toBe('ok')
+  })
+
+  test('a main loop stays until the next event arrives', () => {
+    const list = [fail('main'), fail('main'), fail('main')]
+    const state = { agents: [], main: { ...mainRunning, isRunning: false }, events: list }
+    expect(healthOfState(state, 0)).toBe('loop')
+    expect(healthOfState({ ...state, events: [...list, ev()] }, 0)).toBe('ok')
+  })
+})
+
 describe('herdr warning prefix', () => {
   test('loop and stuck lead the text, ok leaves it alone', () => {
     const list = [agent({ id: 'r', status: 'running' })]
@@ -919,6 +1025,16 @@ const watch = (on: On) => {
   })
   on('state.set', { plugin: 'crew', key: 'main' }, async (_$, e, next) => {
     seen.main = e.value
+    return next(e)
+  })
+  return seen
+}
+
+// every value the mod wrote for its in-flight list, seen beneath the mod
+const watchFlight = (on: On) => {
+  const seen: { history: CrewInflight[][] } = { history: [] }
+  on('state.set', { plugin: 'crew', key: 'inflight' }, async (_$, e, next) => {
+    seen.history.push([...e.value])
     return next(e)
   })
   return seen
@@ -1000,6 +1116,111 @@ describe('event stream hooks', () => {
     expect(list[0]?.desc).toBe('5.ts')
     expect(list[199]?.desc).toBe('204.ts')
     expect(w.main?.ok).toBe(205)
+  })
+
+  test('the actor is main for the main loop and the agentId for a subagent', async ($, on) => {
+    const w = watch(on)
+    let n = 0
+    on('agent.spawn', async () => ({ model: HAIKU, agentId: `w-${(n += 1)}` }))
+    mock.clock(on, { now: 0 })
+    on('tool.call', async () => ({ result: {} as never }))
+    await $.agent.spawn(spawnInput({ description: 'one', subagentType: 'worker', id: 'tu-1' }))
+    await $.agent.spawn(spawnInput({ description: 'two', subagentType: 'worker', id: 'tu-2' }))
+    await $.tool.call({ tool: 'Read', file_path: '/a' })
+    await $.tool.call({ tool: 'Read', file_path: '/b', agentId: 'w-1' } as never)
+    await $.tool.call({ tool: 'Read', file_path: '/c', agentId: 'w-2' } as never)
+    expect(w.events.map(x => [x.actor, x.source, x.isMain])).toEqual([
+      ['main', '主線', true],
+      ['w-1', 'worker', false],
+      ['w-2', 'worker', false],
+    ])
+  })
+
+  test('a call is in flight while next runs, and gone after a normal return', async ($, on) => {
+    const flight = watchFlight(on)
+    const clock = mock.clock(on, { now: 100 })
+    on('tool.call', async () => {
+      await clock.advance(50)
+      return { result: {} } as never
+    })
+    await $.tool.call({ tool: 'Bash', command: 'make test' })
+    expect(flight.history).toHaveLength(2)
+    expect(flight.history[0]).toEqual([
+      expect.objectContaining({ actor: 'main', source: '主線', tool: 'Bash', startedAt: 100 }),
+    ])
+    expect(flight.history[1]).toEqual([])
+  })
+
+  test('an isError result also removes the in-flight call', async ($, on) => {
+    const flight = watchFlight(on)
+    mock.clock(on, { now: 0 })
+    on('tool.call', async () => ({ isError: true, result: 'boom', text: 'boom' }) as never)
+    const out = await $.tool.call({ tool: 'Bash', command: 'false' })
+    expect(out).toMatchObject({ isError: true, text: 'boom' })
+    expect(flight.history).toHaveLength(2)
+    expect(flight.history[0]).toHaveLength(1)
+    expect(flight.history[1]).toEqual([])
+  })
+
+  test('a next that throws removes the in-flight call and the error still escapes', async ($, on) => {
+    const flight = watchFlight(on)
+    mock.clock(on, { now: 0 })
+    on('tool.call', async () => {
+      throw new Error('tool crashed')
+    })
+    let caught: unknown
+    try {
+      await $.tool.call({ tool: 'Bash', command: 'boom' })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeDefined()
+    expect(flight.history).toHaveLength(2)
+    expect(flight.history[0]).toHaveLength(1)
+    expect(flight.history[1]).toEqual([])
+  })
+
+  test('concurrent calls are tracked one by one, each removed on its own', async ($, on) => {
+    const flight = watchFlight(on)
+    const clock = mock.clock(on, { now: 0 })
+    on('tool.call', async (_$, e) => {
+      await clock.advance(e.tool === 'Bash' ? 100 : 10)
+      return { result: {} } as never
+    })
+    await Promise.all([
+      $.tool.call({ tool: 'Bash', command: 'slow' }),
+      $.tool.call({ tool: 'Read', file_path: '/fast' }),
+    ])
+    const last = flight.history[flight.history.length - 1]
+    expect(last).toEqual([])
+    expect(Math.max(...flight.history.map(h => h.length))).toBeLessThanOrEqual(2)
+    const keys = flight.history.flat().map(x => x.key)
+    expect(new Set(keys).size).toBe(2)
+  })
+
+  test('a 10 minute call on the main loop raises no stuck warning; quiet afterwards does', async ($, on) => {
+    const clock = mock.clock(on, { now: 0 })
+    mock.env(on, HERDR)
+    on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+    on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
+    on('tool.call', async () => {
+      await clock.advance(10 * MIN)
+      return { result: {} } as never
+    })
+    const sent: string[] = []
+    on('process.run', async (_$, e) => {
+      sent.push(e.argv.slice(6).join(' '))
+      return {
+        value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+      }
+    })
+    await start($)
+    await $.turn.start({ text: 'go', turnId: 't1' })
+    await $.tool.call({ tool: 'Bash', command: 'make test' })
+    expect(sent).toEqual([])
+    // the call returned; five more quiet minutes and the run is stuck as before
+    await clock.advance(STUCK_MS + 5000)
+    expect(sent).toEqual(['--token crew=⚠卡住 --ttl-ms 900000'])
   })
 
   test('turn.start / main turn.complete flag the main loop as running', async ($, on) => {
