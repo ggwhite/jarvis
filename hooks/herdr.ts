@@ -1,5 +1,6 @@
 import type { CrewAgent } from '../types'
 import { runningOf, staleOf, summarize } from './crew'
+import type { Health } from './crew'
 
 export const THROTTLE_MS = 2000
 export const TTL_MS = 900_000
@@ -8,8 +9,18 @@ export const REFRESH_MS = 600_000
 export const MAX_FAILURES = 3
 export const RUN_TIMEOUT_MS = 5000
 
+const WARN_PREFIX: Record<Health, string> = { ok: '', loop: '⚠繞圈 ', stuck: '⚠卡住 ' }
+
 // The sidebar text for a session's crew; undefined when there is nothing to show.
-export function crewText(list: readonly CrewAgent[]): string | undefined {
+// A health warning leads the text, and shows even with no subagents.
+export function crewText(list: readonly CrewAgent[], health: Health = 'ok'): string | undefined {
+  const body = countsText(list)
+  const prefix = WARN_PREFIX[health]
+  if (prefix === '') return body
+  return body === undefined ? prefix.trimEnd() : `${prefix}${body}`
+}
+
+function countsText(list: readonly CrewAgent[]): string | undefined {
   if (list.length === 0) return undefined
   const running = runningOf(list).length
   const stale = staleOf(list).length

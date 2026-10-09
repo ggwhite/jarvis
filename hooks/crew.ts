@@ -1,8 +1,15 @@
-import type { CrewAgent } from '../types'
+import type { CrewAgent, CrewEvent, CrewMain } from '../types'
 
 export const MAX_AGENTS = 50
 export const CHAIN_WARN = 4
 export const STALE_MS = 10 * 60 * 1000
+export const MAX_EVENTS = 200
+export const MAIN_SOURCE = '主線'
+export const LOOP_FAILS = 3
+export const STUCK_MS = 5 * 60 * 1000
+export const PACE_BUCKETS = 10
+export const BUCKET_MS = 60_000
+export const DESC_MAX = 60
 export const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 
 export type Family = 'fable' | 'opus' | 'sonnet' | 'haiku'
@@ -58,13 +65,24 @@ export type Spawned = {
   now: number
 }
 
-export function familyOf(id: string): Family | undefined {
+// The family named in any model id, whatever generation: for display.
+export function nameFamilyOf(id: string): Family | undefined {
   const lower = id.toLowerCase()
   return FAMILIES.find(f => lower.includes(f))
 }
 
+// The family of a generation 5 model (or a bare alias); undefined means unpriced.
+export function familyOf(id: string): Family | undefined {
+  const lower = id.toLowerCase().trim()
+  for (const f of FAMILIES) {
+    if (new RegExp(`^${f}(?:\\[[^\\]]*\\])?$`).test(lower)) return f
+    if (new RegExp(`(?:^|[^a-z])${f}-5(?!\\d)`).test(lower)) return f
+  }
+  return undefined
+}
+
 export function shortModel(id: string): string {
-  const family = familyOf(id)
+  const family = nameFamilyOf(id)
   if (!family) return id === '' ? '?' : id
   const lower = id.toLowerCase()
   const before = new RegExp(`claude-(\\d{1,2})(?:-(\\d{1,2}))?-${family}`).exec(lower)
@@ -75,24 +93,32 @@ export function shortModel(id: string): string {
   return hit[2] === undefined ? `${name} ${hit[1]}` : `${name} ${hit[1]}.${hit[2]}`
 }
 
+// Shown token count: input + output only; cache traffic is left out.
 export function tokenTotal(t: Tokens): number {
-  return t.input + t.output + t.cacheRead + t.cacheWrite
+  return t.input + t.output
 }
 
 export function tokensOf(a: CrewAgent): Tokens {
   return { input: a.input, output: a.output, cacheRead: a.cacheRead, cacheWrite: a.cacheWrite }
 }
 
-// cache read = input price x 0.1, cache write = input price x 1.25.
+// cache read = input price x 0.1 (Fable: x 0.025), cache write = input price x 1.25.
+export function cacheReadMultiplier(family: Family): number {
+  return family === 'fable' ? 0.025 : 0.1
+}
+
 export function costAt(t: Tokens, family: Family): number {
   const p = PRICES[family]
   return (
-    (t.input * p.in + t.output * p.out + t.cacheRead * p.in * 0.1 + t.cacheWrite * p.in * 1.25) /
+    (t.input * p.in +
+      t.output * p.out +
+      t.cacheRead * p.in * cacheReadMultiplier(family) +
+      t.cacheWrite * p.in * 1.25) /
     1_000_000
   )
 }
 
-export type Group = { label: string; family?: Family; count: number; tokens: number }
+export type Group = { label: string; family?: Family; count: number }
 
 export type Summary = {
   groups: Group[]
@@ -112,18 +138,17 @@ export function summarize(agents: readonly CrewAgent[]): Summary {
       label: family ? FAMILY_NAME[family] : '其他',
       ...(family ? { family } : {}),
       count: 0,
-      tokens: 0,
     }
     group.count += 1
-    group.tokens += tokenTotal(tokensOf(a))
     byKey.set(key, group)
     if (family) {
       cost += costAt(tokensOf(a), family)
       opusCost += costAt(tokensOf(a), 'opus')
     }
   }
-  const groups = [...byKey.values()].sort((x, y) => y.tokens - x.tokens)
-  const savedPct = opusCost > 0 ? ((opusCost - cost) / opusCost) * 100 : undefined
+  const groups = [...byKey.values()].sort((x, y) => y.count - x.count)
+  // rounded to 1e-6 so float noise (97.4999…) does not flip the displayed percent
+  const savedPct = opusCost > 0 ? Math.round(((opusCost - cost) / opusCost) * 1e8) / 1e6 : undefined
   return { groups, cost, opusCost, savedPct }
 }
 
@@ -134,7 +159,7 @@ export function fmtK(n: number): string {
 }
 
 export function fmtUsd(x: number): string {
-  if (x >= 1) return `$${x.toFixed(2)}`
+  if (x >= 0.01) return `$${x.toFixed(2)}`
   if (x === 0) return '$0'
   return `$${x.toFixed(3)}`
 }
@@ -250,3 +275,315 @@ export function finishedOf(list: readonly CrewAgent[]): CrewAgent[] {
     .sort((x, y) => y.a.endedAt - x.a.endedAt || y.i - x.i)
     .map(x => x.a)
 }
+
+// The one-line summary: models by use count, estimated cost against all-Opus.
+export function summaryLine(sum: Summary): string {
+  const models = sum.groups.map(g => `${g.label}×${g.count}`).join(' ')
+  if (sum.savedPct === undefined) return `${models} · 未計價`
+  const pct = Math.round(sum.savedPct)
+  const tail = pct >= 0 ? `省${pct}%` : `多花${-pct}%`
+  return `${models} · ≈${fmtUsd(sum.cost)} vs Opus ${fmtUsd(sum.opusCost)}（${tail}）`
+}
+
+export type Health = 'ok' | 'loop' | 'stuck'
+
+export type Role = 'Explore' | 'clerk' | 'worker' | 'verifier' | 'fork' | 'other'
+
+export const ROLES: Role[] = ['Explore', 'clerk', 'worker', 'verifier', 'fork', 'other']
+
+export const ROLE_LABEL: Record<Role, string> = {
+  Explore: 'Explore',
+  clerk: 'clerk',
+  worker: 'worker',
+  verifier: 'verifier',
+  fork: 'fork',
+  other: '其他',
+}
+
+const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+
+function truncate(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
+}
+
+function baseName(path: string): string {
+  const parts = path.split(/[\\/]/).filter(x => x !== '')
+  return parts[parts.length - 1] ?? ''
+}
+
+// The short line a tool call shows as in the event stream.
+export function describeCall(tool: string, input: Record<string, unknown>): string {
+  switch (tool) {
+    case 'Bash': {
+      const note = str(input['description']).trim()
+      if (note !== '') return truncate(note, DESC_MAX)
+      const first = str(input['command']).split('\n').find(l => l.trim() !== '') ?? ''
+      return truncate(first, DESC_MAX)
+    }
+    case 'Read':
+    case 'Edit':
+    case 'MultiEdit':
+    case 'Write':
+      return truncate(baseName(str(input['file_path'])), DESC_MAX)
+    case 'NotebookEdit':
+      return truncate(baseName(str(input['notebook_path'])), DESC_MAX)
+    case 'Grep':
+    case 'Glob':
+      return truncate(str(input['pattern']), DESC_MAX)
+    case 'Agent':
+      return truncate(str(input['description']), DESC_MAX)
+    default:
+      return ''
+  }
+}
+
+// Keeps the latest MAX_EVENTS events, oldest first.
+export function addEvent(list: readonly CrewEvent[], ev: CrewEvent): CrewEvent[] {
+  return [...list, ev].slice(-MAX_EVENTS)
+}
+
+// Tool calls per minute over the last PACE_BUCKETS minutes, oldest bucket first.
+// A call counts by its start; one older than the window, or later than `now`, is left out.
+export function paceBuckets(events: readonly CrewEvent[], now: number): number[] {
+  const out = Array.from({ length: PACE_BUCKETS }, () => 0)
+  for (const ev of events) {
+    const age = now - ev.ts
+    if (age < 0 || age >= PACE_BUCKETS * BUCKET_MS) continue
+    const idx = PACE_BUCKETS - 1 - Math.floor(age / BUCKET_MS)
+    out[idx] = (out[idx] ?? 0) + 1
+  }
+  return out
+}
+
+// loop: the latest LOOP_FAILS events are the same tool failing. stuck: something is
+// running (`activeSince` is when the latest run began, undefined when nothing runs)
+// and nothing has finished or begun for STUCK_MS. loop wins over stuck.
+export function healthOf(
+  events: readonly CrewEvent[],
+  now: number,
+  activeSince: number | undefined,
+): Health {
+  const tail = events.slice(-LOOP_FAILS)
+  const first = tail[0]
+  if (
+    first !== undefined &&
+    tail.length === LOOP_FAILS &&
+    tail.every(ev => !ev.ok && ev.tool === first.tool)
+  ) {
+    return 'loop'
+  }
+  if (activeSince === undefined) return 'ok'
+  const last = events.reduce((m, ev) => Math.max(m, ev.ts + ev.ms), activeSince)
+  return now - last > STUCK_MS ? 'stuck' : 'ok'
+}
+
+// The Explore / clerk / worker / verifier / fork roles by subagent type; a fork is
+// spawned with the type `fork`. Any other type (general-purpose, Plan, a plugin's) is other.
+export function roleOf(type: string): Role {
+  const lower = type.trim().toLowerCase()
+  return ROLES.find(r => r !== 'other' && r.toLowerCase() === lower) ?? 'other'
+}
+
+export type RoleStat = { role: Role; label: string; running: number; done: number; failed: number }
+
+export function dispatchStats(agents: readonly CrewAgent[]): RoleStat[] {
+  const stats = ROLES.map(role => ({ role, label: ROLE_LABEL[role], running: 0, done: 0, failed: 0 }))
+  for (const a of agents) {
+    const stat = stats.find(x => x.role === roleOf(a.type))
+    if (!stat) continue
+    if (a.status === 'running') stat.running += 1
+    else if (a.status === 'done') stat.done += 1
+    else if (a.status === 'failed') stat.failed += 1
+  }
+  return stats
+}
+
+// share is the fraction (0..1) of the priced total; unpriced models cost 0.
+export type ModelShare = { label: string; family?: Family; count: number; cost: number; share: number }
+
+export function modelShares(agents: readonly CrewAgent[]): ModelShare[] {
+  const byKey = new Map<string, ModelShare>()
+  let total = 0
+  for (const a of agents) {
+    const family = familyOf(a.model)
+    const key = family ?? 'other'
+    const row = byKey.get(key) ?? {
+      label: family ? FAMILY_NAME[family] : '其他',
+      ...(family ? { family } : {}),
+      count: 0,
+      cost: 0,
+      share: 0,
+    }
+    row.count += 1
+    if (family) {
+      const c = costAt(tokensOf(a), family)
+      row.cost += c
+      total += c
+    }
+    byKey.set(key, row)
+  }
+  const rows = [...byKey.values()].sort((x, y) => y.cost - x.cost || y.count - x.count)
+  for (const row of rows) row.share = total > 0 ? row.cost / total : 0
+  return rows
+}
+
+export type CrewState = {
+  agents: readonly CrewAgent[]
+  main: CrewMain
+  events: readonly CrewEvent[]
+}
+
+// When the latest running thing began: the main turn, or a running subagent.
+export function activeSinceOf(state: CrewState): number | undefined {
+  const starts = runningOf(state.agents).map(a => a.runStartedAt)
+  if (state.main.isRunning) starts.push(state.main.runSince)
+  return starts.length === 0 ? undefined : Math.max(...starts)
+}
+
+export function healthOfState(state: CrewState, now: number): Health {
+  return healthOf(state.events, now, activeSinceOf(state))
+}
+
+// Everything the layout draws, computed from the stored state at `now`.
+export type Cockpit = {
+  now: number
+  health: Health
+  main: {
+    model: string
+    chain: number
+    ok: number
+    fail: number
+    lastTool: string
+    lastDesc: string
+    isRunning: boolean
+  }
+  // the latest MAX_EVENTS tool calls, oldest first
+  events: CrewEvent[]
+  // calls per minute for the last 10 minutes, oldest first, length PACE_BUCKETS
+  pace: number[]
+  // every role, in ROLES order
+  dispatch: RoleStat[]
+  // per priced model family, highest cost first; share sums to 1 (all 0 when nothing is priced)
+  models: ModelShare[]
+  running: CrewAgent[]
+  stale: CrewAgent[]
+  finished: CrewAgent[]
+  summary: Summary
+}
+
+export function buildCockpit(state: CrewState, now: number): Cockpit {
+  const m = state.main
+  return {
+    now,
+    health: healthOfState(state, now),
+    main: {
+      model: m.model,
+      chain: m.chain,
+      ok: m.ok,
+      fail: m.fail,
+      lastTool: m.lastTool,
+      lastDesc: m.lastDesc,
+      isRunning: m.isRunning,
+    },
+    events: [...state.events],
+    pace: paceBuckets(state.events, now),
+    dispatch: dispatchStats(state.agents),
+    models: modelShares(state.agents),
+    running: runningOf(state.agents),
+    stale: staleOf(state.agents),
+    finished: finishedOf(state.agents),
+    summary: summarize(state.agents),
+  }
+}
+
+// Terminal cells a string takes: CJK and full-width forms take two, marks none.
+export function cellWidth(text: string): number {
+  let w = 0
+  for (const ch of text) {
+    const c = ch.codePointAt(0) ?? 0
+    if ((c >= 0x300 && c <= 0x36f) || c === 0x200b || c === 0xfe0f) continue
+    const wide =
+      (c >= 0x1100 && c <= 0x115f) ||
+      (c >= 0x2e80 && c <= 0xa4cf) ||
+      (c >= 0xac00 && c <= 0xd7a3) ||
+      (c >= 0xf900 && c <= 0xfaff) ||
+      (c >= 0xfe30 && c <= 0xfe6f) ||
+      (c >= 0xff00 && c <= 0xff60) ||
+      (c >= 0xffe0 && c <= 0xffe6) ||
+      (c >= 0x1f300 && c <= 0x1faff) ||
+      (c >= 0x20000 && c <= 0x3fffd)
+    w += wide ? 2 : 1
+  }
+  return w
+}
+
+// Cuts text to at most `width` cells, with an ellipsis when something was cut.
+export function fitCells(text: string, width: number): string {
+  if (width <= 0) return ''
+  if (cellWidth(text) <= width) return text
+  let out = ''
+  let used = 0
+  for (const ch of text) {
+    const w = cellWidth(ch)
+    if (used + w > width - 1) break
+    out += ch
+    used += w
+  }
+  return `${out}…`
+}
+
+// Pads with spaces to exactly `width` cells (after cutting what is too long).
+export function padCells(text: string, width: number, align: 'left' | 'right' | 'center' = 'left'): string {
+  const fit = fitCells(text, width)
+  const gap = Math.max(0, width - cellWidth(fit))
+  if (align === 'right') return ' '.repeat(gap) + fit
+  if (align === 'center') {
+    const left = Math.floor(gap / 2)
+    return ' '.repeat(left) + fit + ' '.repeat(gap - left)
+  }
+  return fit + ' '.repeat(gap)
+}
+
+// Bar length in cells: `value` against `scale`, at most `width`, at least 1 when value > 0.
+export function barLen(value: number, scale: number, width: number): number {
+  if (value <= 0 || scale <= 0 || width <= 0) return 0
+  return Math.min(width, Math.max(1, Math.round((value / scale) * width)))
+}
+
+const BLOCKS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
+
+// A vertical bar chart `height` rows tall: one string per row, top first, each value a
+// column `barWidth` cells wide and `gap` apart. A zero is a thin ▁ on the bottom row.
+export function paceChart(values: readonly number[], height: number, barWidth = 2, gap = 1): string[] {
+  const peak = Math.max(1, ...values)
+  const steps = height * 8
+  const levels = values.map(v => (v <= 0 ? 0 : Math.max(1, Math.round((v / peak) * steps))))
+  const rows: string[] = []
+  for (let r = height - 1; r >= 0; r -= 1) {
+    const cols = values.map((v, i) => {
+      const level = Math.max(0, Math.min(8, (levels[i] ?? 0) - r * 8))
+      const ch = level > 0 ? (BLOCKS[level - 1] ?? '█') : r === 0 && v <= 0 ? '▁' : ' '
+      return ch.repeat(barWidth)
+    })
+    rows.push(cols.join(' '.repeat(gap)))
+  }
+  return rows
+}
+
+const two = (n: number): string => String(n).padStart(2, '0')
+
+// Local wall-clock time, HH:MM:SS.
+export function fmtClock(ts: number): string {
+  const d = new Date(ts)
+  return `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`
+}
+
+// A tool call's duration: 150ms, 2.9s, 20.9s, 1m05s.
+export function fmtMs(ms: number): string {
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
+  return fmtDur(ms)
+}
+
+export const SLOW_MS = 30_000

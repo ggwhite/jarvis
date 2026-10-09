@@ -2,10 +2,20 @@ import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import type { CrewAgent } from '../types'
+import type { CrewAgent, CrewEvent, CrewMain } from '../types'
 import {
+  MAX_EVENTS,
   STALE_MS,
+  STUCK_MS,
   addAgent,
+  addEvent,
+  buildCockpit,
+  describeCall,
+  dispatchStats,
+  healthOf,
+  modelShares,
+  paceBuckets,
+  roleOf,
   costAt,
   elapsedMs,
   finishTurn,
@@ -15,7 +25,10 @@ import {
   noteTool,
   shortModel,
   staleOf,
+  tokenTotal,
   summarize,
+  summaryLine,
+  familyOf,
 } from '../hooks/crew'
 import {
   MAX_FAILURES,
@@ -30,8 +43,8 @@ import {
 const near = (got: number | undefined, want: number, digits: number) =>
   expect(got !== undefined && Math.abs(got - want) < 10 ** -digits).toBe(true)
 
-const HAIKU = 'claude-haiku-4-5-20251001'
-const SONNET = 'claude-sonnet-4-5'
+const HAIKU = 'claude-haiku-5-5'
+const SONNET = 'claude-sonnet-5-5'
 
 const usage = (model: string, i: number, o: number, cr: number, cw: number) => ({
   model,
@@ -103,7 +116,65 @@ describe('pure logic', () => {
     near(sum.savedPct, 69.5588, 3)
     // the unknown model is listed but never priced
     expect(sum.groups.map(g => g.label)).toContain('其他')
-    expect(sum.groups.find(g => g.label === 'Haiku')?.tokens).toBe(3_900_000)
+    expect(sum.groups.find(g => g.label === 'Haiku')?.count).toBe(1)
+  })
+
+  test('only generation 5 models are priced; Haiku 4.5 is other', () => {
+    expect(familyOf('claude-haiku-5-5')).toBe('haiku')
+    expect(familyOf('claude-sonnet-5-5[1m]')).toBe('sonnet')
+    expect(familyOf('claude-opus-5-5')).toBe('opus')
+    expect(familyOf('claude-fable-5-1')).toBe('fable')
+    expect(familyOf('haiku')).toBe('haiku')
+    expect(familyOf('fable')).toBe('fable')
+    expect(familyOf('claude-haiku-4-5-20251001')).toBeUndefined()
+    expect(familyOf('claude-opus-4-20250514')).toBeUndefined()
+    expect(familyOf('claude-3-5-sonnet-20241022')).toBeUndefined()
+
+    const sum = summarize([agent({ model: 'claude-haiku-4-5-20251001', input: 1_000_000 })])
+    expect(sum.cost).toBe(0)
+    expect(sum.savedPct).toBeUndefined()
+    expect(sum.groups.map(g => g.label)).toEqual(['其他'])
+    // the label still shows the real version
+    expect(shortModel('claude-haiku-4-5-20251001')).toBe('Haiku 4.5')
+  })
+
+  test('token display counts input + output only', () => {
+    expect(tokenTotal({ input: 100, output: 50, cacheRead: 9000, cacheWrite: 800 })).toBe(150)
+  })
+
+  test('fable cache read is priced at 0.025 x input', () => {
+    // fable: 1M in, 1M out, 4M cache read, 1M cache write
+    //   10*1 + 50*1 + 10*0.025*4 + 10*1.25*1 = 10 + 50 + 1 + 12.5 = 73.5
+    const t = { input: 1_000_000, output: 1_000_000, cacheRead: 4_000_000, cacheWrite: 1_000_000 }
+    near(costAt(t, 'fable'), 73.5, 9)
+    // opus keeps 0.1: 4 + 20 + 4*0.4 + 5 = 30.6
+    near(costAt(t, 'opus'), 30.6, 9)
+  })
+
+  test('one-line summary format', () => {
+    const m = (id: string, n: number, extra: Partial<CrewAgent> = {}) =>
+      Array.from({ length: n }, (_, i) => agent({ id: `${id}${i}`, model: id, ...extra }))
+    // haiku 1M in = 0.1 each; x5 = 0.5; opus 4 each x5 = 20; sonnet 1M in = 2 vs opus 4
+    const single = summarize(m(HAIKU, 1, { input: 1_000_000 }))
+    expect(summaryLine(single)).toBe('Haiku×1 · ≈$0.10 vs Opus $4.00（省98%）')
+
+    // sorted by count; unknown goes to 其他
+    const multi = summarize([
+      ...m(HAIKU, 2, { input: 1_000_000 }),
+      ...m(SONNET, 1, { input: 1_000_000 }),
+      ...m('claude-opus-5-5', 3, { input: 1_000_000 }),
+      ...m('mystery', 1),
+    ])
+    // cost 0.2 + 2 + 12 = 14.2; opus 24; saved 40.83% -> 41
+    expect(summaryLine(multi)).toBe('Opus×3 Haiku×2 Sonnet×1 其他×1 · ≈$14.20 vs Opus $24.00（省41%）')
+
+    // dearer than all-Opus
+    const dear = summarize(m('claude-fable-5-1', 1, { input: 1_000_000 }))
+    expect(summaryLine(dear)).toBe('Fable×1 · ≈$10.00 vs Opus $4.00（多花150%）')
+
+    // under a cent: 3 decimals
+    const tiny = summarize(m(HAIKU, 1, { input: 10_000 }))
+    expect(summaryLine(tiny)).toBe('Haiku×1 · ≈$0.001 vs Opus $0.04（省98%）')
   })
 
   test('a subagent tool call shows the tool, and resumes a finished one', () => {
@@ -183,7 +254,7 @@ describe('herdr row text', () => {
     // an unpriced model has no savings figure
     expect(crewText([agent({ id: 'x', model: 'mystery-model' })])).toBe('✓1')
     // dearer than all-Opus
-    expect(crewText([agent({ id: 'f', model: 'claude-fable-5', input: 1_000_000 })])).toBe(
+    expect(crewText([agent({ id: 'f', model: 'claude-fable-5-1', input: 1_000_000 })])).toBe(
       '✓1 · 多花150%',
     )
   })
@@ -375,7 +446,7 @@ describe('hooks', () => {
 
     await $.agent.spawn(spawnInput({ description: 'find files', subagentType: 'Explore' }))
     let lines = linesOf(await draw($))
-    expect(lines.some(l => /Explore .*Haiku 4\.5.* find files/.test(l))).toBe(true)
+    expect(lines.some(l => /Explore .*Haiku 5\.5.* find files/.test(l))).toBe(true)
     expect(lines.some(l => l.includes('執行中 (1)'))).toBe(true)
 
     await $.turn.complete(
@@ -390,9 +461,9 @@ describe('hooks', () => {
     const row = lines.find(l => l.includes('find files'))
     expect(row).toContain('✓')
     expect(row).toContain('5s')
-    expect(row).toContain('1.5k') // 110 + 55 + 1100 + 220 = 1485 tokens
+    expect(row).toContain('165') // input + output only: 110 + 55
     expect(lines.some(l => l.includes('已完成 (1)'))).toBe(true)
-    expect(lines.some(l => l.includes('Haiku ×1 · 1.5k'))).toBe(true)
+    expect(lines.some(l => l.startsWith('Haiku×1 · ≈$'))).toBe(true)
   })
 
   test('a failed reason shows ✗; unknown agents are ignored', async ($, on) => {
@@ -526,11 +597,8 @@ describe('hooks', () => {
     const lines = linesOf(await draw($))
     expect(lines.find(l => l.includes('index the repo'))).toContain('1m05s')
     // haiku 0.42 vs opus 16.8 by hand: 1 - 0.42 / 16.8 = 97.5% saved
-    const cost = lines.find(l => l.includes('派工花費約')) ?? ''
-    expect(cost).toContain('派工花費約 $0.420')
-    expect(cost).toContain('全用 Opus 約 $16.80')
-    expect(cost).toMatch(/省下 9[78]%/)
-    expect(lines).toContain('以 API 價格估算')
+    expect(lines).toContain('Haiku×1 · ≈$0.42 vs Opus $16.80（省98%）')
+    expect(lines.some(l => l.includes('API 價格'))).toBe(false)
   })
 
   test('a finished subagent stops the tick', async ($, on) => {
@@ -658,5 +726,305 @@ describe('herdr reporting', () => {
     await $.turn.complete(complete('agent-10'))
     await clock.advance(20_000)
     expect(calls).toHaveLength(MAX_FAILURES) // stopped for this session
+  })
+})
+
+const ev = (over: Partial<CrewEvent> = {}): CrewEvent => ({
+  ts: 0,
+  source: '主線',
+  isMain: true,
+  tool: 'Read',
+  desc: '',
+  ms: 0,
+  ok: true,
+  ...over,
+})
+
+const MIN = 60_000
+
+describe('event stream logic', () => {
+  test('descriptions: Bash description or command head, file base names, patterns', () => {
+    expect(describeCall('Bash', { command: 'ls -la', description: 'List files' })).toBe('List files')
+    expect(describeCall('Bash', { command: 'go test ./...\nnext line' })).toBe('go test ./...')
+    expect(describeCall('Bash', { command: '\n  make build  ', description: '  ' })).toBe('make build')
+    expect(describeCall('Read', { file_path: '/a/b/crew.ts' })).toBe('crew.ts')
+    expect(describeCall('Edit', { file_path: '/a/b/register.tsx' })).toBe('register.tsx')
+    expect(describeCall('Write', { file_path: 'plain.md' })).toBe('plain.md')
+    expect(describeCall('Grep', { pattern: 'foo.*bar', path: '/x' })).toBe('foo.*bar')
+    expect(describeCall('WebFetch', { url: 'https://x' })).toBe('')
+    expect(describeCall('Read', {})).toBe('')
+    // long text is cut with an ellipsis
+    const long = describeCall('Bash', { command: 'x'.repeat(200) })
+    expect(long).toHaveLength(60)
+    expect(long.endsWith('…')).toBe(true)
+  })
+
+  test('only the latest 200 events are kept', () => {
+    let list: CrewEvent[] = []
+    for (let i = 0; i < 205; i += 1) list = addEvent(list, ev({ ts: i }))
+    expect(list).toHaveLength(MAX_EVENTS)
+    expect(list[0]?.ts).toBe(5)
+    expect(list[199]?.ts).toBe(204)
+  })
+
+  test('pace: ten one-minute buckets, oldest first, edges', () => {
+    const now = 100 * MIN
+    expect(paceBuckets([], now)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    const list = [
+      ev({ ts: now }), // age 0: newest bucket
+      ev({ ts: now - 1 }), // still the newest bucket
+      ev({ ts: now - MIN }), // exactly one minute: the one before
+      ev({ ts: now - 9 * MIN }), // oldest bucket
+      ev({ ts: now - 10 * MIN + 1 }), // oldest bucket, last millisecond
+      ev({ ts: now - 10 * MIN }), // exactly 10 minutes ago: out
+      ev({ ts: now - 11 * MIN }), // out
+      ev({ ts: now + 1 }), // future: out
+    ]
+    expect(paceBuckets(list, now)).toEqual([2, 0, 0, 0, 0, 0, 0, 0, 1, 2])
+  })
+
+  test('health: ok, loop (3 same tool failures), stuck (running, 5 minutes quiet)', () => {
+    const fail = (tool: string, ts = 0) => ev({ tool, ok: false, ts })
+    expect(healthOf([], 0, undefined)).toBe('ok')
+
+    // loop: last 3 are the same tool and all failed
+    expect(healthOf([fail('Bash'), fail('Bash'), fail('Bash')], 0, undefined)).toBe('loop')
+    expect(healthOf([ev(), fail('Bash'), fail('Bash'), fail('Bash')], 0, undefined)).toBe('loop')
+    expect(healthOf([fail('Bash'), fail('Bash')], 0, undefined)).toBe('ok')
+    expect(healthOf([fail('Bash'), fail('Read'), fail('Bash')], 0, undefined)).toBe('ok')
+    expect(healthOf([fail('Bash'), fail('Bash'), ev({ tool: 'Bash' })], 0, undefined)).toBe('ok')
+    expect(healthOf([fail('Bash'), fail('Bash'), fail('Bash'), ev({ tool: 'Bash' })], 0, undefined)).toBe('ok')
+
+    // stuck: something runs and the last activity is older than 5 minutes
+    const last = ev({ ts: 1000, ms: 500 })
+    expect(healthOf([last], 1500 + STUCK_MS, 0)).toBe('ok') // exactly 5 minutes: not yet
+    expect(healthOf([last], 1500 + STUCK_MS + 1, 0)).toBe('stuck')
+    // nothing running: quiet is fine
+    expect(healthOf([last], 1500 + STUCK_MS * 4, undefined)).toBe('ok')
+    // no calls at all: counted from when the run began
+    expect(healthOf([], 1000 + STUCK_MS, 1000)).toBe('ok')
+    expect(healthOf([], 1001 + STUCK_MS, 1000)).toBe('stuck')
+    // a run that began after the last call restarts the quiet clock
+    expect(healthOf([last], 1500 + STUCK_MS + 1, 100_000)).toBe('ok')
+
+    // loop outranks stuck
+    const loop = [fail('Bash', 0), fail('Bash', 0), fail('Bash', 0)]
+    expect(healthOf(loop, STUCK_MS * 3, 0)).toBe('loop')
+  })
+
+  test('roles come from the subagent type; unknown types are other', () => {
+    expect(['Explore', 'clerk', 'worker', 'verifier', 'fork'].map(roleOf)).toEqual([
+      'Explore', 'clerk', 'worker', 'verifier', 'fork',
+    ])
+    expect(roleOf('explore')).toBe('Explore')
+    expect(roleOf('general-purpose')).toBe('other')
+    expect(roleOf('Plan')).toBe('other')
+    expect(roleOf('')).toBe('other')
+  })
+
+  test('dispatch counts running and finished per role', () => {
+    const list = [
+      agent({ id: '1', type: 'Explore', status: 'running' }),
+      agent({ id: '2', type: 'Explore', status: 'done' }),
+      agent({ id: '3', type: 'worker', status: 'failed' }),
+      agent({ id: '4', type: 'fork', status: 'running' }),
+      agent({ id: '5', type: 'Plan', status: 'done' }),
+      agent({ id: '6', type: 'clerk', status: 'stale' }),
+    ]
+    const by = Object.fromEntries(dispatchStats(list).map(r => [r.role, r]))
+    expect(by['Explore']).toMatchObject({ running: 1, done: 1, failed: 0 })
+    expect(by['worker']).toMatchObject({ running: 0, done: 0, failed: 1 })
+    expect(by['fork']).toMatchObject({ running: 1, done: 0 })
+    expect(by['other']).toMatchObject({ running: 0, done: 1 })
+    expect(by['clerk']).toMatchObject({ running: 0, done: 0, failed: 0 }) // stale is neither
+    expect(by['verifier']).toMatchObject({ running: 0, done: 0, failed: 0 })
+  })
+
+  test('model shares split the priced cost', () => {
+    const rows = modelShares([
+      agent({ id: 'h', model: HAIKU, input: 1_000_000 }), // 0.1
+      agent({ id: 's', model: SONNET, input: 1_000_000 }), // 2
+      agent({ id: 's2', model: SONNET, input: 1_000_000 }), // 2
+      agent({ id: 'u', model: 'mystery-model', input: 5_000_000 }),
+    ])
+    expect(rows.map(r => r.label)).toEqual(['Sonnet', 'Haiku', '其他'])
+    near(rows[0]?.cost, 4, 9)
+    near(rows[0]?.share, 4 / 4.1, 9)
+    near(rows[1]?.share, 0.1 / 4.1, 9)
+    expect(rows[2]).toMatchObject({ count: 1, cost: 0, share: 0 })
+    expect(modelShares([agent({ model: 'mystery-model' })])[0]?.share).toBe(0)
+  })
+
+  test('buildCockpit gathers the view model', () => {
+    const main: CrewMain = {
+      model: 'claude-opus-5-5',
+      chain: 3,
+      ok: 7,
+      fail: 2,
+      lastTool: 'Bash',
+      lastDesc: 'go test',
+      isRunning: true,
+      runSince: 0,
+    }
+    const now = 10 * MIN
+    const view = buildCockpit(
+      {
+        agents: [agent({ id: 'a', status: 'running', type: 'worker', runStartedAt: 0 })],
+        main,
+        events: [ev({ ts: now - 30_000, ms: 10, tool: 'Bash', desc: 'go test' })],
+      },
+      now,
+    )
+    expect(view.main).toMatchObject({ chain: 3, ok: 7, fail: 2, lastDesc: 'go test', isRunning: true })
+    expect(view.pace[9]).toBe(1)
+    expect(view.pace).toHaveLength(10)
+    expect(view.events).toHaveLength(1)
+    expect(view.running).toHaveLength(1)
+    expect(view.dispatch.find(r => r.role === 'worker')?.running).toBe(1)
+    expect(view.health).toBe('ok')
+    expect(buildCockpit({ agents: [], main, events: [] }, now).health).toBe('stuck') // main runs, 10 minutes since it began
+    expect(buildCockpit({ agents: [], main: { ...main, isRunning: false }, events: [] }, now).health).toBe('ok')
+  })
+})
+
+describe('herdr warning prefix', () => {
+  test('loop and stuck lead the text, ok leaves it alone', () => {
+    const list = [agent({ id: 'r', status: 'running' })]
+    expect(crewText(list, 'ok')).toBe('▶1')
+    expect(crewText(list, 'loop')).toBe('⚠繞圈 ▶1')
+    expect(crewText(list, 'stuck')).toBe('⚠卡住 ▶1')
+    expect(crewText(list)).toBe(crewText(list, 'ok'))
+    // with no subagents the warning still shows; ok shows nothing
+    expect(crewText([], 'loop')).toBe('⚠繞圈')
+    expect(crewText([], 'stuck')).toBe('⚠卡住')
+    expect(crewText([], 'ok')).toBeUndefined()
+  })
+})
+
+// the latest value the mod wrote for its events and main records, seen beneath the mod
+const watch = (on: On) => {
+  const seen: { events: CrewEvent[]; main: CrewMain | undefined } = { events: [], main: undefined }
+  on('state.set', { plugin: 'crew', key: 'events' }, async (_$, e, next) => {
+    seen.events = [...e.value]
+    return next(e)
+  })
+  on('state.set', { plugin: 'crew', key: 'main' }, async (_$, e, next) => {
+    seen.main = e.value
+    return next(e)
+  })
+  return seen
+}
+
+describe('event stream hooks', () => {
+  test('a main call is recorded with its duration, description and outcome', async ($, on) => {
+    const w = watch(on)
+    const clock = mock.clock(on, { now: 1000 })
+    let answer: unknown = { result: {} }
+    on('tool.call', async () => {
+      await clock.advance(250)
+      return answer as never
+    })
+
+    const out = await $.tool.call({ tool: 'Bash', command: 'ls -la', description: 'List files' })
+    expect(out).toMatchObject({ result: {} })
+    answer = { isError: true, result: 'boom', text: 'boom' }
+    const bad = await $.tool.call({ tool: 'Read', file_path: '/a/b/crew.ts' })
+    expect(bad).toMatchObject({ isError: true, text: 'boom' })
+
+    const list = w.events
+    expect(list).toEqual([
+      { ts: 1000, source: '主線', isMain: true, tool: 'Bash', desc: 'List files', ms: 250, ok: true },
+      { ts: 1250, source: '主線', isMain: true, tool: 'Read', desc: 'crew.ts', ms: 250, ok: false },
+    ])
+    expect(w.main).toMatchObject({
+      ok: 1,
+      fail: 1,
+      chain: 2,
+      lastTool: 'Read',
+      lastDesc: 'crew.ts',
+    })
+  })
+
+  test('a next that throws is recorded as a failure and the error still escapes', async ($, on) => {
+    const w = watch(on)
+    mock.clock(on, { now: 0 })
+    on('tool.call', async () => {
+      throw new Error('tool crashed')
+    })
+
+    let caught: unknown
+    try {
+      await $.tool.call({ tool: 'Grep', pattern: 'needle' })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeDefined()
+    expect(String((caught as Error).message ?? caught)).toContain('no implementation')
+
+    const list = w.events
+    expect(list).toHaveLength(1)
+    expect(list[0]).toMatchObject({ tool: 'Grep', desc: 'needle', ok: false, isMain: true })
+    expect(w.main).toMatchObject({ ok: 0, fail: 1 })
+  })
+
+  test('a subagent call is recorded under the subagent type, not the main counters', async ($, on) => {
+    const w = watch(on)
+    engine(on, 'agent-11')
+    await $.agent.spawn(spawnInput({ description: 'look around', subagentType: 'Explore' }))
+    await $.tool.call({ tool: 'Read', file_path: '/x/y.go', agentId: 'agent-11' } as never)
+    await $.tool.call({ tool: 'Read', file_path: '/x/z.go', agentId: 'ghost' } as never)
+
+    const list = w.events
+    expect(list.map(x => [x.source, x.isMain, x.desc])).toEqual([
+      ['Explore', false, 'y.go'],
+      ['subagent', false, 'z.go'],
+    ])
+    expect(w.main).toBeUndefined() // the main counters were never touched
+  })
+
+  test('205 calls leave the latest 200', async ($, on) => {
+    const w = watch(on)
+    engine(on)
+    for (let i = 0; i < 205; i += 1) await $.tool.call({ tool: 'Read', file_path: `/f/${i}.ts` })
+    const list = w.events
+    expect(list).toHaveLength(200)
+    expect(list[0]?.desc).toBe('5.ts')
+    expect(list[199]?.desc).toBe('204.ts')
+    expect((w.main).ok).toBe(205)
+  })
+
+  test('turn.start / main turn.complete flag the main loop as running', async ($, on) => {
+    const w = watch(on)
+    const clock = engine(on)
+    on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
+    await clock.advance(500)
+    await $.turn.start({ text: 'go', turnId: 't1' })
+    expect(w.main).toMatchObject({ isRunning: true, runSince: 500 })
+    await $.turn.complete(complete(undefined))
+    expect((w.main).isRunning).toBe(false)
+  })
+
+  test('Herdr text carries the stuck warning, then drops it when work resumes', async ($, on) => {
+    const clock = engine(on)
+    mock.env(on, HERDR)
+    on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
+    const sent: string[] = []
+    on('process.run', async (_$, e) => {
+      sent.push(e.argv.slice(6).join(' '))
+      return {
+        value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+      }
+    })
+    await start($)
+    await $.turn.start({ text: 'go', turnId: 't1' })
+    await clock.advance(STUCK_MS - 1000)
+    expect(sent).toEqual([])
+    await clock.advance(5000)
+    expect(sent).toEqual(['--token crew=⚠卡住 --ttl-ms 900000'])
+
+    await $.tool.call({ tool: 'Read', file_path: '/x' })
+    await clock.advance(5000)
+    expect(sent).toHaveLength(2)
+    expect(sent[1]).toBe('--clear-token crew') // activity resumed: the warning is cleared
   })
 })

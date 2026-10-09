@@ -5,15 +5,18 @@ import type { CrewAgent } from '../types'
 import {
   CHAIN_WARN,
   FAMILY_COLOR,
+  MAIN_SOURCE,
   SPINNER,
   addAgent,
+  addEvent,
+  describeCall,
   elapsedMs,
-  familyOf,
+  healthOfState,
+  nameFamilyOf,
   finishTurn,
   finishedOf,
   fmtDur,
   fmtK,
-  fmtUsd,
   markStale,
   noteTool,
   runningOf,
@@ -22,6 +25,7 @@ import {
   summarize,
   tokenTotal,
   tokensOf,
+  summaryLine,
 } from './crew'
 import type { Completion } from './crew'
 import { RUN_TIMEOUT_MS, createReporter, crewText, inHerdr } from './herdr'
@@ -31,7 +35,17 @@ const PANE = 'crew'
 const MAX_EARLY = 100
 
 const agents = atom({ plugin: 'crew', key: 'agents' } as const, [])
-const main = atom({ plugin: 'crew', key: 'main' } as const, { model: '', chain: 0 })
+const main = atom({ plugin: 'crew', key: 'main' } as const, {
+  model: '',
+  chain: 0,
+  ok: 0,
+  fail: 0,
+  lastTool: '',
+  lastDesc: '',
+  isRunning: false,
+  runSince: 0,
+})
+const events = atom({ plugin: 'crew', key: 'events' } as const, [])
 const tick = atom({ plugin: 'crew', key: 'tick' } as const, { n: 0, now: 0 })
 
 // One tick a second for the whole session, started at session.start: it counts
@@ -51,7 +65,11 @@ async function tickOnce(
       }
       if (runningOf(list).length > 0) await update($, tick, t => ({ n: t.n + 1, now }))
     }
-    await reporter?.step(crewText(list), now)
+    const health = healthOfState(
+      { agents: list, main: await read($, main), events: await read($, events) },
+      now,
+    )
+    await reporter?.step(crewText(list, health), now)
   } catch {
     // a broken tick must never reach Claude's work
   }
@@ -139,18 +157,10 @@ export const register: Register = on => {
     return out
   })
 
-  on('tool.call', async ($, e, next) => {
+  on('turn.start', async ($, e, next) => {
     try {
-      const id = e.agentId
-      if (id === undefined) {
-        const isAgent = e.tool === 'Agent'
-        await update($, main, m => ({ ...m, chain: isAgent ? 0 : m.chain + 1 }))
-      } else {
-        const now = await $.clock.now()
-        const tool = e.tool
-        await update($, agents, list => noteTool(list, id, tool, now))
-        await update($, tick, t => ({ n: t.n + 1, now }))
-      }
+      const now = await $.clock.now()
+      await update($, main, m => ({ ...m, isRunning: true, runSince: now }))
     } catch {
       // bookkeeping only
     }
@@ -158,12 +168,69 @@ export const register: Register = on => {
     return next(e)
   })
 
+  on('tool.call', async ($, e, next) => {
+    const id = e.agentId
+    const tool = e.tool
+    let startedAt: number | undefined
+    let source = MAIN_SOURCE
+    let desc = ''
+    try {
+      desc = describeCall(tool, e as unknown as Record<string, unknown>)
+      const now = await $.clock.now()
+      startedAt = now
+      if (id === undefined) {
+        const isAgent = tool === 'Agent'
+        await update($, main, m => ({
+          ...m,
+          chain: isAgent ? 0 : m.chain + 1,
+          lastTool: tool,
+          lastDesc: desc,
+        }))
+      } else {
+        await update($, agents, list => noteTool(list, id, tool, now))
+        await update($, tick, t => ({ n: t.n + 1, now }))
+        const list = await read($, agents)
+        source = list.find(a => a.id === id)?.type ?? 'subagent'
+      }
+    } catch {
+      // bookkeeping only
+    }
+
+    let ok = true
+    try {
+      const out = await next(e)
+      ok = out.isError !== true
+      return out
+    } catch (err) {
+      ok = false
+      throw err
+    } finally {
+      try {
+        if (startedAt !== undefined) {
+          const began = startedAt
+          const ms = Math.max(0, (await $.clock.now()) - began)
+          const ev = { ts: began, source, isMain: id === undefined, tool, desc, ms, ok }
+          await update($, events, list => addEvent(list, ev))
+          if (id === undefined) {
+            await update($, main, m => ({
+              ...m,
+              ok: m.ok + (ok ? 1 : 0),
+              fail: m.fail + (ok ? 0 : 1),
+            }))
+          }
+        }
+      } catch {
+        // the call itself already ran
+      }
+    }
+  })
+
   on('turn.complete', async ($, e, next) => {
     try {
       const id = e.agentId
       if (id === undefined) {
         const model = e.usage?.model
-        if (model) await update($, main, m => ({ ...m, model }))
+        await update($, main, m => ({ ...m, isRunning: false, ...(model ? { model } : {}) }))
       } else {
         const now = await $.clock.now()
         const c: Completion = {
@@ -217,7 +284,7 @@ export const register: Register = on => {
     const warn = m.chain >= CHAIN_WARN
 
     const badge = (model: string) => {
-      const family = familyOf(model)
+      const family = nameFamilyOf(model)
       return family ? (
         <Text color={FAMILY_COLOR[family]}>{`[${shortModel(model)}]`}</Text>
       ) : (
@@ -274,7 +341,7 @@ export const register: Register = on => {
       </Box>
     )
 
-    const summaryRows = list.length === 0 ? 2 : 5
+    const summaryRows = list.length === 0 ? 2 : 3
     const runningRows = running.length === 0 ? 0 : running.length + 1
     const staleRows = stale.length === 0 ? 0 : stale.length + 1
     const room = Math.max(0, rows - 1 - 1 - runningRows - staleRows - summaryRows - 2)
@@ -318,26 +385,7 @@ export const register: Register = on => {
             <Text dimColor>還沒有派工。派出 subagent 後這裡會即時顯示。</Text>
           ) : (
             <Box flexDirection="column">
-              <Box flexDirection="row" gap={2} flexWrap="wrap">
-                {sum.groups.map(g => {
-                  const body = `${g.label} ×${g.count} · ${fmtK(g.tokens)}`
-                  return g.family ? (
-                    <Text color={FAMILY_COLOR[g.family]}>{body}</Text>
-                  ) : (
-                    <Text dimColor>{body}</Text>
-                  )
-                })}
-              </Box>
-              <Text bold>
-                {`派工花費約 ${fmtUsd(sum.cost)}｜全用 Opus 約 ${fmtUsd(sum.opusCost)}｜${
-                  sum.savedPct === undefined
-                    ? '省下 —'
-                    : sum.savedPct >= 0
-                      ? `省下 ${Math.round(sum.savedPct)}%`
-                      : `多花 ${Math.round(-sum.savedPct)}%`
-                }`}
-              </Text>
-              <Text dimColor>以 API 價格估算</Text>
+              <Text bold>{summaryLine(sum)}</Text>
             </Box>
           )}
         </Box>
