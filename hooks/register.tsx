@@ -1,33 +1,21 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { CrewAgent } from '../types'
 import {
-  CHAIN_WARN,
-  FAMILY_COLOR,
-  MAIN_SOURCE,
   SPINNER,
   addAgent,
   addEvent,
+  buildCockpit,
   describeCall,
-  elapsedMs,
   healthOfState,
-  nameFamilyOf,
   finishTurn,
-  finishedOf,
-  fmtDur,
-  fmtK,
   markStale,
   noteTool,
   runningOf,
-  shortModel,
-  staleOf,
-  summarize,
-  tokenTotal,
-  tokensOf,
-  summaryLine,
+  MAIN_SOURCE,
 } from './crew'
 import type { Completion } from './crew'
+import { drawCockpit } from './cockpit'
 import { RUN_TIMEOUT_MS, createReporter, crewText, inHerdr } from './herdr'
 import type { Reporter } from './herdr'
 
@@ -269,127 +257,26 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
-    const list = await read($, agents)
-    const m = await read($, main)
+    const ui = $.ui.resolve(e)
     const t = await read($, tick)
-
-    const rows = e.props.scroll.bodyRows
-    const cols = e.props.bodyColumns
-    const running = runningOf(list)
-    const finished = finishedOf(list)
-    const stale = staleOf(list)
-    const sum = summarize(list)
-    const frame = SPINNER[t.n % SPINNER.length] ?? SPINNER[0]
-    const warn = m.chain >= CHAIN_WARN
-
-    const badge = (model: string) => {
-      const family = nameFamilyOf(model)
-      return family ? (
-        <Text color={FAMILY_COLOR[family]}>{`[${shortModel(model)}]`}</Text>
-      ) : (
-        <Text dimColor>{`[${shortModel(model)}]`}</Text>
-      )
+    let now = t.now
+    try {
+      now = await $.clock.now()
+    } catch {
+      // no clock: the last tick's time stands
     }
-
-    const runningRow = (a: CrewAgent) => (
-      <Box flexDirection="row" gap={1}>
-        <Text color="cyan">{frame ?? ''}</Text>
-        <Text bold>{a.type}</Text>
-        {badge(a.model)}
-        <Box flexGrow={1} flexShrink={1}>
-          <Text wrap="truncate-end">{a.description}</Text>
-        </Box>
-        <Box flexShrink={0} flexDirection="row" gap={1}>
-          {a.tool !== '' && <Text dimColor>{a.tool}</Text>}
-          <Text>{fmtDur(elapsedMs(a, t.now))}</Text>
-        </Box>
-      </Box>
+    const view = buildCockpit(
+      {
+        agents: await read($, agents),
+        main: await read($, main),
+        events: await read($, events),
+      },
+      now,
     )
-
-    const finishedRow = (a: CrewAgent) => (
-      <Box flexDirection="row" gap={1}>
-        {a.status === 'done' ? <Text color="green">✓</Text> : <Text color="red">✗</Text>}
-        <Text bold>{a.type}</Text>
-        {badge(a.model)}
-        <Box flexGrow={1} flexShrink={1}>
-          <Text wrap="truncate-end" dimColor>
-            {a.description}
-          </Text>
-        </Box>
-        <Box flexShrink={0}>
-          <Text dimColor>{`${fmtDur(elapsedMs(a, t.now))} · ${fmtK(tokenTotal(tokensOf(a)))}`}</Text>
-        </Box>
-      </Box>
-    )
-
-    const staleRow = (a: CrewAgent) => (
-      <Box flexDirection="row" gap={1}>
-        <Text color="gray">?</Text>
-        <Text color="gray" bold>
-          {a.type}
-        </Text>
-        <Text color="gray">{`[${shortModel(a.model)}]`}</Text>
-        <Box flexGrow={1} flexShrink={1}>
-          <Text wrap="truncate-end" color="gray">
-            {a.description}
-          </Text>
-        </Box>
-        <Box flexShrink={0}>
-          <Text color="gray">{`失聯 · ${fmtDur(elapsedMs(a, t.now))}`}</Text>
-        </Box>
-      </Box>
-    )
-
-    const summaryRows = list.length === 0 ? 2 : 3
-    const runningRows = running.length === 0 ? 0 : running.length + 1
-    const staleRows = stale.length === 0 ? 0 : stale.length + 1
-    const room = Math.max(0, rows - 1 - 1 - runningRows - staleRows - summaryRows - 2)
-    const shown = finished.slice(0, room)
-
-    return (
-      <Box flexDirection="column">
-        <Box flexDirection="row" justifyContent="space-between">
-          <Text bold>{m.model === '' ? '主 session' : `主 session · ${shortModel(m.model)}`}</Text>
-          {warn ? (
-            <Text color="yellow" bold>{`主線連續工具呼叫 ${m.chain}`}</Text>
-          ) : (
-            <Text dimColor>{`主線連續工具呼叫 ${m.chain}`}</Text>
-          )}
-        </Box>
-
-        {running.length > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            <Text dimColor>{`執行中 (${running.length})`}</Text>
-            {running.map(runningRow)}
-          </Box>
-        )}
-
-        {stale.length > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            <Text color="gray">{`失聯 (${stale.length})`}</Text>
-            {stale.map(staleRow)}
-          </Box>
-        )}
-
-        {finished.length > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            <Text dimColor>{`已完成 (${finished.length})`}</Text>
-            {shown.map(finishedRow)}
-          </Box>
-        )}
-
-        <Box flexDirection="column" marginTop={1}>
-          <Text dimColor>{'─'.repeat(Math.max(1, Math.min(cols, 60)))}</Text>
-          {list.length === 0 ? (
-            <Text dimColor>還沒有派工。派出 subagent 後這裡會即時顯示。</Text>
-          ) : (
-            <Box flexDirection="column">
-              <Text bold>{summaryLine(sum)}</Text>
-            </Box>
-          )}
-        </Box>
-      </Box>
-    )
+    return drawCockpit(ui, view, {
+      cols: e.props.bodyColumns,
+      rows: e.props.scroll.bodyRows,
+      frame: SPINNER[t.n % SPINNER.length] ?? '⠋',
+    })
   })
 }
