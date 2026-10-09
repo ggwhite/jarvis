@@ -1,0 +1,9 @@
+{
+  "name": "crew",
+  "version": "0.1.0",
+  "description": "Live pane of subagent dispatch: running, finished, tokens and estimated API cost.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "white"
+  }
+}
