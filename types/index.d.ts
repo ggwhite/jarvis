@@ -15,6 +15,9 @@ export type CrewAgent = {
   output: number
   cacheRead: number
   cacheWrite: number
+  // set when a workflow script's agent() started it: the run and its place in the run
+  runId?: string
+  agentIndex?: number
 }
 
 // One finished tool call, main loop or subagent. `ts` is when it started.
@@ -32,11 +35,13 @@ export type CrewEvent = {
 }
 
 // A tool call that has started and not yet returned. `key` is unique per call.
+// `desc` is optional: a call recorded by an earlier load of the module has none.
 export type CrewInflight = {
   key: string
   actor: string
   source: string
   tool: string
+  desc?: string
   startedAt: number
 }
 
@@ -53,6 +58,17 @@ export type CrewMain = {
 
 export type CrewTick = { n: number; now: number }
 
+export type CrewPage = 'now' | 'log' | 'stats' | 'detail'
+
+// What the pane shows: the page, the subagent the detail page is about, and whether the
+// event stream is paused at `pausedTotal` events recorded.
+export type CrewUi = {
+  page: CrewPage
+  agentId: string
+  paused: boolean
+  pausedTotal: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
     crew: {
@@ -61,6 +77,9 @@ declare module 'claude-code' {
       tick: CrewTick
       events: CrewEvent[]
       inflight: CrewInflight[]
+      ui: CrewUi
+      // every event ever recorded this session, past the MAX_EVENTS kept
+      eventTotal: number
     }
   }
 }

@@ -48,6 +48,7 @@ import {
   inHerdr,
   reportArgv,
 } from '../hooks/herdr'
+import { register } from '../hooks/register'
 
 const near = (got: number | undefined, want: number, digits: number) =>
   expect(got !== undefined && Math.abs(got - want) < 10 ** -digits).toBe(true)
@@ -1193,9 +1194,151 @@ describe('event stream hooks', () => {
     ])
     const last = flight.history[flight.history.length - 1]
     expect(last).toEqual([])
-    expect(Math.max(...flight.history.map(h => h.length))).toBeLessThanOrEqual(2)
+    expect(Math.max(...flight.history.map(h => h.length))).toBe(2)
+    const both = flight.history.find(h => h.length === 2) ?? []
+    expect(both.map(x => x.tool).sort()).toEqual(['Bash', 'Read'])
     const keys = flight.history.flat().map(x => x.key)
     expect(new Set(keys).size).toBe(2)
+  })
+
+  test('a long Agent call is not in flight, so a quiet subagent under it is stuck', async ($, on) => {
+    const w = watch(on)
+    const flight = watchFlight(on)
+    const clock = mock.clock(on, { now: 0 })
+    mock.env(on, HERDR)
+    on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+    on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
+    on('agent.spawn', async () => ({ model: HAIKU, agentId: 'agent-30' }))
+    const sent: string[] = []
+    on('process.run', async (_$, e) => {
+      sent.push(e.argv.slice(6).join(' '))
+      return {
+        value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+      }
+    })
+    let seenWhileRunning: string[] = []
+    on('tool.call', async () => {
+      // the foreground Agent call waits on its subagent, which says nothing for over 5 minutes
+      await clock.advance(STUCK_MS + 5000)
+      seenWhileRunning = [...sent]
+      return { result: {} } as never
+    })
+    await start($)
+    await $.turn.start({ text: 'go', turnId: 't1' })
+    await $.agent.spawn(spawnInput({ description: 'build it', subagentType: 'worker' }))
+    await $.tool.call({ tool: 'Agent', description: 'build it', prompt: 'p', subagent_type: 'worker' })
+    expect(seenWhileRunning).toEqual([
+      '--token crew=▶1 --ttl-ms 900000',
+      '--token crew=⚠卡住 ▶1 --ttl-ms 900000',
+    ])
+    expect(flight.history.flat().some(x => x.tool === 'Agent')).toBe(false)
+    expect(w.events).toEqual([expect.objectContaining({ tool: 'Agent', desc: 'build it', isMain: true, ok: true })])
+  })
+
+  test('calls from two loads of the hooks module never share a key; each removes only itself', async () => {
+    // a hot reload keeps the state and starts the module afresh, its call count at zero:
+    // two loads over one state, each module's tool.call hook taken as it registers
+    type Hook = (...args: unknown[]) => Promise<unknown>
+    const store = new Map<string, { value: unknown; version: number }>()
+    const fake = {
+      clock: { now: async () => 0 },
+      state: {
+        get: async (ref: { key: string }) => store.get(ref.key) ?? { value: undefined, version: 0 },
+        set: async (ref: { key: string }, value: unknown, opts?: { ifVersion?: number }) => {
+          const held = store.get(ref.key)?.version ?? 0
+          if (opts?.ifVersion !== undefined && opts.ifVersion !== held) return { isSet: false, version: held }
+          store.set(ref.key, { value, version: held + 1 })
+          return { isSet: true, version: held + 1 }
+        },
+      },
+    }
+    const load = () => {
+      let hook: Hook | undefined
+      const take = (name: string, ...rest: unknown[]) => {
+        if (name === 'tool.call') hook = rest[rest.length - 1] as Hook
+      }
+      register(take as unknown as On, {})
+      return hook as Hook
+    }
+    const before = load()
+    const after = load()
+    const history: CrewInflight[][] = []
+    const flight = () => (store.get('inflight')?.value ?? []) as CrewInflight[]
+    const e = { tool: 'Bash', command: 'x' }
+    const out = await before(fake, e, async () => {
+      history.push(flight())
+      const inner = await after(fake, e, async () => {
+        history.push(flight())
+        return { result: {} }
+      })
+      history.push(flight())
+      return inner
+    })
+    history.push(flight())
+    expect(out).toEqual({ result: {} })
+    expect(history.map(h => h.length)).toEqual([1, 2, 1, 0])
+    const [old, fresh] = history[1] ?? []
+    expect(old?.key).not.toBe(fresh?.key)
+    expect(history[2]).toEqual([old])
+  })
+
+  // calls whose next has not returned yet, released by hand
+  const hold = (on: On) => {
+    const gates: Array<() => void> = []
+    let wake: (() => void) | undefined
+    on('tool.call', async () => {
+      await new Promise<void>(r => {
+        gates.push(r)
+        wake?.()
+      })
+      return { result: {} } as never
+    })
+    const until = async (n: number) => {
+      while (gates.length < n) await new Promise<void>(r => (wake = r))
+    }
+    return { until, release: () => gates.splice(0).forEach(r => r()) }
+  }
+
+  test('turn.complete clears orphaned in-flight calls: main its own, a subagent only its own', async ($, on) => {
+    const flight = watchFlight(on)
+    mock.clock(on, { now: 0 })
+    on('turn.complete', async (_$, e) => ({ text: e.answer }))
+    const h = hold(on)
+    const calls = [undefined, 'w1', 'w2'].map(agentId =>
+      $.tool.call({ tool: 'Bash', command: 'wait', ...(agentId ? { agentId } : {}) } as never),
+    )
+    await h.until(3)
+    const actors = () => (flight.history[flight.history.length - 1] ?? []).map(x => x.actor).sort()
+    expect(actors()).toEqual(['main', 'w1', 'w2'])
+
+    await $.turn.complete(complete('w1'))
+    expect(actors()).toEqual(['main', 'w2'])
+    await $.turn.complete(complete(undefined))
+    expect(actors()).toEqual(['w2'])
+    await $.turn.complete(complete('w2'))
+    expect(actors()).toEqual([])
+
+    h.release()
+    await Promise.all(calls)
+    expect(actors()).toEqual([])
+  })
+
+  test('session.start clears every in-flight call', async ($, on) => {
+    const flight = watchFlight(on)
+    mock.clock(on, { now: 0 })
+    on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+    const h = hold(on)
+    const calls = [undefined, 'w1'].map(agentId =>
+      $.tool.call({ tool: 'Bash', command: 'wait', ...(agentId ? { agentId } : {}) } as never),
+    )
+    await h.until(2)
+    expect(flight.history[flight.history.length - 1]).toHaveLength(2)
+
+    await start($)
+    expect(flight.history[flight.history.length - 1]).toEqual([])
+
+    h.release()
+    await Promise.all(calls)
   })
 
   test('a 10 minute call on the main loop raises no stuck warning; quiet afterwards does', async ($, on) => {

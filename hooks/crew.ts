@@ -11,6 +11,8 @@ export const STUCK_MS = 5 * 60 * 1000
 export const PACE_BUCKETS = 10
 export const BUCKET_MS = 60_000
 export const DESC_MAX = 60
+// Subagents on the list that take a digit hotkey to their detail page.
+export const MAX_NUMBERED = 9
 export const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 
 export type Family = 'fable' | 'opus' | 'sonnet' | 'haiku'
@@ -64,6 +66,7 @@ export type Spawned = {
   description: string
   model: string
   now: number
+  workflow?: { runId: string; agentIndex: number }
 }
 
 // The family named in any model id, whatever generation: for display.
@@ -203,6 +206,7 @@ export function addAgent(list: readonly CrewAgent[], s: Spawned): CrewAgent[] {
     output: 0,
     cacheRead: 0,
     cacheWrite: 0,
+    ...(s.workflow ? { runId: s.workflow.runId, agentIndex: s.workflow.agentIndex } : {}),
   }
   return trim([...list.filter(a => a.id !== s.id), fresh])
 }
@@ -288,9 +292,9 @@ export function summaryLine(sum: Summary): string {
 
 export type Health = 'ok' | 'loop' | 'stuck'
 
-export type Role = 'Explore' | 'clerk' | 'worker' | 'verifier' | 'fork' | 'other'
+export type Role = 'Explore' | 'clerk' | 'worker' | 'verifier' | 'fork' | 'workflow' | 'other'
 
-export const ROLES: Role[] = ['Explore', 'clerk', 'worker', 'verifier', 'fork', 'other']
+export const ROLES: Role[] = ['Explore', 'clerk', 'worker', 'verifier', 'fork', 'workflow', 'other']
 
 export const ROLE_LABEL: Record<Role, string> = {
   Explore: 'Explore',
@@ -298,6 +302,7 @@ export const ROLE_LABEL: Record<Role, string> = {
   worker: 'worker',
   verifier: 'verifier',
   fork: 'fork',
+  workflow: 'workflow',
   other: '其他',
 }
 
@@ -411,7 +416,12 @@ export function healthOf(
 // spawned with the type `fork`. Any other type (general-purpose, Plan, a plugin's) is other.
 export function roleOf(type: string): Role {
   const lower = type.trim().toLowerCase()
-  return ROLES.find(r => r !== 'other' && r.toLowerCase() === lower) ?? 'other'
+  return ROLES.find(r => r !== 'other' && r !== 'workflow' && r.toLowerCase() === lower) ?? 'other'
+}
+
+// A workflow script's agents count as the workflow role, whatever their type.
+export function dispatchRoleOf(a: CrewAgent): Role {
+  return a.runId !== undefined ? 'workflow' : roleOf(a.type)
 }
 
 export type RoleStat = { role: Role; label: string; running: number; done: number; failed: number }
@@ -419,7 +429,7 @@ export type RoleStat = { role: Role; label: string; running: number; done: numbe
 export function dispatchStats(agents: readonly CrewAgent[]): RoleStat[] {
   const stats = ROLES.map(role => ({ role, label: ROLE_LABEL[role], running: 0, done: 0, failed: 0 }))
   for (const a of agents) {
-    const stat = stats.find(x => x.role === roleOf(a.type))
+    const stat = stats.find(x => x.role === dispatchRoleOf(a))
     if (!stat) continue
     if (a.status === 'running') stat.running += 1
     else if (a.status === 'done') stat.done += 1
@@ -455,6 +465,75 @@ export function modelShares(agents: readonly CrewAgent[]): ModelShare[] {
   const rows = [...byKey.values()].sort((x, y) => y.cost - x.cost || y.count - x.count)
   for (const row of rows) row.share = total > 0 ? row.cost / total : 0
   return rows
+}
+
+// A model's share as a label: under 1% of the cost, a model that was used reads <1%.
+export function shareLabel(share: number): string {
+  return share < 0.01 ? '<1%' : `${Math.round(share * 100)}%`
+}
+
+// One row group of the subagent list: a lone subagent, or a workflow run's agents.
+export type ListUnit =
+  | { kind: 'agent'; agent: CrewAgent }
+  | { kind: 'workflow'; runId: string; agents: CrewAgent[] }
+
+export type ListSection = {
+  status: 'running' | 'stale' | 'finished'
+  // the subagents in that status, all of them
+  count: number
+  units: ListUnit[]
+}
+
+const RANK: Record<CrewAgent['status'], number> = { running: 0, stale: 1, done: 2, failed: 2 }
+const SECTION: ListSection['status'][] = ['running', 'stale', 'finished']
+
+// The subagent list as drawn: running first, then lost, then finished (latest first). A
+// workflow run's agents are one unit, in the section of its liveliest agent, by agentIndex.
+export function agentSections(agents: readonly CrewAgent[]): ListSection[] {
+  type Slot = { unit: ListUnit; rank: number; first: number; ended: number }
+  const slots: Slot[] = []
+  const runs = new Map<string, Slot>()
+  agents.forEach((a, i) => {
+    if (a.runId === undefined) {
+      slots.push({ unit: { kind: 'agent', agent: a }, rank: RANK[a.status], first: i, ended: a.endedAt })
+      return
+    }
+    const slot = runs.get(a.runId)
+    if (slot && slot.unit.kind === 'workflow') {
+      slot.unit.agents.push(a)
+      slot.rank = Math.min(slot.rank, RANK[a.status])
+      slot.ended = Math.max(slot.ended, a.endedAt)
+      return
+    }
+    const fresh: Slot = {
+      unit: { kind: 'workflow', runId: a.runId, agents: [a] },
+      rank: RANK[a.status],
+      first: i,
+      ended: a.endedAt,
+    }
+    runs.set(a.runId, fresh)
+    slots.push(fresh)
+  })
+  for (const slot of runs.values()) {
+    if (slot.unit.kind !== 'workflow') continue
+    slot.unit.agents = slot.unit.agents
+      .map((a, i) => ({ a, i }))
+      .sort((x, y) => (x.a.agentIndex ?? Infinity) - (y.a.agentIndex ?? Infinity) || x.i - y.i)
+      .map(x => x.a)
+  }
+  return SECTION.map((status, rank) => {
+    const units = slots
+      .filter(s => s.rank === rank)
+      .sort((x, y) => (rank === 2 ? y.ended - x.ended || y.first - x.first : x.first - y.first))
+      .map(s => s.unit)
+    const count = agents.filter(a => RANK[a.status] === rank).length
+    return { status, count, units }
+  }).filter(s => s.units.length > 0)
+}
+
+// Every subagent in the order the list draws it.
+export function listOrder(sections: readonly ListSection[]): CrewAgent[] {
+  return sections.flatMap(s => s.units.flatMap(u => (u.kind === 'agent' ? [u.agent] : u.agents)))
 }
 
 export type CrewState = {
@@ -502,11 +581,17 @@ export type Cockpit = {
   running: CrewAgent[]
   stale: CrewAgent[]
   finished: CrewAgent[]
+  // the subagent list as drawn, and the first MAX_NUMBERED of it, digit 1 first
+  sections: ListSection[]
+  numbered: CrewAgent[]
+  // tool calls not yet returned, oldest first
+  inflight: CrewInflight[]
   summary: Summary
 }
 
 export function buildCockpit(state: CrewState, now: number): Cockpit {
   const m = state.main
+  const sections = agentSections(state.agents)
   return {
     now,
     health: healthOfState(state, now),
@@ -526,6 +611,9 @@ export function buildCockpit(state: CrewState, now: number): Cockpit {
     running: runningOf(state.agents),
     stale: staleOf(state.agents),
     finished: finishedOf(state.agents),
+    sections,
+    numbered: listOrder(sections).slice(0, MAX_NUMBERED),
+    inflight: [...(state.inflight ?? [])].sort((x, y) => x.startedAt - y.startedAt),
     summary: summarize(state.agents),
   }
 }
