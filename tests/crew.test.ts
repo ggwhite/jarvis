@@ -10,6 +10,8 @@ import {
   addAgent,
   addEvent,
   buildCockpit,
+  barLen,
+  cellWidth,
   describeCall,
   dispatchStats,
   healthOf,
@@ -20,8 +22,13 @@ import {
   elapsedMs,
   finishTurn,
   finishedOf,
+  fitCells,
+  fmtClock,
   fmtK,
+  fmtMs,
   markStale,
+  padCells,
+  paceChart,
   noteTool,
   shortModel,
   staleOf,
@@ -30,6 +37,7 @@ import {
   summaryLine,
   familyOf,
 } from '../hooks/crew'
+import { MIN_EVENT_ROWS, TINY_COLS, WIDE_COLS } from '../hooks/cockpit'
 import {
   MAX_FAILURES,
   REFRESH_MS,
@@ -376,16 +384,16 @@ const findText = (n: Node | string, re: RegExp): Node | undefined => {
   return undefined
 }
 
-const draw = async ($: Engine, rows = 30): Promise<Node> =>
+const draw = async ($: Engine, rows = 30, cols = 80): Promise<Node> =>
   (await $.ui.render({
     surface: 'terminal',
     component: 'Pane',
     requestId: 'crew',
-    viewport: { columns: 100, rows: rows + 10 },
+    viewport: { columns: cols + 20, rows: rows + 10 },
     props: {
       title: 'Crew',
       isFocused: false,
-      bodyColumns: 80,
+      bodyColumns: cols,
       placement: 'dock',
       scroll: { offset: 0, bodyRows: rows },
       view: {},
@@ -492,26 +500,26 @@ describe('hooks', () => {
     engine(on)
     const chain = async () => {
       const tree = await draw($)
-      const node = findText(tree, /主線連續工具呼叫/)
+      const node = findText(tree, /^\d+\/4$/)
       return { text: node ? textOf(node) : '', color: node?.props?.color }
     }
 
     for (let i = 0; i < 3; i += 1) await $.tool.call({ tool: 'Read', file_path: '/x' })
-    expect(await chain()).toMatchObject({ text: '主線連續工具呼叫 3' })
+    expect(await chain()).toMatchObject({ text: '3/4' })
     expect((await chain()).color).toBeUndefined()
 
     await $.tool.call({ tool: 'Read', file_path: '/x' })
-    expect(await chain()).toMatchObject({ text: '主線連續工具呼叫 4', color: 'yellow' })
+    expect(await chain()).toMatchObject({ text: '4/4', color: 'yellow' })
 
     await $.tool.call({ tool: 'Agent', prompt: 'p', description: 'd', subagent_type: 'worker' })
-    expect((await chain()).text).toBe('主線連續工具呼叫 0')
+    expect((await chain()).text).toBe('0/4')
 
     await $.tool.call({ tool: 'Read', file_path: '/x' })
     await $.tool.call({ tool: 'Read', file_path: '/y' })
-    expect((await chain()).text).toBe('主線連續工具呼叫 2')
+    expect((await chain()).text).toBe('2/4')
 
     await $.prompt.submit(submit('next'))
-    expect((await chain()).text).toBe('主線連續工具呼叫 0')
+    expect((await chain()).text).toBe('0/4')
   })
 
   test('every hook passes its event to next untouched', async ($, on) => {
@@ -629,7 +637,7 @@ describe('hooks', () => {
     await clock.advance(2000)
     lines = linesOf(await draw($))
     expect(lines.some(l => l.includes('失聯 (1)'))).toBe(true)
-    expect(lines.some(l => l.includes('執行中'))).toBe(false)
+    expect(lines.some(l => l.includes('執行中 ('))).toBe(false)
     const row = lines.find(l => l.includes('lost job')) ?? ''
     expect(row).toContain('失聯')
     expect(findText(await draw($), /失聯 \(1\)/)?.props?.color).toBe('gray')
@@ -731,6 +739,7 @@ describe('herdr reporting', () => {
 
 const ev = (over: Partial<CrewEvent> = {}): CrewEvent => ({
   ts: 0,
+  actor: 'main',
   source: '主線',
   isMain: true,
   tool: 'Read',
@@ -933,8 +942,8 @@ describe('event stream hooks', () => {
 
     const list = w.events
     expect(list).toEqual([
-      { ts: 1000, source: '主線', isMain: true, tool: 'Bash', desc: 'List files', ms: 250, ok: true },
-      { ts: 1250, source: '主線', isMain: true, tool: 'Read', desc: 'crew.ts', ms: 250, ok: false },
+      { ts: 1000, actor: 'main', source: '主線', isMain: true, tool: 'Bash', desc: 'List files', ms: 250, ok: true },
+      { ts: 1250, actor: 'main', source: '主線', isMain: true, tool: 'Read', desc: 'crew.ts', ms: 250, ok: false },
     ])
     expect(w.main).toMatchObject({
       ok: 1,
@@ -954,7 +963,7 @@ describe('event stream hooks', () => {
 
     let caught: unknown
     try {
-      await $.tool.call({ tool: 'Grep', pattern: 'needle' })
+      await $.tool.call({ tool: 'Bash', command: 'needle' })
     } catch (err) {
       caught = err
     }
@@ -963,7 +972,7 @@ describe('event stream hooks', () => {
 
     const list = w.events
     expect(list).toHaveLength(1)
-    expect(list[0]).toMatchObject({ tool: 'Grep', desc: 'needle', ok: false, isMain: true })
+    expect(list[0]).toMatchObject({ tool: 'Bash', desc: 'needle', ok: false, isMain: true })
     expect(w.main).toMatchObject({ ok: 0, fail: 1 })
   })
 
@@ -990,7 +999,7 @@ describe('event stream hooks', () => {
     expect(list).toHaveLength(200)
     expect(list[0]?.desc).toBe('5.ts')
     expect(list[199]?.desc).toBe('204.ts')
-    expect((w.main).ok).toBe(205)
+    expect(w.main?.ok).toBe(205)
   })
 
   test('turn.start / main turn.complete flag the main loop as running', async ($, on) => {
@@ -1001,7 +1010,7 @@ describe('event stream hooks', () => {
     await $.turn.start({ text: 'go', turnId: 't1' })
     expect(w.main).toMatchObject({ isRunning: true, runSince: 500 })
     await $.turn.complete(complete(undefined))
-    expect((w.main).isRunning).toBe(false)
+    expect(w.main?.isRunning).toBe(false)
   })
 
   test('Herdr text carries the stuck warning, then drops it when work resumes', async ($, on) => {
@@ -1026,5 +1035,218 @@ describe('event stream hooks', () => {
     await clock.advance(5000)
     expect(sent).toHaveLength(2)
     expect(sent[1]).toBe('--clear-token crew') // activity resumed: the warning is cleared
+  })
+})
+
+const findAllText = (n: Node | string, re: RegExp, out: Node[] = []): Node[] => {
+  if (typeof n === 'string') return out
+  if (n.type === 'Text' && re.test(textOf(n))) out.push(n)
+  for (const k of n.children ?? []) findAllText(k, re, out)
+  return out
+}
+
+// width in cells of each drawn row: a row Box's texts side by side, as the pane draws them
+const rowWidths = (n: Node | string): number[] => {
+  if (typeof n === 'string') return [cellWidth(n)]
+  if (n.type === 'Text') return [cellWidth(textOf(n))]
+  const kids = n.children ?? []
+  if (n.props?.flexDirection === 'row' && kids.every(k => typeof k !== 'string' && k.type === 'Text')) {
+    return [kids.reduce((sum, k) => sum + cellWidth(textOf(k)), 0)]
+  }
+  return kids.flatMap(rowWidths)
+}
+
+const TITLES = /^(主線|派工流程|模型|節奏|省錢|健康|子代理|事件流)$/
+
+// the card titles each top-level block of the pane holds, in order: what shares a row
+const blockTitles = (tree: Node): string[][] =>
+  (tree.children ?? []).map(k => (typeof k === 'string' ? [] : findAllText(k, TITLES).map(textOf)))
+
+describe('cockpit layout helpers', () => {
+  test('cell width counts CJK as two, fitCells and padCells honour it', () => {
+    expect(cellWidth('abc')).toBe(3)
+    expect(cellWidth('主線')).toBe(4)
+    expect(cellWidth('▼█✓')).toBe(3)
+    expect(fitCells('主線連續呼叫', 7)).toBe('主線連…')
+    expect(cellWidth(fitCells('主線連續呼叫', 7))).toBeLessThanOrEqual(7)
+    expect(fitCells('short', 10)).toBe('short')
+    expect(padCells('主線', 8)).toBe('主線    ')
+    expect(padCells('ab', 6, 'right')).toBe('    ab')
+    expect(padCells('ab', 6, 'center')).toBe('  ab  ')
+    expect(cellWidth(padCells('描述很長很長很長', 9))).toBe(9)
+  })
+
+  test('bar length scales, never 0 for a nonzero value, never over the width', () => {
+    expect(barLen(19, 19, 24)).toBe(24)
+    expect(barLen(1, 19, 24)).toBe(1)
+    expect(barLen(0, 19, 24)).toBe(0)
+    expect(barLen(50, 19, 24)).toBe(24)
+  })
+
+  test('pace chart: rows tall, peak fills the column, a zero is a thin base', () => {
+    const rows = paceChart([0, 2, 4], 4, 2, 1)
+    expect(rows).toHaveLength(4)
+    expect(rows.every(r => cellWidth(r) === 3 * 2 + 2)).toBe(true)
+    expect(rows[0]).toBe('      ██')
+    expect(rows[3]).toBe('▁▁ ██ ██')
+    expect(paceChart([0, 0, 0], 3, 1, 0)).toEqual(['   ', '   ', '▁▁▁'])
+  })
+
+  test('durations and clock', () => {
+    expect(fmtMs(150)).toBe('150ms')
+    expect(fmtMs(2900)).toBe('2.9s')
+    expect(fmtMs(20_900)).toBe('20.9s')
+    expect(fmtMs(65_000)).toBe('1m05s')
+    expect(fmtClock(new Date(2026, 0, 2, 3, 4, 5).getTime())).toBe('03:04:05')
+  })
+})
+
+describe('cockpit layout', () => {
+  const callMain = async ($: Engine, n: number) => {
+    for (let i = 0; i < n; i += 1) await $.tool.call({ tool: 'Read', file_path: `/a/f${i}.ts` })
+  }
+
+  test('wide: top row side by side, four middle cards on one row, n/200 shown', async ($, on) => {
+    engine(on)
+    await callMain($, 3)
+    const tree = await draw($, 40, WIDE_COLS + 40)
+    expect(blockTitles(tree).slice(0, 3)).toEqual([
+      ['主線', '派工流程'],
+      ['模型', '節奏', '省錢', '健康'],
+      ['事件流'],
+    ])
+    expect(findText(tree, /^3\/200 則$/)).toBeDefined()
+  })
+
+  test('narrow: the top row stacks and the middle cards go two to a row', async ($, on) => {
+    engine(on)
+    const tree = await draw($, 60, WIDE_COLS - 30)
+    expect(blockTitles(tree).slice(0, 5)).toEqual([
+      ['主線'],
+      ['派工流程'],
+      ['模型', '節奏'],
+      ['省錢', '健康'],
+      ['事件流'],
+    ])
+  })
+
+  test('a very narrow pane keeps only savings and health', async ($, on) => {
+    engine(on)
+    const tree = await draw($, 60, TINY_COLS - 4)
+    expect(blockTitles(tree).slice(0, 4)).toEqual([['主線'], ['派工流程'], ['省錢', '健康'], ['事件流']])
+  })
+
+  test('health: ok, a failing loop, and a stuck run each read their own way', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000_000 })
+    let answer: unknown = { result: {} }
+    on('tool.call', async () => answer as never)
+    on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
+
+    let tree = await draw($, 40, 140)
+    expect(findText(tree, /✓ 正常/)?.props?.color).toBe('green')
+
+    answer = { isError: true, result: 'boom', text: 'boom' }
+    for (let i = 0; i < 3; i += 1) await $.tool.call({ tool: 'Bash', command: 'go test' })
+    tree = await draw($, 40, 140)
+    expect(findText(tree, /⚠ 可能在繞圈/)?.props?.color).toBe('red')
+    expect(findText(tree, /✓ 正常/)).toBeUndefined()
+
+    answer = { result: {} }
+    await $.tool.call({ tool: 'Bash', command: 'go test' })
+    await $.turn.start({ text: 'go', turnId: 't1' })
+    await clock.advance(STUCK_MS + 1000)
+    tree = await draw($, 40, 140)
+    expect(findText(tree, /⚠ 可能卡住/)?.props?.color).toBe('yellow')
+  })
+
+  test('events: a failure shows a red [✗], a call over 30 seconds a yellow duration', async ($, on) => {
+    const clock = mock.clock(on, { now: 5_000_000 })
+    let step: { ms: number; fail: boolean } = { ms: 100, fail: false }
+    on('tool.call', async () => {
+      await clock.advance(step.ms)
+      return (step.fail ? { isError: true, result: 'x', text: 'x' } : { result: {} }) as never
+    })
+
+    await $.tool.call({ tool: 'Read', file_path: '/a/ok.ts' })
+    step = { ms: 31_000, fail: false }
+    await $.tool.call({ tool: 'Bash', command: 'make slow', description: 'slow build' })
+    step = { ms: 29_000, fail: false }
+    await $.tool.call({ tool: 'Bash', command: 'make mid', description: 'mid build' })
+    step = { ms: 50, fail: true }
+    await $.tool.call({ tool: 'Bash', command: 'rg needle', description: 'needle' })
+
+    const tree = await draw($, 40, 140)
+    const lines = linesOf(tree)
+    const grep = lines.find(l => l.includes('[✗]')) ?? ''
+    expect(grep).toContain('Bash')
+    expect(grep).toContain('needle')
+    expect(grep).not.toContain('[✓]')
+    expect(findAllText(tree, /^\[✗\]$/)[0]?.props?.color).toBe('red')
+    expect(findAllText(tree, /^\[✓\]$/)[0]?.props?.color).toBe('green')
+    expect(lines.find(l => l.includes('ok.ts'))).toContain('[✓]')
+    expect(findText(tree, /^\s*31\.0s$/)?.props?.color).toBe('yellow')
+    expect(findText(tree, /^\s*29\.0s$/)?.props?.color).toBeUndefined()
+    // HH:MM:SS, local time, source and tool
+    expect(lines.find(l => l.includes('slow build'))).toMatch(/\d\d:\d\d:\d\d\s+主線\s+Bash/)
+  })
+
+  test('events: only what fits the pane is shown, newest at the bottom, the count stays whole', async ($, on) => {
+    engine(on)
+    await callMain($, 30)
+    const few = linesOf(await draw($, 24, 140)).filter(l => /f\d+\.ts/.test(l) && l.includes('[✓]'))
+    expect(few.length).toBeGreaterThanOrEqual(MIN_EVENT_ROWS)
+    expect(few.length).toBeLessThan(30)
+    expect(few[few.length - 1]).toContain('f29.ts')
+    const tree = await draw($, 24, 140)
+    expect(findText(tree, /^30\/200 則$/)).toBeDefined()
+    const roomy = linesOf(await draw($, 80, 140)).filter(l => /f\d+\.ts/.test(l) && l.includes('[✓]'))
+    expect(roomy).toHaveLength(30)
+  })
+
+  test('narrow events: a long description is cut, never wrapped past the width', async ($, on) => {
+    engine(on)
+    const long = 'x'.repeat(59)
+    await $.tool.call({ tool: 'Bash', command: 'run', description: long })
+    await $.tool.call({ tool: 'Read', file_path: '/a/b/中文檔名很長很長很長很長很長.md' })
+    for (const cols of [70, 90]) {
+      const tree = await draw($, 60, cols)
+      const desc = findAllText(tree, /^x+…?\s*$/)[0]
+      expect(desc).toBeDefined()
+      expect(textOf(desc as Node)).toContain('…')
+      expect(rowWidths(tree).every(w => w <= cols - 4 || w === cols)).toBe(true)
+    }
+  })
+
+  test('the role boxes: running ones light up, other shows only when it has agents', async ($, on) => {
+    engine(on, 'agent-20')
+    let tree = await draw($, 40, 170)
+    expect(findAllText(tree, /^其他$/)).toHaveLength(0)
+    expect(findAllText(tree, /^執行中 0 · 完成 0$/)).toHaveLength(5)
+
+    await $.agent.spawn(spawnInput({ description: 'job', subagentType: 'worker' }))
+    tree = await draw($, 40, 170)
+    expect(findText(tree, /^\s*執行中 1 · 完成 0\s*$/)?.props?.color).toBe('yellow')
+    expect(findAllText(tree, /^\s*執行中 0 · 完成 0\s*$/)).toHaveLength(4)
+
+    // too narrow for one line: running and done count on two
+    tree = await draw($, 40, 100)
+    expect(findText(tree, /^\s*執行中 1\s*$/)?.props?.color).toBe('yellow')
+
+    await $.turn.complete(complete('agent-20'))
+    await $.agent.spawn(spawnInput({ description: 'other job', subagentType: 'general-purpose', id: 'tu-2' }))
+    tree = await draw($, 40, 170)
+    expect(findAllText(tree, /其他/).length).toBeGreaterThan(0)
+  })
+
+  test('the one-line summary stays at the bottom, and the v1 subagent list is kept', async ($, on) => {
+    engine(on, 'agent-21')
+    await $.agent.spawn(spawnInput({ description: 'index the repo', subagentType: 'Explore' }))
+    await $.turn.complete(
+      complete('agent-21', { durationMs: 2000, usage: usage(HAIKU, 1_000_000, 500_000, 2_000_000, 400_000) }),
+    )
+    const lines = linesOf(await draw($, 40, 140))
+    expect(lines[lines.length - 1]).toBe('Haiku×1 · ≈$0.42 vs Opus $16.80（省98%）')
+    expect(lines.some(l => l.includes('已完成 (1)'))).toBe(true)
+    expect(lines.some(l => l.includes('省98%') && !l.includes('Haiku×1'))).toBe(true)
   })
 })

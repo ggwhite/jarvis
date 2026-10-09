@@ -154,12 +154,12 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   // Cards on one row, as tall as the tallest.
   const cardRow = (specs: CardSpec[]): Block => {
-    const h = Math.max(...specs.map(heightOf))
+    const tall = Math.max(...specs.map(heightOf))
     return {
-      h,
+      h: tall,
       node: (
         <Box flexDirection="row" gap={1}>
-          {specs.map(s => card(s, h).node)}
+          {specs.map(s => card(s, tall).node)}
         </Box>
       ),
     }
@@ -239,8 +239,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const roles = view.dispatch.filter(r => r.role !== 'other' || r.running + r.done + r.failed > 0)
     const widths = splitCols(inner, roles.length)
     const fullStat = (r: RoleStat) => `執行中 ${r.running} · 完成 ${r.done}`
-    const tightStat = (r: RoleStat) => `執行中 ${r.running}·完成 ${r.done}`
-    const twoLine = roles.some((r, i) => cellWidth(tightStat(r)) > (widths[i] ?? 0) - 2)
+    const twoLine = roles.some((r, i) => cellWidth(fullStat(r)) + 2 > (widths[i] ?? 0) - 2)
     const boxH = twoLine ? 5 : 4
 
     const box = (r: RoleStat, bw: number) => {
@@ -254,7 +253,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
             [{ t: `執行中 ${r.running}`, ...tone }],
             [{ t: `完成 ${r.done}`, ...(r.done > 0 ? { color: 'green' } : { dim: true }) }],
           ]
-        : [[{ t: cellWidth(fullStat(r)) <= iw ? fullStat(r) : tightStat(r), ...tone }]]
+        : [[{ t: fullStat(r), ...tone }]]
       return (
         <Box
           flexDirection="column"
@@ -389,10 +388,12 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const { running, stale, finished } = view
     if (running.length + stale.length + finished.length === 0) return undefined
     const inner = w - 4
+    const finishedCap = wide ? 5 : 3
+    const more = (n: number, cap: number) => (n > cap ? ` · 顯示 ${cap}` : '')
     const shown = [
       ...running.slice(0, 8),
       ...stale.slice(0, 4),
-      ...finished.slice(0, wide ? 5 : 3),
+      ...finished.slice(0, finishedCap),
     ]
     const typeW = Math.max(6, Math.min(15, Math.max(...shown.map(a => cellWidth(a.type)))))
     const badgeW = Math.max(...shown.map(a => cellWidth(`[${shortModel(a.model)}]`)))
@@ -407,7 +408,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
     const lines: Line[] = [[title('子代理', 'gray')]]
     if (running.length > 0) {
-      lines.push([{ t: `執行中 (${running.length})`, dim: true }])
+      lines.push([{ t: `執行中 (${running.length})${more(running.length, 8)}`, dim: true }])
       for (const a of running.slice(0, 8)) {
         lines.push(
           row({ t: ctx.frame, color: 'cyan' }, a, [
@@ -418,14 +419,14 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       }
     }
     if (stale.length > 0) {
-      lines.push([{ t: `失聯 (${stale.length})`, color: 'gray' }])
+      lines.push([{ t: `失聯 (${stale.length})${more(stale.length, 4)}`, color: 'gray' }])
       for (const a of stale.slice(0, 4)) {
         lines.push(row({ t: '?', color: 'gray' }, a, [{ t: `失聯 · ${fmtDur(elapsedMs(a, view.now))}`, color: 'gray' }], { color: 'gray' }))
       }
     }
     if (finished.length > 0) {
-      lines.push([{ t: `已完成 (${finished.length})`, dim: true }])
-      for (const a of finished.slice(0, wide ? 5 : 3)) {
+      lines.push([{ t: `已完成 (${finished.length})${more(finished.length, finishedCap)}`, dim: true }])
+      for (const a of finished.slice(0, finishedCap)) {
         lines.push(
           row(
             a.status === 'done' ? { t: '✓', color: 'green' } : { t: '✗', color: 'red' },
@@ -480,7 +481,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const blocks: Block[] = []
 
   if (wide) {
-    const left = Math.max(46, Math.min(64, cols - 109))
+    const left = Math.max(44, Math.min(64, cols - 115))
     const specs = [mainSpec(left), dispatchSpec(cols - left - 1)]
     blocks.push(cardRow(specs))
   } else {

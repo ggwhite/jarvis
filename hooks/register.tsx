@@ -12,6 +12,7 @@ import {
   markStale,
   noteTool,
   runningOf,
+  MAIN_ACTOR,
   MAIN_SOURCE,
 } from './crew'
 import type { Completion } from './crew'
@@ -34,6 +35,7 @@ const main = atom({ plugin: 'crew', key: 'main' } as const, {
   runSince: 0,
 })
 const events = atom({ plugin: 'crew', key: 'events' } as const, [])
+const inflight = atom({ plugin: 'crew', key: 'inflight' } as const, [])
 const tick = atom({ plugin: 'crew', key: 'tick' } as const, { n: 0, now: 0 })
 
 // One tick a second for the whole session, started at session.start: it counts
@@ -54,7 +56,12 @@ async function tickOnce(
       if (runningOf(list).length > 0) await update($, tick, t => ({ n: t.n + 1, now }))
     }
     const health = healthOfState(
-      { agents: list, main: await read($, main), events: await read($, events) },
+      {
+        agents: list,
+        main: await read($, main),
+        events: await read($, events),
+        inflight: await read($, inflight),
+      },
       now,
     )
     await reporter?.step(crewText(list, health), now)
@@ -67,6 +74,7 @@ export const register: Register = on => {
   // A subagent can finish before its spawn has been recorded; park its turns here.
   const early = new Map<string, Completion[]>()
   let timer: Timer | undefined
+  let seq = 0
 
   on('session.start', async ($, e, next) => {
     try {
@@ -184,6 +192,19 @@ export const register: Register = on => {
       // bookkeeping only
     }
 
+    const flightKey = `c${(seq += 1)}`
+    if (startedAt !== undefined) {
+      try {
+        const began = startedAt
+        await update($, inflight, list => [
+          ...list,
+          { key: flightKey, actor: id ?? MAIN_ACTOR, source, tool, startedAt: began },
+        ])
+      } catch {
+        // bookkeeping only
+      }
+    }
+
     let ok = true
     try {
       const out = await next(e)
@@ -194,10 +215,15 @@ export const register: Register = on => {
       throw err
     } finally {
       try {
+        await update($, inflight, list => list.filter(f => f.key !== flightKey))
+      } catch {
+        // bookkeeping only
+      }
+      try {
         if (startedAt !== undefined) {
           const began = startedAt
           const ms = Math.max(0, (await $.clock.now()) - began)
-          const ev = { ts: began, source, isMain: id === undefined, tool, desc, ms, ok }
+          const ev = { ts: began, actor: id ?? MAIN_ACTOR, source, isMain: id === undefined, tool, desc, ms, ok }
           await update($, events, list => addEvent(list, ev))
           if (id === undefined) {
             await update($, main, m => ({
@@ -270,6 +296,7 @@ export const register: Register = on => {
         agents: await read($, agents),
         main: await read($, main),
         events: await read($, events),
+        inflight: await read($, inflight),
       },
       now,
     )

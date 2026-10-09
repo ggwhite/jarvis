@@ -1,10 +1,11 @@
-import type { CrewAgent, CrewEvent, CrewMain } from '../types'
+import type { CrewAgent, CrewEvent, CrewInflight, CrewMain } from '../types'
 
 export const MAX_AGENTS = 50
 export const CHAIN_WARN = 4
 export const STALE_MS = 10 * 60 * 1000
 export const MAX_EVENTS = 200
 export const MAIN_SOURCE = '主線'
+export const MAIN_ACTOR = 'main'
 export const LOOP_FAILS = 3
 export const STUCK_MS = 5 * 60 * 1000
 export const PACE_BUCKETS = 10
@@ -356,24 +357,52 @@ export function paceBuckets(events: readonly CrewEvent[], now: number): number[]
   return out
 }
 
-// loop: the latest LOOP_FAILS events are the same tool failing. stuck: something is
-// running (`activeSince` is when the latest run began, undefined when nothing runs)
-// and nothing has finished or begun for STUCK_MS. loop wins over stuck.
+export type HealthScope = {
+  // tool calls that started and have not returned
+  inFlight?: number
+  // ids of the subagents that are still running
+  liveAgents?: ReadonlySet<string>
+}
+
+// One executor's own events, oldest first. The main loop is one executor; each subagent
+// is another, by agentId, so two workers never merge.
+function looping(events: readonly CrewEvent[], live: ReadonlySet<string>): boolean {
+  const byActor = new Map<string, CrewEvent[]>()
+  for (const ev of events) {
+    if (!ev.isMain && !live.has(ev.actor)) continue
+    const key = `${ev.isMain ? 'm' : 's'}:${ev.actor}`
+    const list = byActor.get(key)
+    if (list) list.push(ev)
+    else byActor.set(key, [ev])
+  }
+  for (const list of byActor.values()) {
+    const tail = list.slice(-LOOP_FAILS)
+    const first = tail[0]
+    if (
+      first !== undefined &&
+      tail.length === LOOP_FAILS &&
+      tail.every(ev => !ev.ok && ev.tool === first.tool)
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+// loop: one executor's own latest LOOP_FAILS events are the same tool failing; only the
+// main loop and running subagents count, so a finished subagent leaves no loop behind.
+// stuck: something is running (`activeSince` is when the latest run began, undefined
+// when nothing runs), no tool call is in flight, and nothing has finished or begun for
+// STUCK_MS. loop wins over stuck.
 export function healthOf(
   events: readonly CrewEvent[],
   now: number,
   activeSince: number | undefined,
+  scope: HealthScope = {},
 ): Health {
-  const tail = events.slice(-LOOP_FAILS)
-  const first = tail[0]
-  if (
-    first !== undefined &&
-    tail.length === LOOP_FAILS &&
-    tail.every(ev => !ev.ok && ev.tool === first.tool)
-  ) {
-    return 'loop'
-  }
+  if (looping(events, scope.liveAgents ?? new Set())) return 'loop'
   if (activeSince === undefined) return 'ok'
+  if ((scope.inFlight ?? 0) > 0) return 'ok'
   const last = events.reduce((m, ev) => Math.max(m, ev.ts + ev.ms), activeSince)
   return now - last > STUCK_MS ? 'stuck' : 'ok'
 }
@@ -432,6 +461,7 @@ export type CrewState = {
   agents: readonly CrewAgent[]
   main: CrewMain
   events: readonly CrewEvent[]
+  inflight?: readonly CrewInflight[]
 }
 
 // When the latest running thing began: the main turn, or a running subagent.
@@ -442,7 +472,10 @@ export function activeSinceOf(state: CrewState): number | undefined {
 }
 
 export function healthOfState(state: CrewState, now: number): Health {
-  return healthOf(state.events, now, activeSinceOf(state))
+  return healthOf(state.events, now, activeSinceOf(state), {
+    inFlight: state.inflight?.length ?? 0,
+    liveAgents: new Set(runningOf(state.agents).map(a => a.id)),
+  })
 }
 
 // Everything the layout draws, computed from the stored state at `now`.
