@@ -4,7 +4,9 @@ import type { CrewAgent, CrewEvent, CrewInflight, CrewPage } from '../types'
 import {
   CHAIN_WARN,
   FAMILY_COLOR,
+  FAMILY_NAME,
   MAX_EVENTS,
+  MAX_NUMBERED,
   SLOW_MS,
   barLen,
   cellWidth,
@@ -23,6 +25,7 @@ import {
   summaryLine,
   tokenTotal,
   tokensOf,
+  WORKFLOW_TYPE,
 } from './crew'
 import type { Cockpit, Health, ListUnit, ModelShare, Role, RoleStat } from './crew'
 
@@ -31,12 +34,18 @@ export const WIDE_COLS = 120
 // Below this the stats page stacks the model and savings cards.
 export const TINY_COLS = 64
 export const MIN_EVENT_ROWS = 4
-// Events the now page shows, newest last.
-export const RECENT_EVENTS = 5
 // Cells in the main chain bar: full at CHAIN_WARN calls.
 const CHAIN_BAR = 16
+// The least the now page gives the finished subagents (a workflow run is one unit) and
+// the recent events; rows left over go to the finished ones first, then the events.
+export const MIN_FINISHED = 3
+export const MIN_RECENT = 3
+// From this many columns a model badge carries its version: `[Sonnet 5.5]`.
+export const BADGE_FULL_COLS = 90
 // Cells a plain Button's hotkey takes before its label: `1: `.
 const HOTKEY_W = 3
+// The most rows a page is drawn for, whatever the room says.
+const MAX_ROWS = 500
 // Cells a chrome Button adds around its label: `[ ` and ` ]`.
 const BUTTON_CHROME = 4
 
@@ -70,15 +79,25 @@ const HEALTH_COLOR: Record<Health, string> = { ok: 'green', loop: 'red', stuck: 
 
 const HEALTH_TEXT: Record<Health, string> = { ok: '✓ 正常', loop: '⚠ 可能在繞圈', stuck: '⚠ 可能卡住' }
 
-const SOURCE_COLOR: Record<Role, string> = {
+// One color per role wherever a subagent's type is drawn; the main loop is Opus yellow.
+export const ROLE_COLOR: Record<Role, string> = {
   Explore: 'cyan',
   clerk: 'green',
   worker: 'blue',
   verifier: 'magenta',
   fork: 'white',
-  workflow: 'gray',
+  workflow: '#f472b6',
   other: 'gray',
 }
+export const MAIN_COLOR = FAMILY_COLOR.opus
+
+// The frame colors of the now, log and detail pages' cards.
+const LIST_COLOR = '#8b9cf6'
+const EVENT_COLOR = 'cyan'
+const FLIGHT_COLOR = 'yellow'
+const IDLE_COLOR = 'gray'
+
+const roleColor = (type: string): string => ROLE_COLOR[roleOf(type)]
 
 const TABS: { page: CrewPage; hotkey: string; label: string }[] = [
   { page: 'now', hotkey: 'n', label: '現況' },
@@ -87,6 +106,8 @@ const TABS: { page: CrewPage; hotkey: string; label: string }[] = [
 ]
 
 const BLANK: Seg[] = [{ t: ' ' }]
+
+const typeLabel = (type: string): string => (type === WORKFLOW_TYPE ? 'workflow' : type)
 
 const sp = (n: number): Seg => ({ t: ' '.repeat(Math.max(0, n)) })
 
@@ -158,7 +179,7 @@ export function roleStatLines(r: RoleStat, format: RoleFormat): string[] {
 }
 
 // The fewest rows of role boxes, `inner` cells across, whose text fits each box inside
-// its border; on one row the full line keeps a cell of room either side.
+// its border; the full line keeps a cell of room either side.
 export function roleLayout(roles: readonly RoleStat[], inner: number): RoleLayout {
   const count = Math.max(1, roles.length)
   const need = (format: RoleFormat) =>
@@ -173,7 +194,6 @@ export function roleLayout(roles: readonly RoleStat[], inner: number): RoleLayou
     const widths = splitCols(inner, perRow)
     const boxInner = Math.min(...widths) - 2
     for (const format of ['full', 'two', 'compact'] as const) {
-      if (rows > 1 && format === 'full') continue
       if (need(format) <= boxInner) return { perRow, widths, format, fits: true }
     }
   }
@@ -182,7 +202,9 @@ export function roleLayout(roles: readonly RoleStat[], inner: number): RoleLayou
 
 export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const { Box, Text, Button } = ui
-  const { cols, rows } = ctx
+  const cols = ctx.cols
+  // a room the surface could not measure is drawn as if 40 rows tall
+  const rows = Number.isFinite(ctx.rows) && ctx.rows > 0 ? Math.min(ctx.rows, MAX_ROWS) : 40
   const wide = cols >= WIDE_COLS
   const tiny = cols < TINY_COLS
 
@@ -219,14 +241,37 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const heightOf = (spec: CardSpec) =>
     spec.lines.reduce((n, l) => n + (Array.isArray(l) ? 1 : l.h), 2)
 
-  // Cards on one row, as tall as the tallest.
-  const cardRow = (specs: CardSpec[]): Block => {
+  // The card `h` rows tall, the room it gains split above and below what follows its title.
+  const stretched = (spec: CardSpec, h: number): CardSpec => {
+    const extra = Math.max(0, h - heightOf(spec))
+    const [head, ...rest] = spec.lines
+    const top = Math.floor(extra / 2)
+    const blank = (n: number): Line[] => Array.from({ length: n }, () => BLANK)
+    return { ...spec, lines: [...(head ? [head] : []), ...blank(top), ...rest, ...blank(extra - top)] }
+  }
+
+  // Cards stacked in one column `height` rows tall: the last one takes the rows left over.
+  const column = (specs: CardSpec[], height: number): RenderElement => {
+    const used = specs.slice(0, -1).reduce((n, x) => n + heightOf(x), 0)
+    return (
+      <Box flexDirection="column">
+        {specs.map((x, i) => {
+          const last = i === specs.length - 1
+          const spec = last ? stretched(x, height - used) : x
+          return card(spec, heightOf(spec)).node
+        })}
+      </Box>
+    )
+  }
+
+  // Cards on one row, as tall as the tallest; `center` sets each one's body in its middle.
+  const cardRow = (specs: CardSpec[], center = false): Block => {
     const tall = Math.max(...specs.map(heightOf))
     return {
       h: tall,
       node: (
         <Box flexDirection="row" gap={1}>
-          {specs.map(s => card(s, tall).node)}
+          {specs.map(s => card(center ? stretched(s, tall) : s, tall).node)}
         </Box>
       ),
     }
@@ -234,9 +279,16 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   const title = (text: string, color: string): Seg => ({ t: text, color, bold: true })
 
+  // the model as a badge: `[Sonnet 5.5]`, or below BADGE_FULL_COLS the bare family name
+  const badgeText = (model: string): string => {
+    if (cols >= BADGE_FULL_COLS) return `[${shortModel(model)}]`
+    const family = nameFamilyOf(model)
+    return family ? FAMILY_NAME[family] : fitCells(shortModel(model), 8)
+  }
+
   const badge = (model: string): Seg => {
     const family = nameFamilyOf(model)
-    return family ? { t: `[${shortModel(model)}]`, color: FAMILY_COLOR[family] } : { t: `[${shortModel(model)}]`, dim: true }
+    return family ? { t: badgeText(model), color: FAMILY_COLOR[family] } : { t: badgeText(model), dim: true }
   }
 
   const listed = [...view.running, ...view.stale, ...view.finished]
@@ -302,19 +354,24 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   // ---- 事件 ---------------------------------------------------------------
 
-  const eventLine = (ev: CrewEvent, inner: number): Seg[] => {
+  // The tool column: as wide as the widest tool listed, 4 to 12 cells.
+  const toolWidth = (tools: readonly string[]) => Math.min(12, Math.max(4, ...tools.map(cellWidth)))
+
+  // `withSource` false leaves out who ran the call: the detail page's events are all one agent's
+  const eventLine = (ev: CrewEvent, inner: number, toolW: number, withSource: boolean): Seg[] => {
     const timeW = 8
-    const srcW = 8
-    const toolW = 12
+    const srcW = withSource ? 8 : 0
     const durW = 6
     const markW = 3
-    const descW = Math.max(4, inner - (timeW + 1 + srcW + 1 + toolW + 1) - (1 + durW + 1 + markW))
+    const descW = Math.max(4, inner - (timeW + 1 + (withSource ? srcW + 1 : 0) + toolW + 1) - (1 + durW + 1 + markW))
     const dur = eventDuration(ev.ms)
+    const source: Seg[] = withSource
+      ? [{ t: padCells(typeLabel(ev.source), srcW), color: ev.isMain ? MAIN_COLOR : roleColor(ev.source), bold: ev.isMain }, sp(1)]
+      : []
     return [
       { t: fmtClock(ev.ts), dim: true },
       sp(1),
-      { t: padCells(ev.source, srcW), color: ev.isMain ? 'yellow' : SOURCE_COLOR[roleOf(ev.source)], bold: ev.isMain },
-      sp(1),
+      ...source,
       { t: padCells(ev.tool, toolW), bold: true },
       sp(1),
       { t: padCells(ev.desc, descW), ...(ev.ok ? {} : { color: 'red' }) },
@@ -325,12 +382,21 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     ]
   }
 
-  // A card of events, the newest `room - 3` of `list` at the bottom.
-  const eventCard = (head: Seg[], list: readonly CrewEvent[], room: number, empty: string): Block => {
+  // A card of events, the newest `room - 3` of `list` at the bottom; `fill` makes it
+  // `room` rows tall however few there are.
+  const eventCard = (
+    head: Seg[],
+    list: readonly CrewEvent[],
+    room: number,
+    empty: string,
+    fill: boolean,
+    withSource = true,
+  ): Block => {
     const inner = cols - 4
     const shown = list.slice(-Math.max(1, room - 3))
-    const body: Line[] = shown.length === 0 ? [[{ t: empty, dim: true }]] : shown.map(ev => eventLine(ev, inner))
-    return card({ w: cols, color: 'white', lines: [head, ...body] }, body.length + 3)
+    const toolW = toolWidth(shown.map(ev => ev.tool))
+    const body: Line[] = shown.length === 0 ? [[{ t: empty, dim: true }]] : shown.map(ev => eventLine(ev, inner, toolW, withSource))
+    return card({ w: cols, color: EVENT_COLOR, lines: [head, ...body] }, fill ? Math.max(room, body.length + 3) : body.length + 3)
   }
 
   // ---- 主線 -------------------------------------------------------------
@@ -385,22 +451,18 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return {
       w,
       color: 'cyan',
-      lines: [
-        leftRight(head, [state], inner),
-        BLANK,
-        chain,
-        BLANK,
-        outcome('成功', m.ok, 'green'),
-        outcome('失敗', m.fail, 'red'),
-        BLANK,
-        last,
-      ],
+      // the wide card sits beside the taller dispatch flow and spaces its parts out
+      lines: wide
+        ? [leftRight(head, [state], inner), BLANK, chain, BLANK, outcome('成功', m.ok, 'green'), outcome('失敗', m.fail, 'red'), BLANK, last]
+        : [leftRight(head, [state], inner), chain, outcome('成功', m.ok, 'green'), outcome('失敗', m.fail, 'red'), last],
     }
   }
 
   // ---- 派工流程 ---------------------------------------------------------
 
-  const dispatchSpec = (w: number): CardSpec => {
+  // `extra`: rows to grow by, kept as even space above and below the flow; an odd row
+  // lengthens the arrow from the main session.
+  const dispatchSpec = (w: number, extra = 0): CardSpec => {
     const inner = w - 4
     const roles = view.dispatch.filter(
       r => (r.role !== 'other' && r.role !== 'workflow') || r.running + r.done + r.failed > 0,
@@ -412,7 +474,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       const active = r.running > 0
       const iw = bw - 2
       const tone: Partial<Seg> = active ? { color: 'yellow', bold: true } : { dim: true }
-      const name: Seg[] = [{ t: r.label, bold: true }]
+      const name: Seg[] = [{ t: r.label, bold: true, color: ROLE_COLOR[r.role] }]
       if (r.failed > 0) name.push({ t: ` ✗${r.failed}`, color: 'red' })
       const stats = roleStatLines(r, layout.format)
       const stat: Seg[][] =
@@ -459,13 +521,35 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return {
       w,
       color: 'yellow',
-      lines: [[title('派工流程', 'yellow')], top, arrow, roleRows, arrow, centered([{ t: '回主線', bold: true }], inner)],
+      lines: [
+        [title('派工流程', 'yellow')],
+        ...Array.from({ length: Math.floor(extra / 2) }, () => BLANK),
+        top,
+        ...(extra % 2 === 1 ? [centered([{ t: '│', color: 'yellow' }], inner)] : []),
+        arrow,
+        roleRows,
+        arrow,
+        centered([{ t: '回主線', bold: true }], inner),
+        ...Array.from({ length: Math.floor(extra / 2) }, () => BLANK),
+      ],
     }
   }
 
   // ---- 模型、省錢 ---------------------------------------------------------
 
-  const modelSpec = (w: number): CardSpec => {
+  const sum = view.summary
+  const savedPct = sum.savedPct === undefined ? undefined : Math.round(sum.savedPct)
+  const savedBig: Seg =
+    savedPct === undefined
+      ? { t: '未計價', dim: true, bold: true }
+      : savedPct >= 0
+        ? { t: `省${savedPct}%`, color: 'green', bold: true }
+        : { t: `多花${-savedPct}%`, color: 'red', bold: true }
+  const savedSub: Seg =
+    savedPct === undefined ? { t: '沒有可計價的模型', dim: true } : { t: `≈${fmtUsd(sum.cost)} vs ${fmtUsd(sum.opusCost)}` }
+
+  // `withSavings`: the savings sit under the shares, a rule between, in place of their own card
+  const modelSpec = (w: number, withSavings = false): CardSpec => {
     const inner = w - 4
     const labelW = 7
     const pctW = 4
@@ -485,31 +569,28 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     }
     const body: Seg[][] =
       view.models.length === 0 ? [[{ t: '還沒有 subagent', dim: true }]] : view.models.map(row)
-    return { w, color: 'blue', lines: [[title('模型', 'blue')], ...body] }
+    const savings: Seg[][] = withSavings
+      ? [
+          [{ t: '─'.repeat(inner), dim: true }],
+          leftRight(
+            [title('省錢', 'magenta'), sp(2), savedBig],
+            [savedPct === undefined ? savedSub : { t: `≈${fmtUsd(sum.cost)} vs Opus ${fmtUsd(sum.opusCost)}` }],
+            inner,
+          ),
+        ]
+      : []
+    return { w, color: 'blue', lines: [[title('模型', 'blue')], ...body, ...savings] }
   }
 
-  const sum = view.summary
   const saveSpec = (w: number): CardSpec => {
     const inner = w - 4
-    const pct = sum.savedPct === undefined ? undefined : Math.round(sum.savedPct)
-    const big: Seg =
-      pct === undefined
-        ? { t: '未計價', dim: true, bold: true }
-        : pct >= 0
-          ? { t: `省${pct}%`, color: 'green', bold: true }
-          : { t: `多花${-pct}%`, color: 'red', bold: true }
-    const sub: Seg =
-      pct === undefined
-        ? { t: '沒有可計價的模型', dim: true }
-        : { t: `≈${fmtUsd(sum.cost)} vs ${fmtUsd(sum.opusCost)}` }
     return {
       w,
       color: 'magenta',
       lines: [
         [title('省錢', 'magenta')],
-        BLANK,
-        centered([big], inner),
-        centered([sub], inner),
+        centered([savedBig], inner),
+        centered([savedSub], inner),
         centered([{ t: '對比全程 Opus', dim: true }], inner),
       ],
     }
@@ -517,42 +598,108 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   // ---- 子代理清單 ---------------------------------------------------------
 
-  const agentBlock = (room: number): Block => {
-    const inner = cols - 4
-    const head: Line = [title('子代理', 'gray')]
-    if (view.sections.length === 0) {
-      return cardRow([{ w: cols, color: 'gray', lines: [head, [{ t: '還沒有派工。派出 subagent 後這裡會即時顯示。', dim: true }]] }])
-    }
-    const shown = listed
-    const typeW = Math.max(6, Math.min(15, Math.max(...shown.map(a => cellWidth(a.type)))))
-    const badgeW = Math.max(...shown.map(a => cellWidth(`[${shortModel(a.model)}]`)))
-    const numberOf = new Map(view.numbered.map((a, i) => [a.id, i + 1]))
+  type Group = Extract<ListUnit, { kind: 'workflow' }>
+  type Item =
+    | { kind: 'section'; seg: Seg }
+    | { kind: 'agent'; a: CrewAgent; member?: 'mid' | 'last' }
+    | { kind: 'group'; u: Group }
+    | { kind: 'more'; n: number }
 
-    const row = (a: CrewAgent, indent: number): Line => {
-      let icon: Seg
-      let right: Seg[]
-      let tone: Partial<Seg>
-      if (a.status === 'running') {
-        icon = { t: ctx.frame, color: 'cyan' }
-        right = [...(a.tool !== '' ? [{ t: `${a.tool} `, dim: true }] : []), { t: fmtDur(elapsedMs(a, view.now)) }]
-        tone = {}
-      } else if (a.status === 'stale') {
-        icon = { t: '?', color: 'gray' }
-        right = [{ t: `失聯 · ${fmtDur(elapsedMs(a, view.now))}`, color: 'gray' }]
-        tone = { color: 'gray' }
-      } else {
-        icon = a.status === 'done' ? { t: '✓', color: 'green' } : { t: '✗', color: 'red' }
-        right = [{ t: `${fmtDur(elapsedMs(a, view.now))} · ${fmtK(tokenTotal(tokensOf(a)))}`, dim: true }]
-        tone = { dim: true }
+  const finishedUnits = view.sections.find(x => x.status === 'finished')?.units ?? []
+  const agentsIn = (u: ListUnit) => (u.kind === 'agent' ? 1 : u.agents.length)
+
+  // The list's rows, top to bottom, with the latest `shownFinished` finished units.
+  const listItems = (shownFinished: number): Item[] => {
+    const label: Record<string, Seg> = {
+      running: { t: `執行中 (${view.running.length})`, dim: true },
+      stale: { t: `失聯 (${view.stale.length})`, color: 'gray' },
+      finished: { t: `已完成 (${view.finished.length})`, dim: true },
+    }
+    const items: Item[] = []
+    for (const section of view.sections) {
+      // one section needs no header: the title's counts already say what it is
+      if (view.sections.length > 1) items.push({ kind: 'section', seg: label[section.status] ?? { t: '' } })
+      const cap = section.status === 'finished' ? shownFinished : Infinity
+      for (const u of section.units.slice(0, cap)) {
+        if (u.kind === 'agent') {
+          items.push({ kind: 'agent', a: u.agent })
+        } else {
+          items.push({ kind: 'group', u })
+          u.agents.forEach((a, i) => items.push({ kind: 'agent', a, member: i === u.agents.length - 1 ? 'last' : 'mid' }))
+        }
       }
-      const width = inner - HOTKEY_W
-      const lead: Seg[] = [sp(indent), icon, sp(1), { t: padCells(a.type, typeW), bold: true, ...tone }, sp(1)]
+      const hidden = section.units.slice(cap).reduce((n, u) => n + agentsIn(u), 0)
+      if (hidden > 0) items.push({ kind: 'more', n: hidden })
+    }
+    return items
+  }
+
+  // rows the list card takes with `shownFinished` finished units: its border, title and rows
+  const listHeight = (shownFinished: number) =>
+    view.sections.length === 0 ? 4 : listItems(shownFinished).length + 3
+
+  const agentBlock = (shownFinished: number, room: number): Block => {
+    const inner = cols - 4
+    const done = view.finished.filter(a => a.status === 'done').length
+    const failed = view.finished.length - done
+    const counts: Seg[] = [
+      ...(view.running.length > 0 ? [{ t: `▶${view.running.length} 執行中`, color: 'cyan' }] : []),
+      ...(done > 0 ? [{ t: `✓${done} 完成`, color: 'green' }] : []),
+      ...(failed > 0 ? [{ t: `✗${failed} 失敗`, color: 'red' }] : []),
+      ...(view.stale.length > 0 ? [{ t: `?${view.stale.length} 失聯`, color: 'gray' }] : []),
+    ]
+    const right = counts.flatMap((x, i): Seg[] => (i === 0 ? [x] : [{ t: ' · ', dim: true }, x]))
+    const head: Line = leftRight([title('子代理', LIST_COLOR)], right, inner)
+    if (view.sections.length === 0) {
+      return cardRow([{ w: cols, color: LIST_COLOR, lines: [head, [{ t: '還沒有派工。派出 subagent 後這裡會即時顯示。', dim: true }]] }])
+    }
+
+    const items = listItems(shownFinished)
+    const agentsShown = items.flatMap(x => (x.kind === 'agent' ? [x] : []))
+    const nameW = Math.min(15, Math.max(4, ...agentsShown.filter(x => !x.member).map(x => cellWidth(typeLabel(x.a.type)))))
+    const badgeW = Math.max(...agentsShown.map(x => cellWidth(badgeText(x.a.model))))
+    const durOf = (a: CrewAgent) => fmtDur(elapsedMs(a, view.now))
+    const metaOf = (a: CrewAgent) =>
+      a.status === 'running' ? fitCells(a.tool, 8) : a.status === 'stale' ? '失聯' : fmtK(tokenTotal(tokensOf(a)))
+    const durW = Math.max(...agentsShown.map(x => cellWidth(durOf(x.a))))
+    const metaW = Math.max(...agentsShown.map(x => cellWidth(metaOf(x.a))))
+    const width = inner - HOTKEY_W
+    const descW = Math.max(4, width - (1 + 1 + nameW + 1 + badgeW + 1) - (1 + durW + 2 + metaW))
+
+    let number = 0
+    const row = (a: CrewAgent, member?: 'mid' | 'last'): Line => {
+      const icon: Seg =
+        a.status === 'running'
+          ? { t: ctx.frame, color: 'cyan' }
+          : a.status === 'stale'
+            ? { t: '?', color: 'gray' }
+            : a.status === 'done'
+              ? { t: '✓', color: 'green' }
+              : { t: '✗', color: 'red' }
+      const tone: Partial<Seg> = a.status === 'running' ? {} : a.status === 'stale' ? { color: 'gray' } : { dim: true }
+      const name: Seg = member
+        ? { t: padCells(member === 'last' ? '└─' : '├─', nameW), color: ROLE_COLOR.workflow }
+        : { t: padCells(typeLabel(a.type), nameW), bold: true, color: a.status === 'stale' ? 'gray' : roleColor(a.type) }
       const b = badge(a.model)
-      lead.push({ ...b, t: padCells(b.t, badgeW), ...(tone.color ? tone : {}) }, sp(1))
-      const descW = Math.max(4, width - segsWidth(lead) - segsWidth(right) - 1)
-      const segs = clip([...lead, { t: padCells(a.description, descW), ...tone }, sp(1), ...right], width)
-      const n = numberOf.get(a.id)
-      if (n === undefined) return lineNode([sp(HOTKEY_W), ...segs]) as unknown as Line
+      const segs = clip(
+        [
+          icon,
+          sp(1),
+          name,
+          sp(1),
+          { ...b, t: padCells(b.t, badgeW), ...(tone.color ? tone : {}) },
+          sp(1),
+          { t: padCells(a.description, descW), ...tone },
+          sp(1),
+          { t: padCells(durOf(a), durW, 'right'), ...(a.status === 'running' ? {} : tone) },
+          sp(2),
+          { t: padCells(metaOf(a), metaW, 'right'), ...(a.status === 'stale' ? { color: 'gray' } : { dim: true }) },
+        ],
+        width,
+      )
+      if (number >= MAX_NUMBERED) return [sp(HOTKEY_W), ...segs]
+      number += 1
+      const n = number
       return {
         h: 1,
         node: (
@@ -565,8 +712,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       }
     }
 
-    const groupHead = (u: Extract<ListUnit, { kind: 'workflow' }>): Seg[] => {
-      const count = (s: CrewAgent['status']) => u.agents.filter(a => a.status === s).length
+    const groupHead = (u: Group): Seg[] => {
+      const count = (st: CrewAgent['status']) => u.agents.filter(a => a.status === st).length
       const parts = [
         `${u.agents.length} 個`,
         ...([
@@ -576,35 +723,33 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
           ['失聯', count('stale')],
         ] as const)
           .filter(([, n]) => n > 0)
-          .map(([label, n]) => `${label} ${n}`),
+          .map(([text, n]) => `${text} ${n}`),
       ]
       const id = u.runId === '' ? '(無 id)' : fitCells(u.runId, 8)
-      return [sp(HOTKEY_W), { t: 'workflow', bold: true }, { t: ` ${id} · ${parts.join(' · ')}`, dim: true }]
+      return [
+        sp(HOTKEY_W),
+        { t: '▾ ', color: ROLE_COLOR.workflow },
+        { t: 'workflow', bold: true, color: ROLE_COLOR.workflow },
+        { t: ` ${id}`, color: 'gray' },
+        { t: ` · ${parts.join(' · ')}`, dim: true },
+      ]
     }
 
-    const label: Record<string, Seg> = {
-      running: { t: `執行中 (${view.running.length})`, dim: true },
-      stale: { t: `失聯 (${view.stale.length})`, color: 'gray' },
-      finished: { t: `已完成 (${view.finished.length})`, dim: true },
-    }
-    const body: Line[] = []
-    for (const section of view.sections) {
-      body.push([label[section.status] ?? { t: '' }])
-      for (const u of section.units) {
-        if (u.kind === 'agent') {
-          body.push(row(u.agent, 0))
-        } else {
-          body.push(groupHead(u))
-          for (const a of u.agents) body.push(row(a, 2))
-        }
-      }
-    }
+    const body: Line[] = items.map(x =>
+      x.kind === 'section'
+        ? [x.seg]
+        : x.kind === 'group'
+          ? groupHead(x.u)
+          : x.kind === 'more'
+            ? [sp(HOTKEY_W), { t: `… 還有 ${x.n} 個`, dim: true }]
+            : row(x.a, x.member),
+    )
     const fit = Math.max(4, room - 3)
     const lines =
       body.length > fit
-        ? [...body.slice(0, fit - 1), [{ t: `… 還有 ${body.length - fit + 1} 列未顯示`, dim: true }] as Seg[]]
+        ? [...body.slice(0, fit - 1), [sp(HOTKEY_W), { t: `… 還有 ${body.length - fit + 1} 列未顯示`, dim: true }] as Seg[]]
         : body
-    return cardRow([{ w: cols, color: 'gray', lines: [head, ...lines] }])
+    return cardRow([{ w: cols, color: LIST_COLOR, lines: [head, ...lines] }])
   }
 
   // ---- 進行中 -------------------------------------------------------------
@@ -612,20 +757,21 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const inflightBlock = (): Block => {
     const inner = cols - 4
     const list = view.inflight
+    const color = list.length > 0 ? FLIGHT_COLOR : IDLE_COLOR
     const head = leftRight(
-      [title('進行中', 'green')],
+      [title('進行中', color)],
       list.length > 0 ? [{ t: `${list.length} 個`, dim: true }] : [],
       inner,
     )
     const srcW = 8
-    const toolW = 12
+    const toolW = toolWidth(list.map(f => f.tool))
     const durW = 6
     const descW = Math.max(4, inner - (srcW + 1 + toolW + 1) - (1 + durW))
     const line = (f: CrewInflight): Seg[] => {
       const isMain = f.actor === 'main'
       const dur = eventDuration(view.now - f.startedAt)
       return [
-        { t: padCells(f.source, srcW), color: isMain ? 'yellow' : SOURCE_COLOR[roleOf(f.source)], bold: isMain },
+        { t: padCells(typeLabel(f.source), srcW), color: isMain ? MAIN_COLOR : roleColor(f.source), bold: isMain },
         sp(1),
         { t: padCells(f.tool, toolW), bold: true },
         sp(1),
@@ -636,14 +782,17 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     }
     const body: Line[] =
       list.length === 0 ? [[{ t: '目前沒有執行中的工具呼叫', dim: true }]] : list.map(line)
-    return cardRow([{ w: cols, color: 'green', lines: [head, ...body] }])
+    return cardRow([{ w: cols, color, lines: [head, ...body] }])
   }
 
   // ---- 細節頁 -------------------------------------------------------------
 
+  // a token count: 1.2k, 61k, 2.4M
+  const tokens = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : fmtK(n))
+
   const detailBlock = (a: CrewAgent): Block => {
-    const inner = cols - 4
     const labelW = 9
+    const color = roleColor(a.type)
     const field = (label: string, value: Seg[]): Seg[] => [{ t: padCells(label, labelW), dim: true }, ...value]
     const status: Seg[] =
       a.status === 'running'
@@ -654,20 +803,38 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
             ? [{ t: '✗ 失敗', color: 'red' }]
             : [{ t: '? 失聯', color: 'gray' }]
     const lines: Line[] = [
-      leftRight([title('子代理', 'gray'), { t: ` · ${a.type}`, bold: true }], status, inner),
-      field('類型', [{ t: a.type, bold: true }]),
-      field('模型', [badge(a.model)]),
+      [title('子代理', color), { t: ` · ${typeLabel(a.type)}`, bold: true, color }],
+      field('類型', [{ t: a.type, bold: true, color }]),
+      field('模型', [{ ...badge(a.model), t: shortModel(a.model) }]),
       field('狀態', status),
       field('任務', [{ t: a.description }]),
       field('開始', [{ t: fmtClock(a.runStartedAt) }]),
       field('耗時', [{ t: fmtDur(elapsedMs(a, view.now)) }]),
-      field('Token', [{ t: `輸入 ${fmtK(a.input)} · 輸出 ${fmtK(a.output)}` }]),
+      field('Token', [{ t: `輸入 ${tokens(a.input)} · 輸出 ${tokens(a.output)}` }]),
+      // cache traffic is most of a subagent's input: shown so the counts match the cost
+      ...(a.cacheRead + a.cacheWrite > 0
+        ? [
+            field('快取', [
+              {
+                t: [
+                  ...(a.cacheRead > 0 ? [`讀取 ${tokens(a.cacheRead)}`] : []),
+                  ...(a.cacheWrite > 0 ? [`寫入 ${tokens(a.cacheWrite)}`] : []),
+                ].join(' · '),
+              },
+            ]),
+          ]
+        : []),
     ]
     if (a.runId !== undefined) {
       const id = a.runId === '' ? '(無 id)' : a.runId
-      lines.push(field('Workflow', [{ t: id }, ...(a.agentIndex !== undefined ? [{ t: ` · 第 ${a.agentIndex} 個`, dim: true }] : [])]))
+      lines.push(
+        field('Workflow', [
+          { t: id, color: ROLE_COLOR.workflow },
+          ...(a.agentIndex !== undefined ? [{ t: ` · 第 ${a.agentIndex} 個`, dim: true }] : []),
+        ]),
+      )
     }
-    return cardRow([{ w: cols, color: 'gray', lines }])
+    return cardRow([{ w: cols, color, lines }])
   }
 
   // ---- 組版 ---------------------------------------------------------------
@@ -677,44 +844,63 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   let footer: RenderElement | undefined
 
   if (page === 'now') {
+    // the least each card needs, then the rows left over: finished subagents first, then events
     const flight = inflightBlock()
-    const recent = view.events.slice(-RECENT_EVENTS)
-    const recentRoom = Math.max(1, recent.length) + 3
-    blocks.push(agentBlock(left() - flight.h - recentRoom), flight)
-    blocks.push(eventCard([title('最近事件', 'white')], recent, recentRoom, '還沒有工具呼叫'))
+    const total = view.events.length
+    const recentH = (n: number) => Math.max(1, n) + 3
+    const room = left() - flight.h
+    let shown = Math.min(finishedUnits.length, MIN_FINISHED)
+    let recent = Math.min(total, MIN_RECENT)
+    while (shown < finishedUnits.length && listHeight(shown + 1) + recentH(recent) <= room) shown += 1
+    recent = Math.max(recent, Math.min(total, room - listHeight(shown) - 3))
+    blocks.push(agentBlock(shown, room - recentH(recent)), flight)
+    blocks.push(eventCard([title('最近事件', EVENT_COLOR)], view.events.slice(-Math.max(1, recent)), recentH(recent), '還沒有工具呼叫', false))
   } else if (page === 'log') {
     const total = view.events.length
     const list = ctx.paused ? view.events.slice(0, Math.max(0, total - ctx.fresh)) : view.events
     const head = leftRight(
       [
-        title('事件流', 'white'),
+        title('事件流', EVENT_COLOR),
         ...(ctx.paused ? [sp(1), { t: `⏸ 已暫停 · 新增 ${ctx.fresh} 則`, color: 'yellow', bold: true }] : []),
       ],
       [{ t: `${total}/${MAX_EVENTS} 則`, dim: true }],
       cols - 4,
     )
-    blocks.push(eventCard(head, list, Math.max(MIN_EVENT_ROWS + 3, left()), '還沒有工具呼叫'))
+    blocks.push(eventCard(head, list, Math.max(MIN_EVENT_ROWS + 3, left()), '還沒有工具呼叫', true))
   } else if (page === 'detail' && selected) {
     blocks.push(detailBlock(selected))
     const own = view.events.filter(ev => ev.actor === selected.id)
     const head = leftRight(
-      [title('事件流', 'white'), { t: ' · 這個 subagent', dim: true }],
+      [title('事件流', EVENT_COLOR), { t: ' · 這個 subagent', dim: true }],
       [{ t: `${own.length} 則`, dim: true }],
       cols - 4,
     )
-    blocks.push(eventCard(head, own, Math.max(MIN_EVENT_ROWS + 3, left()), '這個 subagent 還沒有工具呼叫'))
+    blocks.push(eventCard(head, own, Math.max(MIN_EVENT_ROWS + 3, left()), '這個 subagent 還沒有工具呼叫', true, false))
   } else {
     if (wide) {
+      // main over model (the savings under its shares) beside the dispatch flow, one height
       const side = Math.max(44, Math.min(64, cols - 115))
-      blocks.push(cardRow([mainSpec(side), dispatchSpec(cols - side - 1)]))
-    } else {
+      const leftSpecs = [mainSpec(side), modelSpec(side, true)]
+      const leftH = leftSpecs.reduce((n, x) => n + heightOf(x), 0)
+      const flow = dispatchSpec(cols - side - 1)
+      const right = dispatchSpec(cols - side - 1, Math.max(0, leftH - heightOf(flow)))
+      const tall = Math.max(leftH, heightOf(right))
+      blocks.push({
+        h: tall,
+        node: (
+          <Box flexDirection="row" gap={1}>
+            {column(leftSpecs, tall)}
+            {column([right], tall)}
+          </Box>
+        ),
+      })
+    } else if (tiny) {
       blocks.push(cardRow([mainSpec(cols)]), cardRow([dispatchSpec(cols)]))
-    }
-    if (tiny) {
       blocks.push(cardRow([modelSpec(cols)]), cardRow([saveSpec(cols)]))
     } else {
+      blocks.push(cardRow([mainSpec(cols)]), cardRow([dispatchSpec(cols)]))
       const [a, b] = splitCols(cols, 2) as [number, number]
-      blocks.push(cardRow([modelSpec(a), saveSpec(b)]))
+      blocks.push(cardRow([modelSpec(a), saveSpec(b)], true))
     }
     footer =
       view.summary.groups.length === 0 ? (

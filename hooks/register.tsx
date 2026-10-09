@@ -338,8 +338,8 @@ export const register: Register = on => {
     )
     const shown = await read($, ui)
     const total = await read($, eventTotal)
-    // a press writes the pane's own state; never while drawing, so never awaited here
-    const setUi = (fn: (u: CrewUi, total: number) => CrewUi) => {
+    // what a press changes, written from its onPress (state is not written while drawing)
+    const setUi = (fn: (u: CrewUi, recorded: number) => CrewUi) => {
       void (async () => {
         try {
           const recorded = await read($, eventTotal)

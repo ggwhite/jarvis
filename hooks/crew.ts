@@ -8,8 +8,6 @@ export const MAIN_SOURCE = '主線'
 export const MAIN_ACTOR = 'main'
 export const LOOP_FAILS = 3
 export const STUCK_MS = 5 * 60 * 1000
-export const PACE_BUCKETS = 10
-export const BUCKET_MS = 60_000
 export const DESC_MAX = 60
 // Subagents on the list that take a digit hotkey to their detail page.
 export const MAX_NUMBERED = 9
@@ -292,6 +290,9 @@ export function summaryLine(sum: Summary): string {
 
 export type Health = 'ok' | 'loop' | 'stuck'
 
+// The type the engine gives a workflow script's agents.
+export const WORKFLOW_TYPE = 'workflow-subagent'
+
 export type Role = 'Explore' | 'clerk' | 'worker' | 'verifier' | 'fork' | 'workflow' | 'other'
 
 export const ROLES: Role[] = ['Explore', 'clerk', 'worker', 'verifier', 'fork', 'workflow', 'other']
@@ -318,6 +319,23 @@ function baseName(path: string): string {
   return parts[parts.length - 1] ?? ''
 }
 
+// A leading `cd <dir> &&` / `cd <dir>;` or `VAR=value ` (or `VAR=value;`), as a shell
+// line begins before its real command.
+const SHELL_PREFIX =
+  /^\s*(?:cd\s+(?:"[^"]*"|'[^']*'|[^\s;&]+)\s*(?:&&|;)|[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s;&]*)(?:\s*(?:&&|;)|\s))\s*/
+
+// The command a shell line runs, its directory changes and variable settings dropped;
+// the line itself when nothing would be left.
+export function commandOf(line: string): string {
+  let rest = line
+  for (let m = SHELL_PREFIX.exec(rest); m && m[0] !== ''; m = SHELL_PREFIX.exec(rest)) {
+    const next = rest.slice(m[0].length)
+    if (next.trim() === '') break
+    rest = next
+  }
+  return rest.trim()
+}
+
 // The short line a tool call shows as in the event stream.
 export function describeCall(tool: string, input: Record<string, unknown>): string {
   switch (tool) {
@@ -325,7 +343,7 @@ export function describeCall(tool: string, input: Record<string, unknown>): stri
       const note = str(input['description']).trim()
       if (note !== '') return truncate(note, DESC_MAX)
       const first = str(input['command']).split('\n').find(l => l.trim() !== '') ?? ''
-      return truncate(first, DESC_MAX)
+      return truncate(commandOf(first), DESC_MAX)
     }
     case 'Read':
     case 'Edit':
@@ -347,19 +365,6 @@ export function describeCall(tool: string, input: Record<string, unknown>): stri
 // Keeps the latest MAX_EVENTS events, oldest first.
 export function addEvent(list: readonly CrewEvent[], ev: CrewEvent): CrewEvent[] {
   return [...list, ev].slice(-MAX_EVENTS)
-}
-
-// Tool calls per minute over the last PACE_BUCKETS minutes, oldest bucket first.
-// A call counts by its start; one older than the window, or later than `now`, is left out.
-export function paceBuckets(events: readonly CrewEvent[], now: number): number[] {
-  const out = Array.from({ length: PACE_BUCKETS }, () => 0)
-  for (const ev of events) {
-    const age = now - ev.ts
-    if (age < 0 || age >= PACE_BUCKETS * BUCKET_MS) continue
-    const idx = PACE_BUCKETS - 1 - Math.floor(age / BUCKET_MS)
-    out[idx] = (out[idx] ?? 0) + 1
-  }
-  return out
 }
 
 export type HealthScope = {
@@ -413,13 +418,16 @@ export function healthOf(
 }
 
 // The Explore / clerk / worker / verifier / fork roles by subagent type; a fork is
-// spawned with the type `fork`. Any other type (general-purpose, Plan, a plugin's) is other.
+// spawned with the type `fork`, a workflow script's agent with WORKFLOW_TYPE. Any other
+// type (general-purpose, Plan, a plugin's) is other.
 export function roleOf(type: string): Role {
   const lower = type.trim().toLowerCase()
+  if (lower === WORKFLOW_TYPE) return 'workflow'
   return ROLES.find(r => r !== 'other' && r !== 'workflow' && r.toLowerCase() === lower) ?? 'other'
 }
 
-// A workflow script's agents count as the workflow role, whatever their type.
+// A workflow script's agents count as the workflow role: by their run, or by the type
+// the engine gives them when the record predates the run being kept.
 export function dispatchRoleOf(a: CrewAgent): Role {
   return a.runId !== undefined ? 'workflow' : roleOf(a.type)
 }
@@ -531,11 +539,6 @@ export function agentSections(agents: readonly CrewAgent[]): ListSection[] {
   }).filter(s => s.units.length > 0)
 }
 
-// Every subagent in the order the list draws it.
-export function listOrder(sections: readonly ListSection[]): CrewAgent[] {
-  return sections.flatMap(s => s.units.flatMap(u => (u.kind === 'agent' ? [u.agent] : u.agents)))
-}
-
 export type CrewState = {
   agents: readonly CrewAgent[]
   main: CrewMain
@@ -572,8 +575,6 @@ export type Cockpit = {
   }
   // the latest MAX_EVENTS tool calls, oldest first
   events: CrewEvent[]
-  // calls per minute for the last 10 minutes, oldest first, length PACE_BUCKETS
-  pace: number[]
   // every role, in ROLES order
   dispatch: RoleStat[]
   // per priced model family, highest cost first; share sums to 1 (all 0 when nothing is priced)
@@ -581,9 +582,8 @@ export type Cockpit = {
   running: CrewAgent[]
   stale: CrewAgent[]
   finished: CrewAgent[]
-  // the subagent list as drawn, and the first MAX_NUMBERED of it, digit 1 first
+  // the subagent list as drawn
   sections: ListSection[]
-  numbered: CrewAgent[]
   // tool calls not yet returned, oldest first
   inflight: CrewInflight[]
   summary: Summary
@@ -591,7 +591,6 @@ export type Cockpit = {
 
 export function buildCockpit(state: CrewState, now: number): Cockpit {
   const m = state.main
-  const sections = agentSections(state.agents)
   return {
     now,
     health: healthOfState(state, now),
@@ -605,14 +604,12 @@ export function buildCockpit(state: CrewState, now: number): Cockpit {
       isRunning: m.isRunning,
     },
     events: [...state.events],
-    pace: paceBuckets(state.events, now),
     dispatch: dispatchStats(state.agents),
     models: modelShares(state.agents),
     running: runningOf(state.agents),
     stale: staleOf(state.agents),
     finished: finishedOf(state.agents),
-    sections,
-    numbered: listOrder(sections).slice(0, MAX_NUMBERED),
+    sections: agentSections(state.agents),
     inflight: [...(state.inflight ?? [])].sort((x, y) => x.startedAt - y.startedAt),
     summary: summarize(state.agents),
   }
@@ -670,26 +667,6 @@ export function padCells(text: string, width: number, align: 'left' | 'right' | 
 export function barLen(value: number, scale: number, width: number): number {
   if (value <= 0 || scale <= 0 || width <= 0) return 0
   return Math.min(width, Math.max(1, Math.round((value / scale) * width)))
-}
-
-const BLOCKS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
-
-// A vertical bar chart `height` rows tall: one string per row, top first, each value a
-// column `barWidth` cells wide and `gap` apart. A zero is a thin ▁ on the bottom row.
-export function paceChart(values: readonly number[], height: number, barWidth = 2, gap = 1): string[] {
-  const peak = Math.max(1, ...values)
-  const steps = height * 8
-  const levels = values.map(v => (v <= 0 ? 0 : Math.max(1, Math.round((v / peak) * steps))))
-  const rows: string[] = []
-  for (let r = height - 1; r >= 0; r -= 1) {
-    const cols = values.map((v, i) => {
-      const level = Math.max(0, Math.min(8, (levels[i] ?? 0) - r * 8))
-      const ch = level > 0 ? (BLOCKS[level - 1] ?? '█') : r === 0 && v <= 0 ? '▁' : ' '
-      return ch.repeat(barWidth)
-    })
-    rows.push(cols.join(' '.repeat(gap)))
-  }
-  return rows
 }
 
 const two = (n: number): string => String(n).padStart(2, '0')

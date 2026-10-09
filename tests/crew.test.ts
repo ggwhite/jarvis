@@ -5,10 +5,12 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { CrewAgent, CrewEvent, CrewInflight, CrewMain } from '../types'
 import {
   MAX_EVENTS,
+  MAX_NUMBERED,
   STALE_MS,
   STUCK_MS,
   addAgent,
   addEvent,
+  agentSections,
   buildCockpit,
   barLen,
   cellWidth,
@@ -17,8 +19,8 @@ import {
   healthOf,
   healthOfState,
   modelShares,
-  paceBuckets,
   roleOf,
+  shareLabel,
   costAt,
   elapsedMs,
   finishTurn,
@@ -29,7 +31,6 @@ import {
   fmtMs,
   markStale,
   padCells,
-  paceChart,
   noteTool,
   shortModel,
   staleOf,
@@ -38,7 +39,7 @@ import {
   summaryLine,
   familyOf,
 } from '../hooks/crew'
-import { MIN_EVENT_ROWS, TINY_COLS, WIDE_COLS } from '../hooks/cockpit'
+import { MIN_EVENT_ROWS, ROLE_COLOR, TINY_COLS, WIDE_COLS } from '../hooks/cockpit'
 import {
   MAX_FAILURES,
   REFRESH_MS,
@@ -402,6 +403,41 @@ const draw = async ($: Engine, rows = 30, cols = 80): Promise<Node> =>
     },
   })) as RenderElement as Node
 
+const PANE_PROPS = (rows = 30, cols = 80) => ({
+  title: 'Crew',
+  isFocused: true,
+  bodyColumns: cols,
+  placement: 'dock' as const,
+  scroll: { offset: 0, bodyRows: rows },
+  view: {},
+})
+
+const mountPane = ($: Engine, rows = 30, cols = 80) =>
+  $.ui.mount({
+    plugin: 'crew',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'crew',
+    props: PANE_PROPS(rows, cols),
+    viewport: { columns: cols + 20, rows: rows + 10 },
+  })
+
+// presses the pane's Button keyed `key`, as a click does
+const press = async ($: Engine, key: string, rows = 30, cols = 80) => {
+  const ui = await mountPane($, rows, cols)
+  await ui.press({ key })
+  await ui.unmount()
+}
+
+// presses the pane's Button whose hotkey is `hotkey`, as the key does while the pane has focus
+const hotkey = async ($: Engine, key: string, rows = 30, cols = 80) => {
+  const ui = await mountPane($, rows, cols)
+  const button = (await ui.findAll({ type: 'Button' })).find(b => b.props['hotkey'] === key)
+  expect(button?.key).toBeDefined()
+  await ui.press({ key: button?.key ?? '' })
+  await ui.unmount()
+}
+
 const spawnInput = (over: { description: string; subagentType: string; id?: string }) => ({
   tool_use_id: over.id ?? 'tu-1',
   prompt: 'p',
@@ -455,9 +491,9 @@ describe('hooks', () => {
     expect(linesOf(await draw($)).join('\n')).toContain('還沒有派工')
 
     await $.agent.spawn(spawnInput({ description: 'find files', subagentType: 'Explore' }))
-    let lines = linesOf(await draw($))
+    let lines = linesOf(await draw($, 30, 100))
     expect(lines.some(l => /Explore .*Haiku 5\.5.* find files/.test(l))).toBe(true)
-    expect(lines.some(l => l.includes('執行中 (1)'))).toBe(true)
+    expect(lines.some(l => l.includes('▶1 執行中'))).toBe(true) // one section: the title counts it
 
     await $.turn.complete(
       complete('agent-1', { durationMs: 4000, usage: usage(HAIKU, 100, 50, 1000, 200) }),
@@ -472,7 +508,9 @@ describe('hooks', () => {
     expect(row).toContain('✓')
     expect(row).toContain('5s')
     expect(row).toContain('165') // input + output only: 110 + 55
-    expect(lines.some(l => l.includes('已完成 (1)'))).toBe(true)
+    expect(lines.some(l => l.includes('✓1 完成'))).toBe(true)
+    await press($, 'tab-stats')
+    lines = linesOf(await draw($))
     expect(lines.some(l => l.startsWith('Haiku×1 · ≈$'))).toBe(true)
   })
 
@@ -487,12 +525,13 @@ describe('hooks', () => {
     const lines = linesOf(await draw($))
     expect(lines.find(l => l.includes('x task'))).toContain('✗')
     expect(lines.filter(l => l.includes('x task'))).toHaveLength(1)
-    expect(lines.some(l => l.includes('已完成 (1)'))).toBe(true)
+    expect(lines.some(l => l.includes('✗1 失敗'))).toBe(true)
   })
 
   test('main model comes from the main loop turn.complete', async ($, on) => {
     engine(on)
     await $.turn.complete(complete(undefined, { usage: usage('claude-opus-5-5', 1, 1, 0, 0) }))
+    await press($, 'tab-stats')
 
     const lines = linesOf(await draw($))
     expect(lines.some(l => l.includes('主 session · Opus 5.5'))).toBe(true)
@@ -500,6 +539,7 @@ describe('hooks', () => {
 
   test('main chain counts main tool calls, turns yellow at 4, resets', async ($, on) => {
     engine(on)
+    await press($, 'tab-stats')
     const chain = async () => {
       const tree = await draw($)
       const node = findText(tree, /^\d+\/4$/)
@@ -604,8 +644,9 @@ describe('hooks', () => {
       }),
     )
 
+    expect(linesOf(await draw($)).find(l => l.includes('index the repo'))).toContain('1m05s')
+    await press($, 'tab-stats')
     const lines = linesOf(await draw($))
-    expect(lines.find(l => l.includes('index the repo'))).toContain('1m05s')
     // haiku 0.42 vs opus 16.8 by hand: 1 - 0.42 / 16.8 = 97.5% saved
     expect(lines).toContain('Haiku×1 · ≈$0.42 vs Opus $16.80（省98%）')
     expect(lines.some(l => l.includes('API 價格'))).toBe(false)
@@ -634,15 +675,16 @@ describe('hooks', () => {
     await $.agent.spawn(spawnInput({ description: 'lost job', subagentType: 'worker' }))
     await clock.advance(STALE_MS)
     let lines = linesOf(await draw($))
-    expect(lines.some(l => l.includes('執行中 (1)'))).toBe(true)
+    expect(lines.some(l => l.includes('▶1 執行中'))).toBe(true)
 
     await clock.advance(2000)
     lines = linesOf(await draw($))
-    expect(lines.some(l => l.includes('失聯 (1)'))).toBe(true)
+    expect(lines.some(l => l.includes('?1 失聯'))).toBe(true)
     expect(lines.some(l => l.includes('執行中 ('))).toBe(false)
+    expect(lines.some(l => l.includes('▶1 執行中'))).toBe(false)
     const row = lines.find(l => l.includes('lost job')) ?? ''
     expect(row).toContain('失聯')
-    expect(findText(await draw($), /失聯 \(1\)/)?.props?.color).toBe('gray')
+    expect(findText(await draw($), /^\?1 失聯$/)?.props?.color).toBe('gray')
 
     const stale = count.n
     await clock.advance(10_000)
@@ -653,7 +695,7 @@ describe('hooks', () => {
     const fromSubagent = { tool: 'Read' as const, file_path: '/x', agentId: 'agent-7' }
     await $.tool.call(fromSubagent)
     lines = linesOf(await draw($))
-    expect(lines.some(l => l.includes('執行中 (1)'))).toBe(true)
+    expect(lines.some(l => l.includes('▶1 執行中'))).toBe(true)
     expect(lines.some(l => l.includes('失聯'))).toBe(false)
     const woke = count.n
     await clock.advance(3000)
@@ -778,22 +820,6 @@ describe('event stream logic', () => {
     expect(list[199]?.ts).toBe(204)
   })
 
-  test('pace: ten one-minute buckets, oldest first, edges', () => {
-    const now = 100 * MIN
-    expect(paceBuckets([], now)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
-    const list = [
-      ev({ ts: now }), // age 0: newest bucket
-      ev({ ts: now - 1 }), // still the newest bucket
-      ev({ ts: now - MIN }), // exactly one minute: the one before
-      ev({ ts: now - 9 * MIN }), // oldest bucket
-      ev({ ts: now - 10 * MIN + 1 }), // oldest bucket, last millisecond
-      ev({ ts: now - 10 * MIN }), // exactly 10 minutes ago: out
-      ev({ ts: now - 11 * MIN }), // out
-      ev({ ts: now + 1 }), // future: out
-    ]
-    expect(paceBuckets(list, now)).toEqual([2, 0, 0, 0, 0, 0, 0, 0, 1, 2])
-  })
-
   test('health: ok, loop (3 same tool failures), stuck (running, 5 minutes quiet)', () => {
     const fail = (tool: string, ts = 0) => ev({ tool, ok: false, ts })
     expect(healthOf([], 0, undefined)).toBe('ok')
@@ -887,8 +913,6 @@ describe('event stream logic', () => {
       now,
     )
     expect(view.main).toMatchObject({ chain: 3, ok: 7, fail: 2, lastDesc: 'go test', isRunning: true })
-    expect(view.pace[9]).toBe(1)
-    expect(view.pace).toHaveLength(10)
     expect(view.events).toHaveLength(1)
     expect(view.running).toHaveLength(1)
     expect(view.dispatch.find(r => r.role === 'worker')?.running).toBe(1)
@@ -1091,6 +1115,43 @@ describe('event stream hooks', () => {
     expect(list).toHaveLength(1)
     expect(list[0]).toMatchObject({ tool: 'Bash', desc: 'needle', ok: false, isMain: true })
     expect(w.main).toMatchObject({ ok: 0, fail: 1 })
+  })
+
+  test('the very error next throws is the one that escapes, never swallowed', async () => {
+    // the engine skips a test hook that throws and answers with its own error, and it
+    // masks what a plugin hook does past a throwing next, so the hook is taken as it
+    // registers and run by hand under a next that throws a known error
+    type Hook = (...args: unknown[]) => Promise<unknown>
+    const store = new Map<string, { value: unknown; version: number }>()
+    const fake = {
+      clock: { now: async () => 0 },
+      state: {
+        get: async (ref: { key: string }) => store.get(ref.key) ?? { value: undefined, version: 0 },
+        set: async (ref: { key: string }, value: unknown) => {
+          const version = (store.get(ref.key)?.version ?? 0) + 1
+          store.set(ref.key, { value, version })
+          return { isSet: true, version }
+        },
+      },
+    }
+    let hook: Hook | undefined
+    const take = (name: string, ...rest: unknown[]) => {
+      if (name === 'tool.call') hook = rest[rest.length - 1] as Hook
+    }
+    register(take as unknown as On, {})
+
+    const boom = new Error('crew-test: next crashed')
+    let caught: unknown
+    try {
+      await (hook as Hook)(fake, { tool: 'Bash', command: 'x' }, async () => {
+        throw boom
+      })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBe(boom)
+    expect(store.get('events')?.value).toEqual([expect.objectContaining({ tool: 'Bash', ok: false })])
+    expect(store.get('inflight')?.value).toEqual([])
   })
 
   test('a subagent call is recorded under the subagent type, not the main counters', async ($, on) => {
@@ -1420,7 +1481,7 @@ const rowWidths = (n: Node | string): number[] => {
   return kids.flatMap(rowWidths)
 }
 
-const TITLES = /^(主線|派工流程|模型|節奏|省錢|健康|子代理|事件流)$/
+const TITLES = /^(主線|派工流程|模型|省錢|子代理|進行中|最近事件|事件流)$/
 
 // the card titles each top-level block of the pane holds, in order: what shares a row
 const blockTitles = (tree: Node): string[][] =>
@@ -1447,15 +1508,6 @@ describe('cockpit layout helpers', () => {
     expect(barLen(50, 19, 24)).toBe(24)
   })
 
-  test('pace chart: rows tall, peak fills the column, a zero is a thin base', () => {
-    const rows = paceChart([0, 2, 4], 4, 2, 1)
-    expect(rows).toHaveLength(4)
-    expect(rows.every(r => cellWidth(r) === 3 * 2 + 2)).toBe(true)
-    expect(rows[0]).toBe('      ██')
-    expect(rows[3]).toBe('▁▁ ██ ██')
-    expect(paceChart([0, 0, 0], 3, 1, 0)).toEqual(['   ', '   ', '▁▁▁'])
-  })
-
   test('durations and clock', () => {
     expect(fmtMs(150)).toBe('150ms')
     expect(fmtMs(2900)).toBe('2.9s')
@@ -1470,34 +1522,30 @@ describe('cockpit layout', () => {
     for (let i = 0; i < n; i += 1) await $.tool.call({ tool: 'Read', file_path: `/a/f${i}.ts` })
   }
 
-  test('wide: top row side by side, four middle cards on one row, n/200 shown', async ($, on) => {
+  test('wide stats: main over model and savings beside dispatch, n/200 on the log', async ($, on) => {
     engine(on)
     await callMain($, 3)
+    await press($, 'tab-stats')
     const tree = await draw($, 40, WIDE_COLS + 40)
-    expect(blockTitles(tree).slice(0, 3)).toEqual([
-      ['主線', '派工流程'],
-      ['模型', '節奏', '省錢', '健康'],
-      ['事件流'],
-    ])
-    expect(findText(tree, /^3\/200 則$/)).toBeDefined()
+    // the savings sit at the foot of the model card
+    expect(blockTitles(tree).slice(1, 2)).toEqual([['主線', '模型', '省錢', '派工流程']])
+    expect(linesOf(tree).join('\n')).toContain('沒有可計價的模型')
+    await press($, 'tab-log')
+    expect(findText(await draw($, 40, WIDE_COLS + 40), /^3\/200 則$/)).toBeDefined()
   })
 
-  test('narrow: the top row stacks and the middle cards go two to a row', async ($, on) => {
+  test('narrow stats: main and dispatch stack, model and savings share a row', async ($, on) => {
     engine(on)
+    await press($, 'tab-stats')
     const tree = await draw($, 60, WIDE_COLS - 30)
-    expect(blockTitles(tree).slice(0, 5)).toEqual([
-      ['主線'],
-      ['派工流程'],
-      ['模型', '節奏'],
-      ['省錢', '健康'],
-      ['事件流'],
-    ])
+    expect(blockTitles(tree).slice(1, 4)).toEqual([['主線'], ['派工流程'], ['模型', '省錢']])
   })
 
-  test('a very narrow pane keeps only savings and health', async ($, on) => {
+  test('very narrow stats: every card on a row of its own', async ($, on) => {
     engine(on)
+    await press($, 'tab-stats')
     const tree = await draw($, 60, TINY_COLS - 4)
-    expect(blockTitles(tree).slice(0, 4)).toEqual([['主線'], ['派工流程'], ['省錢', '健康'], ['事件流']])
+    expect(blockTitles(tree).slice(1, 5)).toEqual([['主線'], ['派工流程'], ['模型'], ['省錢']])
   })
 
   test('health: ok, a failing loop, and a stuck run each read their own way', async ($, on) => {
@@ -1557,6 +1605,7 @@ describe('cockpit layout', () => {
   test('events: only what fits the pane is shown, newest at the bottom, the count stays whole', async ($, on) => {
     engine(on)
     await callMain($, 30)
+    await press($, 'tab-log')
     const few = linesOf(await draw($, 24, 140)).filter(l => /f\d+\.ts/.test(l) && l.includes('[✓]'))
     expect(few.length).toBeGreaterThanOrEqual(MIN_EVENT_ROWS)
     expect(few.length).toBeLessThan(30)
@@ -1583,6 +1632,7 @@ describe('cockpit layout', () => {
 
   test('the role boxes: running ones light up, other shows only when it has agents', async ($, on) => {
     engine(on, 'agent-20')
+    await press($, 'tab-stats')
     let tree = await draw($, 40, 170)
     expect(findAllText(tree, /^其他$/)).toHaveLength(0)
     expect(findAllText(tree, /^執行中 0 · 完成 0$/)).toHaveLength(5)
@@ -1602,15 +1652,742 @@ describe('cockpit layout', () => {
     expect(findAllText(tree, /其他/).length).toBeGreaterThan(0)
   })
 
-  test('the one-line summary stays at the bottom, and the v1 subagent list is kept', async ($, on) => {
+  test('the one-line summary stays at the bottom of stats, and the subagent list is on now', async ($, on) => {
     engine(on, 'agent-21')
     await $.agent.spawn(spawnInput({ description: 'index the repo', subagentType: 'Explore' }))
     await $.turn.complete(
       complete('agent-21', { durationMs: 2000, usage: usage(HAIKU, 1_000_000, 500_000, 2_000_000, 400_000) }),
     )
+    expect(linesOf(await draw($, 40, 140)).some(l => l.includes('✓1 完成'))).toBe(true)
+    await press($, 'tab-stats')
     const lines = linesOf(await draw($, 40, 140))
     expect(lines[lines.length - 1]).toBe('Haiku×1 · ≈$0.42 vs Opus $16.80（省98%）')
-    expect(lines.some(l => l.includes('已完成 (1)'))).toBe(true)
     expect(lines.some(l => l.includes('省98%') && !l.includes('Haiku×1'))).toBe(true)
+  })
+})
+
+// spawns with a fresh agentId each time: agent-1, agent-2, ...
+const spawner = (on: On, model = HAIKU) => {
+  let n = 0
+  on('agent.spawn', async () => ({ model, agentId: `agent-${(n += 1)}` }))
+}
+
+const WF = 'wf_aa7b3c9d2e'
+
+const spawnIn = (description: string, subagentType: string, workflow?: { runId: string; agentIndex: number }) => ({
+  ...spawnInput({ description, subagentType, id: `tu-${description}` }),
+  ...(workflow ? { workflow } : {}),
+})
+
+const engineAll = (on: On) => {
+  const clock = mock.clock(on, { now: 0 })
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('turn.complete', async (_$, e) => ({ text: e.answer }))
+  on('tool.call', async () => ({ result: {} as never }))
+  on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
+  spawner(on)
+  return clock
+}
+
+const firstRow = (tree: Node): string => linesOf((tree.children ?? [])[0] ?? '').join('')
+
+describe('pages', () => {
+  test('now is the default page; n, l and s switch by hotkey and by press', async ($, on) => {
+    engineAll(on)
+    await $.tool.call({ tool: 'Read', file_path: '/a/one.ts' })
+    let tree = await draw($)
+    expect(blockTitles(tree).slice(1, 4)).toEqual([['子代理'], ['進行中'], ['最近事件']])
+
+    const ui = await mountPane($)
+    const tabs = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('tab-'))
+    expect(tabs.map(b => [b.key, b.props['hotkey'], b.text])).toEqual([
+      ['tab-now', 'n', 'n 現況'],
+      ['tab-log', 'l', 'l 事件流'],
+      ['tab-stats', 's', 's 統計'],
+    ])
+    // the page shown is the marked tab
+    expect(tabs.find(b => b.key === 'tab-now')?.props['variant']).toBe('primary')
+    expect(tabs.find(b => b.key === 'tab-log')?.props['variant']).toBeUndefined()
+    expect((await ui.find({ key: 'tab-now' }))?.children).toEqual([
+      expect.objectContaining({ type: 'Text', props: { bold: true, inverse: true } }),
+    ])
+    await ui.unmount()
+
+    await hotkey($, 'l')
+    tree = await draw($)
+    expect(blockTitles(tree).slice(1)).toEqual([['事件流']])
+    expect(findText(tree, /^1\/200 則$/)).toBeDefined()
+
+    await hotkey($, 's')
+    expect(blockTitles(await draw($)).slice(1, 3)).toEqual([['主線'], ['派工流程']])
+
+    await press($, 'tab-log')
+    expect(blockTitles(await draw($)).slice(1)).toEqual([['事件流']])
+    await hotkey($, 'n')
+    expect(blockTitles(await draw($)).slice(1, 4)).toEqual([['子代理'], ['進行中'], ['最近事件']])
+  })
+
+  test('the tab bar carries the health: ok green, loop red, stuck yellow', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000_000 })
+    let answer: unknown = { result: {} }
+    on('tool.call', async () => answer as never)
+    on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
+    const health = async () => {
+      const bar = (((await draw($)).children ?? [])[0] ?? {}) as Node
+      const node = findText(bar, /✓ 正常|⚠ 可能在繞圈|⚠ 可能卡住/)
+      return { text: node ? textOf(node) : '', color: node?.props?.color }
+    }
+    expect(await health()).toEqual({ text: '✓ 正常', color: 'green' })
+    answer = { isError: true, result: 'boom', text: 'boom' }
+    for (let i = 0; i < 3; i += 1) await $.tool.call({ tool: 'Bash', command: 'go test' })
+    expect(await health()).toEqual({ text: '⚠ 可能在繞圈', color: 'red' })
+    answer = { result: {} }
+    await $.tool.call({ tool: 'Bash', command: 'go test' })
+    await $.turn.start({ text: 'go', turnId: 't1' })
+    await clock.advance(STUCK_MS + 1000)
+    expect(await health()).toEqual({ text: '⚠ 可能卡住', color: 'yellow' })
+    // on every page
+    await press($, 'tab-stats')
+    expect(await health()).toEqual({ text: '⚠ 可能卡住', color: 'yellow' })
+  })
+})
+
+describe('subagent list and detail page', () => {
+  test('running first, then finished; the first nine are numbered, the rest are not', async ($, on) => {
+    engineAll(on)
+    for (let i = 1; i <= 11; i += 1) await $.agent.spawn(spawnIn(`job ${i}`, 'worker'))
+    // jobs 1-8 finish; 9-11 still run
+    for (let i = 1; i <= 8; i += 1) await $.turn.complete(complete(`agent-${i}`))
+
+    const ui = await mountPane($, 40, 100)
+    const numbered = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('agent-'))
+    expect(numbered).toHaveLength(MAX_NUMBERED)
+    expect(numbered.map(b => b.props['hotkey'])).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9'])
+    expect(numbered.every(b => b.props['plain'] === true)).toBe(true)
+    // 1-3 are the running jobs, in spawn order; then the finished ones
+    expect(numbered.slice(0, 4).map(b => /job \d+/.exec(b.text)?.[0])).toEqual(['job 9', 'job 10', 'job 11', 'job 8'])
+    await ui.unmount()
+
+    // a pane tall enough lists them all
+    const tree = await draw($, 40, 100)
+    const order = findAllText(tree, /^job \d+\s*$/).map(n => textOf(n).trim())
+    expect(order).toEqual(['job 9', 'job 10', 'job 11', 'job 8', 'job 7', 'job 6', 'job 5', 'job 4', 'job 3', 'job 2', 'job 1'])
+    expect(findText(tree, /^… 還有/)).toBeUndefined()
+  })
+
+  test('a digit opens that subagent; 0 goes back; n l s leave the detail page too', async ($, on) => {
+    engineAll(on)
+    await $.agent.spawn(spawnIn('scan the repo', 'Explore'))
+    await $.agent.spawn(spawnIn('build the pane', 'worker'))
+    await $.turn.complete(complete('agent-1', { durationMs: 4000, usage: usage(HAIKU, 1200, 300, 0, 0) }))
+
+    // running first: 1 is the worker, 2 the finished Explore
+    await hotkey($, '2')
+    let tree = await draw($, 30, 80)
+    let text = linesOf(tree).join('\n')
+    expect(text).toContain('子代理 · Explore')
+    expect(text).toContain('scan the repo')
+    expect(text).toContain('Haiku 5.5')
+    expect(text).toContain('✓ 完成')
+    expect(text).toContain('4s')
+    expect(text).toContain('輸入 1.2k · 輸出 300')
+    expect(text).not.toContain('build the pane')
+
+    // the detail page draws 0 and no digit; tabs stay
+    let ui = await mountPane($)
+    const keys = (await ui.findAll({ type: 'Button' })).map(b => [b.key, b.props['hotkey']])
+    expect(keys).toEqual([
+      ['tab-now', 'n'],
+      ['tab-log', 'l'],
+      ['tab-stats', 's'],
+      ['back', '0'],
+    ])
+    await ui.unmount()
+
+    await hotkey($, '0')
+    tree = await draw($)
+    expect(blockTitles(tree).slice(1, 4)).toEqual([['子代理'], ['進行中'], ['最近事件']])
+
+    await hotkey($, '1')
+    text = linesOf(await draw($)).join('\n')
+    expect(text).toContain('子代理 · worker')
+    expect(text).toContain('執行中')
+    await hotkey($, 's')
+    expect(blockTitles(await draw($)).slice(1, 3)).toEqual([['主線'], ['派工流程']])
+
+    // a click on the row does what its digit does
+    await press($, 'tab-now')
+    await press($, 'agent-2')
+    expect(linesOf(await draw($)).join('\n')).toContain('子代理 · Explore')
+    ui = await mountPane($)
+    expect(await ui.find({ key: 'agent-1' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('the detail page lists only the events of that subagent', async ($, on) => {
+    engineAll(on)
+    await $.agent.spawn(spawnIn('first', 'worker'))
+    await $.agent.spawn(spawnIn('second', 'worker'))
+    await $.tool.call({ tool: 'Read', file_path: '/main/m.ts' })
+    await $.tool.call({ tool: 'Read', file_path: '/w1/one.ts', agentId: 'agent-1' } as never)
+    await $.tool.call({ tool: 'Read', file_path: '/w2/two.ts', agentId: 'agent-2' } as never)
+    await $.tool.call({ tool: 'Edit', file_path: '/w1/three.ts', agentId: 'agent-1' } as never)
+    await $.tool.call({ tool: 'WebFetch', url: 'https://x', prompt: 'p', agentId: 'agent-1' } as never)
+
+    await hotkey($, '1')
+    const text = linesOf(await draw($)).join('\n')
+    expect(text).toContain('子代理 · worker')
+    // the tool column fits the widest tool listed, whole
+    expect(text).toContain('WebFetch')
+    expect(findText(await draw($), /^Read {4}$/)).toBeDefined()
+    expect(text).toContain('one.ts')
+    expect(text).toContain('three.ts')
+    expect(text).not.toContain('two.ts')
+    expect(text).not.toContain('m.ts')
+    expect(findText(await draw($), /^3 則$/)).toBeDefined()
+  })
+
+  test('the detail event list fills the rest of the pane', async ($, on) => {
+    engineAll(on)
+    await $.agent.spawn(spawnIn('busy', 'worker'))
+    for (let i = 0; i < 40; i += 1) {
+      await $.tool.call({ tool: 'Read', file_path: `/w/f${i}.ts`, agentId: 'agent-1' } as never)
+    }
+    await hotkey($, '1')
+    const tree = await draw($, 40, 80)
+    const rows = linesOf(tree).filter(l => /f\d+\.ts/.test(l))
+    expect(rows.length).toBeGreaterThanOrEqual(MIN_EVENT_ROWS)
+    expect(rows.length).toBeLessThan(40)
+    expect(rows[rows.length - 1]).toContain('f39.ts')
+  })
+
+  test('a selected subagent that leaves the list brings back the now page, no error', async ($, on) => {
+    engineAll(on)
+    await $.agent.spawn(spawnIn('short lived', 'Explore'))
+    await $.turn.complete(complete('agent-1'))
+    await hotkey($, '1')
+    expect(linesOf(await draw($)).join('\n')).toContain('short lived')
+
+    // 50 running agents push the finished one off the list
+    for (let i = 0; i < 50; i += 1) await $.agent.spawn(spawnIn(`filler ${i}`, 'worker'))
+    const tree = await draw($)
+    expect(linesOf(tree).join('\n')).not.toContain('short lived')
+    expect(blockTitles(tree).slice(1, 4)).toEqual([['子代理'], ['進行中'], ['最近事件']])
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'tab-now' }))?.props['variant']).toBe('primary')
+    expect(await ui.find({ key: 'back' })).toBeUndefined()
+    await ui.unmount()
+  })
+})
+
+describe('event stream pause', () => {
+  test('p freezes the list, counts what came in, and p again catches up', async ($, on) => {
+    engineAll(on)
+    for (const f of ['a', 'b', 'c']) await $.tool.call({ tool: 'Read', file_path: `/x/${f}.ts` })
+    await press($, 'tab-log')
+    await hotkey($, 'p')
+    for (const f of ['d', 'e']) await $.tool.call({ tool: 'Read', file_path: `/x/${f}.ts` })
+
+    let tree = await draw($)
+    let text = linesOf(tree).join('\n')
+    expect(text).toContain('c.ts')
+    expect(text).not.toContain('d.ts')
+    expect(text).not.toContain('e.ts')
+    expect(findText(tree, /^⏸ 已暫停 · 新增 2 則$/)?.props?.color).toBe('yellow')
+    // recording goes on: the count is whole
+    expect(findText(tree, /^5\/200 則$/)).toBeDefined()
+    let ui = await mountPane($)
+    expect((await ui.find({ key: 'pause' }))?.text).toBe('p 繼續')
+    await ui.unmount()
+
+    // the other pages are live while the stream is paused
+    await press($, 'tab-now')
+    expect(linesOf(await draw($)).join('\n')).toContain('e.ts')
+    await press($, 'tab-log')
+
+    await press($, 'pause')
+    tree = await draw($)
+    text = linesOf(tree).join('\n')
+    expect(text).toContain('d.ts')
+    expect(text).toContain('e.ts')
+    expect(findText(tree, /已暫停/)).toBeUndefined()
+    ui = await mountPane($)
+    expect((await ui.find({ key: 'pause' }))?.text).toBe('p 暫停')
+    await ui.unmount()
+  })
+
+  test('only the log page draws the pause button', async ($, on) => {
+    engineAll(on)
+    for (const page of ['tab-now', 'tab-stats']) {
+      await press($, page)
+      const ui = await mountPane($)
+      expect(await ui.find({ key: 'pause' })).toBeUndefined()
+      await ui.unmount()
+    }
+  })
+})
+
+describe('workflow grouping', () => {
+  test("a run's agents are one group, in agentIndex order, under a header", async ($, on) => {
+    engineAll(on)
+    await $.agent.spawn(spawnIn('lone job', 'worker'))
+    await $.agent.spawn(spawnIn('review b', 'general-purpose', { runId: WF, agentIndex: 2 }))
+    await $.agent.spawn(spawnIn('review a', 'general-purpose', { runId: WF, agentIndex: 1 }))
+    await $.agent.spawn(spawnIn('merge', 'general-purpose', { runId: WF, agentIndex: 3 }))
+    for (const id of ['agent-2', 'agent-3', 'agent-4']) await $.turn.complete(complete(id))
+
+    const tree = await draw($, 40, 100)
+    // the card's rows in order, each as its texts joined
+    const card = (((tree.children ?? [])[1] as Node).children ?? [])[0] as Node
+    const rows = (card.children ?? []).map(textOf)
+    const head = rows.findIndex(l => l.includes('workflow') && l.includes('wf_aa7b…'))
+    expect(head).toBeGreaterThan(-1)
+    expect(rows[head]).toContain('3 個 · 完成 3')
+    // members follow in agentIndex order, a tree mark in place of the repeated type
+    expect(rows.slice(head + 1, head + 4).map(l => /review a|review b|merge/.exec(l)?.[0])).toEqual([
+      'review a',
+      'review b',
+      'merge',
+    ])
+    expect(rows.slice(head + 1, head + 4).map(l => /[├└]─/.exec(l)?.[0])).toEqual(['├─', '├─', '└─'])
+    expect(rows.slice(head + 1, head + 4).some(l => l.includes('general-purpose'))).toBe(false)
+    // the running lone job comes first; the group counts as one finished unit
+    expect(rows.findIndex(l => l.includes('lone job'))).toBeLessThan(head)
+  })
+
+  test('sections: a run with a running agent sits with the running ones', () => {
+    const list = [
+      agent({ id: 'd', status: 'done', endedAt: 5 }),
+      agent({ id: 'w1', status: 'done', runId: WF, agentIndex: 1, endedAt: 3 }),
+      agent({ id: 'w2', status: 'running', runId: WF, agentIndex: 2 }),
+      agent({ id: 'r', status: 'running' }),
+      agent({ id: 'v1', status: 'done', runId: 'wf_other', agentIndex: 1, endedAt: 9 }),
+    ]
+    const sections = agentSections(list)
+    expect(sections.map(x => [x.status, x.count])).toEqual([
+      ['running', 2],
+      ['finished', 3],
+    ])
+    const ids = (i: number) =>
+      sections[i]?.units.map(u => (u.kind === 'agent' ? u.agent.id : u.agents.map(a => a.id).join('+')))
+    expect(ids(0)).toEqual(['w1+w2', 'r'])
+    expect(ids(1)).toEqual(['v1', 'd'])
+  })
+
+  test('dispatch: workflow agents get their own box; other counts only unknown types', async ($, on) => {
+    engineAll(on)
+    await $.agent.spawn(spawnIn('review a', 'general-purpose', { runId: WF, agentIndex: 1 }))
+    await $.agent.spawn(spawnIn('review b', 'general-purpose', { runId: WF, agentIndex: 2 }))
+    await $.agent.spawn(spawnIn('merge', 'worker', { runId: WF, agentIndex: 3 }))
+    await $.turn.complete(complete('agent-1'))
+
+    const by = Object.fromEntries(
+      dispatchStats([
+        agent({ id: '1', type: 'general-purpose', runId: WF, status: 'done' }),
+        agent({ id: '2', type: 'worker', runId: WF, status: 'running' }),
+        agent({ id: '3', type: 'Plan', status: 'done' }),
+      ]).map(r => [r.role, r]),
+    )
+    expect(by['workflow']).toMatchObject({ running: 1, done: 1 })
+    expect(by['other']).toMatchObject({ running: 0, done: 1 })
+    expect(by['worker']).toMatchObject({ running: 0, done: 0 })
+
+    await press($, 'tab-stats')
+    let tree = await draw($, 40, 170)
+    expect(findAllText(tree, /^workflow$/)).toHaveLength(1)
+    expect(findAllText(tree, /^其他$/)).toHaveLength(0)
+    expect(findText(tree, /^執行中 2$/)?.props?.color).toBe('yellow')
+    expect(findText(tree, /^完成 1$/)?.props?.color).toBe('green')
+
+    await $.agent.spawn(spawnIn('plan it', 'Plan'))
+    tree = await draw($, 40, 170)
+    expect(findAllText(tree, /^其他$/)).toHaveLength(1)
+  })
+
+  test('the detail page names the workflow run', async ($, on) => {
+    engineAll(on)
+    await $.agent.spawn(spawnIn('review a', 'general-purpose', { runId: WF, agentIndex: 2 }))
+    await hotkey($, '1')
+    const text = linesOf(await draw($)).join('\n')
+    expect(text).toContain(WF)
+    expect(text).toContain('第 2 個')
+  })
+})
+
+describe('in-flight card', () => {
+  test('none: a dim line says so', async ($, on) => {
+    engineAll(on)
+    const tree = await draw($)
+    expect(findText(tree, /^目前沒有執行中的工具呼叫$/)?.props?.dimColor).toBe(true)
+  })
+
+  test('each call shows its source, tool, description and how long it has run', async ($, on) => {
+    const clock = mock.clock(on, { now: 0 })
+    spawner(on)
+    const gates: Array<() => void> = []
+    on('tool.call', async () => {
+      await new Promise<void>(r => gates.push(r))
+      return { result: {} } as never
+    })
+    await $.agent.spawn(spawnIn('scan', 'Explore'))
+    const calls = [
+      $.tool.call({ tool: 'Bash', command: 'make test', description: 'Run the tests' }),
+      $.tool.call({ tool: 'Grep', pattern: 'needle', agentId: 'agent-1' } as never),
+    ]
+    while (gates.length < 2) await clock.advance(0)
+    await clock.advance(42_000)
+
+    const tree = await draw($, 30, 100)
+    const lines = linesOf(tree)
+    const head = lines.find(l => l.startsWith('進行中')) ?? ''
+    expect(head).toContain('2 個')
+    expect(head).toMatch(/主線\s+Bash\s+Run the tests\s+42\.0s/)
+    expect(head).toMatch(/Explore\s+Grep\s+needle\s+42\.0s/)
+    expect(findText(tree, /^目前沒有執行中的工具呼叫$/)).toBeUndefined()
+
+    gates.splice(0).forEach(r => r())
+    await Promise.all(calls)
+    expect(findText(await draw($, 30, 100), /^目前沒有執行中的工具呼叫$/)).toBeDefined()
+  })
+})
+
+describe('layout fixes', () => {
+  // every role box's rows, as the texts they hold, and the box's inner width
+  const roleBoxes = (n: Node | string, out: { key: string; inner: number; rows: string[] }[] = []) => {
+    if (typeof n === 'string') return out
+    const key = n.props?.['key']
+    if (typeof key === 'string' && key.startsWith('role-')) {
+      const rows = (n.children ?? []).map(k => (typeof k === 'string' ? k : textOf(k)))
+      out.push({ key, inner: Number(n.props?.['width']) - 2, rows })
+      return out
+    }
+    for (const k of n.children ?? []) roleBoxes(k, out)
+    return out
+  }
+
+  test('role boxes hold their text whole at 64, 80, 90, 120 and 160 columns', async ($, on) => {
+    engineAll(on)
+    const types = ['Explore', 'clerk', 'worker', 'verifier', 'fork', 'Plan']
+    for (const t of types) await $.agent.spawn(spawnIn(`a ${t}`, t))
+    await $.agent.spawn(spawnIn('wf', 'general-purpose', { runId: WF, agentIndex: 1 }))
+    // failures widen the names: verifier ✗12
+    for (let i = 0; i < 12; i += 1) {
+      await $.agent.spawn(spawnIn(`v ${i}`, 'verifier'))
+      await $.turn.complete(complete(`agent-${8 + i}`, { reason: 'aborted', isAborted: true }))
+    }
+    await press($, 'tab-stats')
+    for (const cols of [64, 80, 90, 120, 160]) {
+      const boxes = roleBoxes(await draw($, 60, cols))
+      expect(boxes.map(b => b.key)).toEqual([
+        'role-Explore',
+        'role-clerk',
+        'role-worker',
+        'role-verifier',
+        'role-fork',
+        'role-workflow',
+        'role-other',
+      ])
+      for (const b of boxes) {
+        for (const row of b.rows) {
+          expect(cellWidth(row)).toBeLessThanOrEqual(b.inner)
+          expect(row).not.toContain('…')
+        }
+      }
+      const verifier = boxes.find(b => b.key === 'role-verifier')?.rows.map(r => r.trim())
+      expect(verifier?.[0]).toBe('verifier ✗12')
+    }
+  })
+
+  test('a used model under 1% of the cost reads <1% with at least one cell of bar', async ($, on) => {
+    expect(shareLabel(0.004)).toBe('<1%')
+    expect(shareLabel(0)).toBe('<1%')
+    expect(shareLabel(0.01)).toBe('1%')
+    expect(shareLabel(0.5)).toBe('50%')
+
+    mock.clock(on, { now: 0 })
+    let n = 0
+    const models = [HAIKU, 'claude-opus-5-5']
+    on('agent.spawn', async () => ({ model: models[n] ?? HAIKU, agentId: `agent-${(n += 1)}` }))
+    on('turn.complete', async (_$, e) => ({ text: e.answer }))
+    await $.agent.spawn(spawnIn('tiny', 'Explore'))
+    await $.agent.spawn(spawnIn('big', 'fork'))
+    await $.turn.complete(complete('agent-1', { usage: usage(HAIKU, 100, 10, 0, 0) }))
+    await $.turn.complete(complete('agent-2', { usage: usage('claude-opus-5-5', 1_000_000, 100_000, 0, 0) }))
+    await press($, 'tab-stats')
+    const tree = await draw($, 40, 100)
+    const row = linesOf(tree).find(l => l.startsWith('模型')) ?? ''
+    expect(row).toMatch(/Haiku\s+█░+\s+<1%/)
+    expect(row).not.toMatch(/Haiku[^%]*\s0%/)
+  })
+
+  test('agent rows line up: one description width, durations and tokens right-aligned, short badges when narrow', async ($, on) => {
+    engineAll(on)
+    await $.agent.spawn(spawnIn('盤點 dotfiles agents 目錄的所有檔案', 'Explore'))
+    await $.agent.spawn(spawnIn('盤點 github 專案清單與狀態', 'clerk'))
+    await $.agent.spawn(spawnIn('short', 'verifier'))
+    await $.turn.complete(complete('agent-1', { durationMs: 631_000, usage: usage(HAIKU, 70_000, 10_000, 0, 0) }))
+    await $.turn.complete(complete('agent-2', { durationMs: 17_000, usage: usage(HAIKU, 4000, 300, 0, 0) }))
+    for (const cols of [64, 90]) {
+      const ui = await mountPane($, 40, cols)
+      const rows = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('agent-'))
+      expect(rows).toHaveLength(3)
+      // each row's texts: the description is the 7th, the duration the 9th, the tokens the 11th
+      const parts = rows.map(r => (r.children as { children: string[] }[]).map(c => c.children.join('')))
+      const widthAt = (i: number) => parts.map(p => cellWidth(p[i] ?? ''))
+      const startOf = (i: number) => parts.map(p => p.slice(0, i).reduce((n, x) => n + cellWidth(x), 0))
+      expect(new Set(widthAt(6)).size).toBe(1)
+      expect(new Set(startOf(8)).size).toBe(1)
+      expect(new Set(widthAt(8)).size).toBe(1)
+      expect(new Set(startOf(10)).size).toBe(1)
+      // running first, then the latest finished
+      expect(parts.map(p => (p[8] ?? '').trim())).toEqual(['0s', '17s', '10m31s'])
+      expect(parts[2]?.[8]).toBe('10m31s')
+      expect(parts[1]?.[8]).toMatch(/^ +17s$/)
+      expect(parts[2]?.[10]).toBe(' 80k')
+      expect(parts[1]?.[10]).toBe('4.3k')
+      const badges = parts.map(p => (p[4] ?? '').trim())
+      expect(badges).toEqual(cols < 90 ? ['Haiku', 'Haiku', 'Haiku'] : ['[Haiku 5.5]', '[Haiku 5.5]', '[Haiku 5.5]'])
+      await ui.unmount()
+    }
+    // a record from before runs were kept still counts as workflow by its type
+    expect(dispatchStats([agent({ type: 'workflow-subagent' })]).find(r => r.role === 'workflow')?.done).toBe(1)
+  })
+
+  test('a Workflow call is never in flight, and is still in the event stream', async ($, on) => {
+    const w = watch(on)
+    const flight = watchFlight(on)
+    engineAll(on)
+    await $.tool.call({ tool: 'Workflow', name: 'review' })
+    await $.tool.call({ tool: 'Bash', command: 'ls', description: 'List files' })
+    expect(flight.history.flat().some(x => x.tool === 'Workflow')).toBe(false)
+    expect(flight.history.flat().find(x => x.tool === 'Bash')).toMatchObject({ desc: 'List files' })
+    expect(w.events.map(x => x.tool)).toEqual(['Workflow', 'Bash'])
+  })
+})
+
+describe('beauty pass 2', () => {
+  // the frame color of the top-level card whose title matches
+  const frameOf = (tree: Node, re: RegExp): unknown => {
+    for (const k of tree.children ?? []) {
+      if (typeof k === 'string') continue
+      const card = k.props?.['borderStyle'] ? k : ((k.children ?? [])[0] as Node | undefined)
+      if (card && typeof card !== 'string' && findText(card, re)) return card.props?.['borderColor']
+    }
+    return undefined
+  }
+
+  test('the now page shares its height: finished first, then events; folds only what does not fit', async ($, on) => {
+    engineAll(on)
+    for (let i = 1; i <= 10; i += 1) await $.agent.spawn(spawnIn(`job ${i}`, 'worker'))
+    for (let i = 1; i <= 10; i += 1) await $.turn.complete(complete(`agent-${i}`))
+    for (let i = 0; i < 30; i += 1) await $.tool.call({ tool: 'Read', file_path: `/f/e${i}.ts` })
+    const events = (tree: Node) => findAllText(tree, /^e\d+\.ts\s*$/).length
+
+    // tall: every finished job, and the events take the rest of the rows
+    let tree = await draw($, 50, 80)
+    expect(findAllText(tree, /^job \d+\s*$/)).toHaveLength(10)
+    expect(findText(tree, /^… 還有/)).toBeUndefined()
+    // 50 rows: tab 1, list 3 + 10 (one section: no header), in flight 4, events 3 + n
+    expect(events(tree)).toBe(50 - 1 - 13 - 4 - 3)
+
+    // short: the list gives way first, the events keep their least
+    tree = await draw($, 22, 80)
+    const jobs = findAllText(tree, /^job \d+\s*$/).length
+    expect(jobs).toBeLessThan(10)
+    expect(findText(tree, new RegExp(`^… 還有 ${10 - jobs} 個$`))?.props?.dimColor).toBe(true)
+    expect(events(tree)).toBe(3)
+    expect(linesOf(tree).join('\n')).not.toContain('看統計')
+  })
+
+  test('the now page cards wear their colors; roles keep one color everywhere', async ($, on) => {
+    const clock = mock.clock(on, { now: 0 })
+    spawner(on)
+    const gates: Array<() => void> = []
+    let hold = false
+    on('tool.call', async () => {
+      if (hold) await new Promise<void>(r => gates.push(r))
+      return { result: {} } as never
+    })
+    await $.agent.spawn(spawnIn('check it', 'verifier'))
+    await $.tool.call({ tool: 'Read', file_path: '/a.ts' })
+    let tree = await draw($)
+    expect(frameOf(tree, /^子代理$/)).toBe('#8b9cf6')
+    expect(findText(tree, /^子代理$/)?.props?.color).toBe('#8b9cf6')
+    expect(frameOf(tree, /^進行中$/)).toBe('gray')
+    expect(frameOf(tree, /^最近事件$/)).toBe('cyan')
+    // the type in the list, in the role's color; the main loop in Opus yellow
+    expect(findText(tree, /^verifier\s*$/)?.props?.color).toBe(ROLE_COLOR.verifier)
+    expect(findText(tree, /^主線\s+$/)?.props?.color).toBe('yellow')
+
+    // a call in flight turns the card yellow
+    hold = true
+    const call = $.tool.call({ tool: 'Grep', pattern: 'x', agentId: 'agent-1' } as never)
+    while (gates.length < 1) await clock.advance(0)
+    tree = await draw($)
+    expect(frameOf(tree, /^進行中$/)).toBe('yellow')
+    // the list row and the in-flight source alike
+    const named = findAllText(tree, /^verifier\s*$/)
+    expect(named).toHaveLength(2)
+    expect(named.every(n => n.props?.color === ROLE_COLOR.verifier)).toBe(true)
+    gates.splice(0).forEach(r => r())
+    await call
+
+    // the detail page and the dispatch flow use the same color
+    await hotkey($, '1')
+    tree = await draw($)
+    expect(frameOf(tree, /^子代理$/)).toBe(ROLE_COLOR.verifier)
+    expect(frameOf(tree, /^事件流$/)).toBe('cyan')
+    await press($, 'tab-stats')
+    expect(findText(await draw($, 40, 170), /^verifier$/)?.props?.color).toBe(ROLE_COLOR.verifier)
+    await press($, 'tab-log')
+    expect(frameOf(await draw($), /^事件流$/)).toBe('cyan')
+  })
+
+  test('the list title counts running, done, failed and lost', async ($, on) => {
+    const clock = engineAll(on)
+    await $.agent.spawn(spawnIn('a', 'worker'))
+    await $.agent.spawn(spawnIn('b', 'worker'))
+    await $.agent.spawn(spawnIn('c', 'worker'))
+    await $.turn.complete(complete('agent-1'))
+    await $.turn.complete(complete('agent-2', { reason: 'aborted', isAborted: true }))
+    let tree = await draw($)
+    const head = () => {
+      const card = (((tree.children ?? [])[1] as Node).children ?? [])[0] as Node
+      return textOf((card.children ?? [])[0] ?? '')
+    }
+    expect(head()).toMatch(/子代理.*▶1 執行中 · ✓1 完成 · ✗1 失敗$/)
+    expect(findText(tree, /^執行中 \(1\)$/)?.props?.dimColor).toBe(true)
+    expect(findText(tree, /^已完成 \(2\)$/)?.props?.dimColor).toBe(true)
+    await start($)
+    await clock.advance(STALE_MS + 2000)
+    tree = await draw($)
+    expect(head()).toMatch(/✓1 完成 · ✗1 失敗 · \?1 失聯$/)
+  })
+
+  test('a Bash call without a description shows the command past cd and variable settings', () => {
+    const d = (command: string) => describeCall('Bash', { command })
+    expect(d('cd ~/dotfiles/claude/mods/crew && claude plugin test')).toBe('claude plugin test')
+    expect(d('cd /tmp; ls -la')).toBe('ls -la')
+    expect(d('cd "/a b" && make')).toBe('make')
+    expect(d('FOO=1 BAR="x y" go test ./...')).toBe('go test ./...')
+    expect(d('S=/private/tmp/x; $S/run.sh')).toBe('$S/run.sh')
+    expect(d('cd ~/x && NODE_ENV=test npm run build')).toBe('npm run build')
+    // nothing to strip, or nothing left after it: as written
+    expect(d('git status')).toBe('git status')
+    expect(d('cd ~/x')).toBe('cd ~/x')
+    expect(d('FOO=1')).toBe('FOO=1')
+    // a description wins as before
+    expect(describeCall('Bash', { command: 'cd x && ls', description: 'List' })).toBe('List')
+  })
+
+  test('narrow stats: the main card drops its spacer rows; wide keeps them', async ($, on) => {
+    engineAll(on)
+    await press($, 'tab-stats')
+    const mainRows = (tree: Node) => {
+      const card = findAllText(tree, /^主線$/)[0]
+      expect(card).toBeDefined()
+      const top = (tree.children ?? [])[1] as Node
+      const box = (top.children ?? [])[0] as Node
+      return (box.children ?? []).length
+    }
+    expect(mainRows(await draw($, 60, 64))).toBe(5)
+    const wide = await draw($, 60, 160)
+    const left = (((wide.children ?? [])[1] as Node).children ?? [])[0] as Node
+    expect((((left.children ?? [])[0] as Node).children ?? []).length).toBe(8)
+  })
+})
+
+describe('beauty pass 3', () => {
+  test('one section draws no section header; two or more do', async ($, on) => {
+    engineAll(on)
+    await $.agent.spawn(spawnIn('a', 'worker'))
+    await $.agent.spawn(spawnIn('b', 'worker'))
+    await $.turn.complete(complete('agent-1'))
+    await $.turn.complete(complete('agent-2'))
+    let tree = await draw($)
+    expect(findText(tree, /^已完成 \(\d+\)$/)).toBeUndefined()
+    expect(findText(tree, /^✓2 完成$/)).toBeDefined()
+
+    await $.agent.spawn(spawnIn('c', 'worker'))
+    tree = await draw($)
+    expect(findText(tree, /^執行中 \(1\)$/)).toBeDefined()
+    expect(findText(tree, /^已完成 \(2\)$/)).toBeDefined()
+  })
+
+  test('wide stats: the dispatch flow sits in the middle of its taller column', async ($, on) => {
+    engineAll(on)
+    for (const t of ['Explore', 'clerk', 'worker', 'verifier', 'fork', 'Plan']) await $.agent.spawn(spawnIn(t, t))
+    await press($, 'tab-stats')
+    for (const cols of [WIDE_COLS, 140, 160]) {
+      const tree = await draw($, 60, cols)
+      const top = (tree.children ?? [])[1] as Node
+      const [left, right] = (top.children ?? []) as Node[]
+      const height = (col: Node | undefined) =>
+        ((col?.children ?? []) as Node[]).reduce((n, card) => n + Number(card.props?.['height']), 0)
+      expect(height(right)).toBe(height(left))
+      const card = ((right?.children ?? [])[0] ?? {}) as Node
+      const rows = (card.children ?? []).map(k => (typeof k === 'string' ? k : textOf(k)))
+      const blankAbove = rows.slice(1).findIndex(r => r.trim() !== '')
+      const blankBelow = [...rows].reverse().findIndex(r => r.trim() !== '')
+      expect(blankAbove).toBe(blankBelow)
+      expect(rows[rows.length - 1 - blankBelow]).toContain('回主線')
+    }
+  })
+})
+
+describe('beauty pass 4', () => {
+  test('the detail page shows cache tokens beside input and output', async ($, on) => {
+    engineAll(on)
+    await $.agent.spawn(spawnIn('read a lot', 'Explore'))
+    await $.agent.spawn(spawnIn('no cache', 'worker'))
+    await $.turn.complete(complete('agent-1', { usage: usage(HAIKU, 4, 501, 12_000, 2_400_000) }))
+    await $.turn.complete(complete('agent-2', { usage: usage(HAIKU, 100, 20, 0, 0) }))
+    // latest finished first: 1 is the worker, 2 the Explore
+    await hotkey($, '2')
+    let text = linesOf(await draw($)).join('\n')
+    expect(text).toContain('輸入 4 · 輸出 501')
+    expect(text).toContain('讀取 12k · 寫入 2.4M')
+    await hotkey($, '0')
+    await hotkey($, '1')
+    text = linesOf(await draw($)).join('\n')
+    expect(text).toContain('輸入 100 · 輸出 20')
+    expect(text).not.toContain('快取')
+  })
+
+  test('detail events leave out the source column; the log keeps it', async ($, on) => {
+    engineAll(on)
+    await $.agent.spawn(spawnIn('look', 'Explore'))
+    await $.tool.call({ tool: 'Grep', pattern: 'needle', agentId: 'agent-1' } as never)
+    await hotkey($, '1')
+    let tree = await draw($)
+    const row = findAllText(tree, /^needle\s*$/)
+    expect(row).toHaveLength(1)
+    // the type is named once, in the info card; no padded source cell in the event row
+    expect(findAllText(tree, /^Explore +$/)).toHaveLength(0)
+    expect(findText(tree, /^Explore$/)).toBeDefined()
+    await press($, 'tab-log')
+    tree = await draw($)
+    expect(findAllText(tree, /^Explore +$/)).toHaveLength(1)
+  })
+
+  test('narrow stats: the model and savings cards both sit in the middle of their row', async ($, on) => {
+    engineAll(on)
+    let n = 0
+    for (const [type, model] of [['Explore', HAIKU], ['worker', 'claude-sonnet-5-5']] as const) {
+      n += 1
+      await $.agent.spawn(spawnIn(type, type))
+      await $.turn.complete(complete(`agent-${n}`, { usage: usage(model, 1000, 100, 0, 0) }))
+    }
+    await press($, 'tab-stats')
+    for (const cols of [64, 90]) {
+      const tree = await draw($, 60, cols)
+      const row = ((tree.children ?? []).slice(1) as Node[]).find(k => findText(k, /^模型$/)) as Node
+      for (const card of (row.children ?? []) as Node[]) {
+        const rows = (card.children ?? []).map(k => (typeof k === 'string' ? k : textOf(k)))
+        const above = rows.slice(1).findIndex(r => r.trim() !== '')
+        const below = [...rows].reverse().findIndex(r => r.trim() !== '')
+        expect(Math.abs(above - below)).toBeLessThanOrEqual(1)
+      }
+    }
   })
 })
