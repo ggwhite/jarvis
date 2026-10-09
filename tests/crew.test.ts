@@ -1916,6 +1916,24 @@ describe('event stream pause', () => {
     await ui.unmount()
   })
 
+  test('past the 200 cap the pause still counts every new call, and resume shows the latest', async ($, on) => {
+    engineAll(on)
+    for (let i = 0; i < 195; i += 1) await $.tool.call({ tool: 'Read', file_path: `/f/${i}.ts` })
+    await press($, 'tab-log')
+    await hotkey($, 'p')
+    for (let i = 195; i < 450; i += 1) await $.tool.call({ tool: 'Read', file_path: `/f/${i}.ts` })
+
+    let tree = await draw($)
+    expect(findText(tree, /^⏸ 已暫停 · 新增 255 則$/)).toBeDefined()
+    expect(findText(tree, /^200\/200 則$/)).toBeDefined()
+    expect(linesOf(tree).join('\n')).not.toContain('449.ts')
+
+    await hotkey($, 'p')
+    tree = await draw($)
+    expect(findText(tree, /已暫停/)).toBeUndefined()
+    expect(linesOf(tree).join('\n')).toContain('449.ts')
+  })
+
   test('only the log page draws the pause button', async ($, on) => {
     engineAll(on)
     for (const page of ['tab-now', 'tab-stats']) {
