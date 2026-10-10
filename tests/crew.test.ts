@@ -510,8 +510,9 @@ describe('hooks', () => {
     expect(row).toContain('165') // input + output only: 110 + 55
     expect(lines.some(l => l.includes('✓1 完成'))).toBe(true)
     await press($, 'tab-stats')
-    lines = linesOf(await draw($))
-    expect(lines.some(l => l.startsWith('Haiku×1 · ≈$'))).toBe(true)
+    const card = modelCard(await draw($))
+    expect(card.rows).toContainEqual(expect.stringMatching(/^Haiku +×1 +█+ +100%$/))
+    expect(card.rows).toContainEqual(expect.stringMatching(/^省錢  省\d+% +≈\$\S+ vs Opus \$\S+$/))
   })
 
   test('a failed reason shows ✗; unknown agents are ignored', async ($, on) => {
@@ -634,7 +635,7 @@ describe('hooks', () => {
     expect(await rowOf()).toContain('3s') // finished: fixed at the turn's own duration
   })
 
-  test('summary line: cost, all-Opus cost and savings', async ($, on) => {
+  test('the model card: cost, all-Opus cost and savings', async ($, on) => {
     engine(on, 'agent-5')
     await $.agent.spawn(spawnInput({ description: 'index the repo', subagentType: 'Explore' }))
     await $.turn.complete(
@@ -646,10 +647,12 @@ describe('hooks', () => {
 
     expect(linesOf(await draw($)).find(l => l.includes('index the repo'))).toContain('1m05s')
     await press($, 'tab-stats')
-    const lines = linesOf(await draw($))
+    const tree = await draw($)
     // haiku 0.42 vs opus 16.8 by hand: 1 - 0.42 / 16.8 = 97.5% saved
-    expect(lines).toContain('Haiku×1 · ≈$0.42 vs Opus $16.80（省98%）')
-    expect(lines.some(l => l.includes('API 價格'))).toBe(false)
+    const card = modelCard(tree)
+    expect(card.rows.at(-1)).toMatch(/^省錢  省98% +≈\$0\.42 vs Opus \$16\.80$/)
+    expect(cellWidth(card.rows.at(-1) ?? '')).toBe(card.inner)
+    expect(linesOf(tree).some(l => l.includes('API 價格'))).toBe(false)
   })
 
   test('a finished subagent stops the tick', async ($, on) => {
@@ -1487,6 +1490,25 @@ const TITLES = /^(主線|派工流程|模型|省錢|子代理|進行中|最近�
 const blockTitles = (tree: Node): string[][] =>
   (tree.children ?? []).map(k => (typeof k === 'string' ? [] : findAllText(k, TITLES).map(textOf)))
 
+// the rows of the card titled 模型, as drawn, and the cells inside its border
+const modelCard = (tree: Node): { rows: string[]; inner: number } => {
+  const find = (n: Node | string): Node | undefined => {
+    if (typeof n === 'string') return undefined
+    const first = n.children?.[0]
+    if (n.props?.borderStyle && first !== undefined && textOf(first) === '模型') return n
+    for (const k of n.children ?? []) {
+      const hit = find(k)
+      if (hit) return hit
+    }
+    return undefined
+  }
+  const card = find(tree)
+  return {
+    rows: (card?.children ?? []).map(textOf),
+    inner: Number(card?.props?.width ?? 0) - 4,
+  }
+}
+
 describe('cockpit layout helpers', () => {
   test('cell width counts CJK as two, fitCells and padCells honour it', () => {
     expect(cellWidth('abc')).toBe(3)
@@ -1534,18 +1556,14 @@ describe('cockpit layout', () => {
     expect(findText(await draw($, 40, WIDE_COLS + 40), /^3\/200 則$/)).toBeDefined()
   })
 
-  test('narrow stats: main and dispatch stack, model and savings share a row', async ($, on) => {
+  test('narrow stats: main, dispatch and model stack, the savings inside the model card', async ($, on) => {
     engine(on)
     await press($, 'tab-stats')
-    const tree = await draw($, 60, WIDE_COLS - 30)
-    expect(blockTitles(tree).slice(1, 4)).toEqual([['主線'], ['派工流程'], ['模型', '省錢']])
-  })
-
-  test('very narrow stats: every card on a row of its own', async ($, on) => {
-    engine(on)
-    await press($, 'tab-stats')
-    const tree = await draw($, 60, TINY_COLS - 4)
-    expect(blockTitles(tree).slice(1, 5)).toEqual([['主線'], ['派工流程'], ['模型'], ['省錢']])
+    for (const cols of [TINY_COLS - 4, WIDE_COLS - 30]) {
+      const tree = await draw($, 60, cols)
+      expect(blockTitles(tree).slice(1, 4)).toEqual([['主線'], ['派工流程'], ['模型', '省錢']])
+      expect(modelCard(tree).rows.at(-1)).toMatch(/^省錢  未計價 +沒有可計價的模型$/)
+    }
   })
 
   test('health: ok, a failing loop, and a stuck run each read their own way', async ($, on) => {
@@ -1652,7 +1670,7 @@ describe('cockpit layout', () => {
     expect(findAllText(tree, /其他/).length).toBeGreaterThan(0)
   })
 
-  test('the one-line summary stays at the bottom of stats, and the subagent list is on now', async ($, on) => {
+  test('stats ends with the model card, no summary line under it; the subagent list is on now', async ($, on) => {
     engine(on, 'agent-21')
     await $.agent.spawn(spawnInput({ description: 'index the repo', subagentType: 'Explore' }))
     await $.turn.complete(
@@ -1660,9 +1678,12 @@ describe('cockpit layout', () => {
     )
     expect(linesOf(await draw($, 40, 140)).some(l => l.includes('✓1 完成'))).toBe(true)
     await press($, 'tab-stats')
-    const lines = linesOf(await draw($, 40, 140))
-    expect(lines[lines.length - 1]).toBe('Haiku×1 · ≈$0.42 vs Opus $16.80（省98%）')
-    expect(lines.some(l => l.includes('省98%') && !l.includes('Haiku×1'))).toBe(true)
+    const tree = await draw($, 40, 140)
+    expect(linesOf(tree).some(l => l.includes('Haiku×1'))).toBe(false)
+    const blocks = (tree.children ?? []) as Node[]
+    expect(blocks).toHaveLength(2) // the tab bar, then the stats row
+    expect(findText(blocks[1] as Node, /^模型$/)).toBeDefined()
+    expect(modelCard(tree).rows.at(-1)).toMatch(/^省錢  省98% +≈\$0\.42 vs Opus \$16\.80$/)
   })
 })
 
@@ -2134,7 +2155,7 @@ describe('layout fixes', () => {
     await press($, 'tab-stats')
     const tree = await draw($, 40, 100)
     const row = linesOf(tree).find(l => l.startsWith('模型')) ?? ''
-    expect(row).toMatch(/Haiku\s+█░+\s+<1%/)
+    expect(row).toMatch(/Haiku\s+×1\s+█░+\s+<1%/)
     expect(row).not.toMatch(/Haiku[^%]*\s0%/)
   })
 
@@ -2388,24 +2409,58 @@ describe('beauty pass 4', () => {
     expect(findAllText(tree, /^Explore +$/)).toHaveLength(1)
   })
 
-  test('narrow stats: the model and savings cards both sit in the middle of their row', async ($, on) => {
-    engineAll(on)
+  test('one model card at every width: counts beside the names, a rule, then the savings', async ($, on) => {
+    mock.clock(on, { now: 0 })
+    const plan = [
+      ...Array.from({ length: 4 }, () => 'claude-opus-5-5'),
+      ...Array.from({ length: 8 }, () => 'claude-sonnet-5-5'),
+      ...Array.from({ length: 8 }, () => HAIKU),
+    ]
     let n = 0
-    for (const [type, model] of [['Explore', HAIKU], ['worker', 'claude-sonnet-5-5']] as const) {
-      n += 1
-      await $.agent.spawn(spawnIn(type, type))
-      await $.turn.complete(complete(`agent-${n}`, { usage: usage(model, 1000, 100, 0, 0) }))
-    }
+    on('agent.spawn', async () => ({ model: plan[n] ?? HAIKU, agentId: `agent-${(n += 1)}` }))
+    on('turn.complete', async (_$, e) => ({ text: e.answer }))
     await press($, 'tab-stats')
-    for (const cols of [64, 90]) {
+    // nothing dispatched: the hint under the cards is cut to the pane
+    const empty = await draw($, 60, 30)
+    const hint = findText(empty, /^還沒有派工/)
+    expect(cellWidth(textOf(hint as Node))).toBeLessThanOrEqual(30)
+    expect(textOf(hint as Node)).toMatch(/…$/)
+
+    for (const [i, model] of plan.entries()) {
+      await $.agent.spawn(spawnIn(`job ${i}`, 'worker'))
+      await $.turn.complete(complete(`agent-${i + 1}`, { usage: usage(model, 10_000, 1000, 0, 0) }))
+    }
+    for (const cols of [30, 64, 90, 120]) {
       const tree = await draw($, 60, cols)
-      const row = ((tree.children ?? []).slice(1) as Node[]).find(k => findText(k, /^模型$/)) as Node
-      for (const card of (row.children ?? []) as Node[]) {
-        const rows = (card.children ?? []).map(k => (typeof k === 'string' ? k : textOf(k)))
-        const above = rows.slice(1).findIndex(r => r.trim() !== '')
-        const below = [...rows].reverse().findIndex(r => r.trim() !== '')
-        expect(Math.abs(above - below)).toBeLessThanOrEqual(1)
+      expect(findText(tree, /^還沒有派工/)).toBeUndefined()
+      expect(linesOf(tree).some(l => /(Opus|Sonnet|Haiku)×\d/.test(l))).toBe(false) // no summary line
+      expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
+      const { rows, inner } = modelCard(tree)
+      expect(rows[0]).toBe('模型')
+      const models = rows.slice(1, 4)
+      // highest cost first: eight Sonnet calls outspend four Opus ones
+      expect(models.map(r => r.match(/^(\S+) +(×\d+)/)?.slice(1))).toEqual([
+        ['Sonnet', '×8'],
+        ['Opus', '×4'],
+        ['Haiku', '×8'],
+      ])
+      for (const r of models) {
+        expect(r).toMatch(/^\S+ +×\d+ +█+░* +(\d+%|<1%)$/)
+        expect(cellWidth(r)).toBe(inner)
       }
+      expect(new Set(models.map(r => r.indexOf('×'))).size).toBe(1)
+      expect(new Set(models.map(r => r.indexOf('█'))).size).toBe(1)
+      expect(rows[4]).toBe('─'.repeat(inner))
+      const savings = rows.slice(5)
+      if (cols >= 64) {
+        expect(savings).toHaveLength(1)
+        expect(savings[0]).toMatch(/^省錢  省\d+% +≈\$\S+ vs Opus \$\S+$/)
+      } else {
+        expect(savings).toHaveLength(2)
+        expect(savings[0]).toMatch(/^省錢  省\d+%$/)
+        expect(savings[1]).toMatch(/^ *≈\$\S+ vs Opus \$\S+$/)
+      }
+      for (const r of savings) expect(cellWidth(r)).toBeLessThanOrEqual(inner)
     }
   })
 })

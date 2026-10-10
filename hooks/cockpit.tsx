@@ -22,7 +22,6 @@ import {
   roleOf,
   shareLabel,
   shortModel,
-  summaryLine,
   tokenTotal,
   tokensOf,
   WORKFLOW_TYPE,
@@ -206,7 +205,6 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // a room the surface could not measure is drawn as if 40 rows tall
   const rows = Number.isFinite(ctx.rows) && ctx.rows > 0 ? Math.min(ctx.rows, MAX_ROWS) : 40
   const wide = cols >= WIDE_COLS
-  const tiny = cols < TINY_COLS
 
   const style = (s: Seg) => ({
     ...(s.color ? { color: s.color } : {}),
@@ -546,22 +544,26 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         ? { t: `省${savedPct}%`, color: 'green', bold: true }
         : { t: `多花${-savedPct}%`, color: 'red', bold: true }
   const savedSub: Seg =
-    savedPct === undefined ? { t: '沒有可計價的模型', dim: true } : { t: `≈${fmtUsd(sum.cost)} vs ${fmtUsd(sum.opusCost)}` }
+    savedPct === undefined
+      ? { t: '沒有可計價的模型', dim: true }
+      : { t: `≈${fmtUsd(sum.cost)} vs Opus ${fmtUsd(sum.opusCost)}` }
 
-  // `withSavings`: the savings sit under the shares, a rule between, in place of their own card
-  const modelSpec = (w: number, withSavings = false): CardSpec => {
+  // The shares with each family's dispatch count, a rule, then the savings: one line, or
+  // two when the figures do not fit beside the verdict.
+  const modelSpec = (w: number): CardSpec => {
     const inner = w - 4
     const labelW = 7
     const pctW = 4
-    const barW = Math.max(3, inner - labelW - 1 - pctW)
+    const countOf = (r: ModelShare) => `×${r.count}`
+    const countW = Math.max(0, ...view.models.map(r => cellWidth(countOf(r))))
+    const barW = Math.max(3, inner - labelW - countW - 2 - pctW)
     const row = (r: ModelShare): Seg[] => {
       const color = r.family ? FAMILY_COLOR[r.family] : 'gray'
-      if (!r.family) {
-        return [{ t: padCells(r.label, labelW), color }, { t: `未計價 ×${r.count}`, dim: true }]
-      }
+      const head: Seg[] = [{ t: padCells(r.label, labelW), color }, { t: padCells(countOf(r), countW), dim: true }, sp(1)]
+      if (!r.family) return [...head, { t: '未計價', dim: true }]
       const len = Math.max(1, barLen(r.share, 1, barW))
       return [
-        { t: padCells(r.label, labelW), color },
+        ...head,
         { t: '█'.repeat(len), color },
         { t: '░'.repeat(barW - len), dim: true },
         { t: padCells(shareLabel(r.share), pctW + 1, 'right') },
@@ -569,30 +571,16 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     }
     const body: Seg[][] =
       view.models.length === 0 ? [[{ t: '還沒有 subagent', dim: true }]] : view.models.map(row)
-    const savings: Seg[][] = withSavings
-      ? [
-          [{ t: '─'.repeat(inner), dim: true }],
-          leftRight(
-            [title('省錢', 'magenta'), sp(2), savedBig],
-            [savedPct === undefined ? savedSub : { t: `≈${fmtUsd(sum.cost)} vs Opus ${fmtUsd(sum.opusCost)}` }],
-            inner,
-          ),
-        ]
-      : []
-    return { w, color: 'blue', lines: [[title('模型', 'blue')], ...body, ...savings] }
-  }
-
-  const saveSpec = (w: number): CardSpec => {
-    const inner = w - 4
+    const verdict: Seg[] = [title('省錢', 'magenta'), sp(2), savedBig]
+    const figures: Seg[] = [savedSub]
+    const savings: Seg[][] =
+      segsWidth(verdict) + 1 + segsWidth(figures) <= inner
+        ? [leftRight(verdict, figures, inner)]
+        : [verdict, leftRight([], figures, inner)]
     return {
       w,
-      color: 'magenta',
-      lines: [
-        [title('省錢', 'magenta')],
-        centered([savedBig], inner),
-        centered([savedSub], inner),
-        centered([{ t: '對比全程 Opus', dim: true }], inner),
-      ],
+      color: 'blue',
+      lines: [[title('模型', 'blue')], ...body, [{ t: '─'.repeat(inner), dim: true }], ...savings],
     }
   }
 
@@ -880,7 +868,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     if (wide) {
       // main over model (the savings under its shares) beside the dispatch flow, one height
       const side = Math.max(44, Math.min(64, cols - 115))
-      const leftSpecs = [mainSpec(side), modelSpec(side, true)]
+      const leftSpecs = [mainSpec(side), modelSpec(side)]
       const leftH = leftSpecs.reduce((n, x) => n + heightOf(x), 0)
       const flow = dispatchSpec(cols - side - 1)
       const right = dispatchSpec(cols - side - 1, Math.max(0, leftH - heightOf(flow)))
@@ -894,20 +882,12 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
           </Box>
         ),
       })
-    } else if (tiny) {
-      blocks.push(cardRow([mainSpec(cols)]), cardRow([dispatchSpec(cols)]))
-      blocks.push(cardRow([modelSpec(cols)]), cardRow([saveSpec(cols)]))
     } else {
-      blocks.push(cardRow([mainSpec(cols)]), cardRow([dispatchSpec(cols)]))
-      const [a, b] = splitCols(cols, 2) as [number, number]
-      blocks.push(cardRow([modelSpec(a), saveSpec(b)], true))
+      blocks.push(cardRow([mainSpec(cols)]), cardRow([dispatchSpec(cols)]), cardRow([modelSpec(cols)]))
     }
-    footer =
-      view.summary.groups.length === 0 ? (
-        <Text dimColor wrap="truncate-end">還沒有派工。派出 subagent 後這裡會即時顯示。</Text>
-      ) : (
-        <Text bold wrap="truncate-end">{summaryLine(view.summary)}</Text>
-      )
+    if (view.summary.groups.length === 0) {
+      footer = <Text dimColor>{fitCells('還沒有派工。派出 subagent 後這裡會即時顯示。', cols)}</Text>
+    }
   }
 
   return (
