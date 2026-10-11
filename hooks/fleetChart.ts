@@ -102,9 +102,8 @@ export function ringPixels(spec: RingSpec, pct: number, depleted: boolean): Pixe
 
 export type Overlay = { row: number; text: string; color: string; bold?: boolean }
 
-// A ring's cells, each overlay's text set centered on its row.
-export function gaugeCells(spec: RingSpec, pct: number, depleted: boolean, overlay: readonly Overlay[]): Cell[][] {
-  const cells = pixelsToCells(ringPixels(spec, pct, depleted))
+// Each overlay's text set centered on its row, in place.
+function setOverlay(cells: Cell[][], overlay: readonly Overlay[]): Cell[][] {
   for (const o of overlay) {
     const row = cells[o.row]
     if (!row) continue
@@ -117,23 +116,72 @@ export function gaugeCells(spec: RingSpec, pct: number, depleted: boolean, overl
   return cells
 }
 
+// A ring's cells, each overlay's text set centered on its row.
+export function gaugeCells(spec: RingSpec, pct: number, depleted: boolean, overlay: readonly Overlay[]): Cell[][] {
+  return setOverlay(pixelsToCells(ringPixels(spec, pct, depleted)), overlay)
+}
+
+export type RingPart = { share: number; color: string }
+
+// A ring cut into arcs clockwise from twelve o'clock, each part `share` of the turn in its
+// color, in order; what the parts leave over muted.
+export function partsRingPixels(spec: RingSpec, parts: readonly RingPart[]): Pixels {
+  const cx = spec.w / 2
+  const cy = spec.h / 2
+  const px: Pixels = []
+  for (let y = 0; y < spec.h; y += 1) {
+    const row: (string | undefined)[] = []
+    for (let x = 0; x < spec.w; x += 1) {
+      const dx = x + 0.5 - cx
+      const dy = y + 0.5 - cy
+      const d = Math.hypot(dx, dy)
+      if (d < spec.rIn || d > spec.rOut) {
+        row.push(undefined)
+        continue
+      }
+      const a = (((Math.atan2(dx, -dy) / (2 * Math.PI)) % 1) + 1) % 1
+      let acc = 0
+      let color: string = THEME.muted
+      for (const part of parts) {
+        acc += Math.max(0, part.share)
+        if (a < acc) {
+          color = part.color
+          break
+        }
+      }
+      row.push(color)
+    }
+    px.push(row)
+  }
+  return px
+}
+
+export function partsGaugeCells(spec: RingSpec, parts: readonly RingPart[], overlay: readonly Overlay[]): Cell[][] {
+  return setOverlay(pixelsToCells(partsRingPixels(spec, parts)), overlay)
+}
+
 const EIGHTHS = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█']
 
-// A bar `width` cells long filled to `pct` in eighths of a cell, glowing dark gold to
-// warm white (red when depleted); the rest shaded.
-export function gaugeBar(width: number, pct: number, depleted: boolean): Cell[] {
+// A bar `width` cells long filled to `pct` in eighths of a cell, each cell colored by how
+// far along the fill it sits; the rest shaded.
+export function rampBar(width: number, pct: number, colors: readonly string[]): Cell[] {
   const p = clamp01(pct)
   const eighths = Math.round(p * width * 8)
   const full = Math.floor(eighths / 8)
   const part = eighths % 8
   const out: Cell[] = []
   for (let i = 0; i < width; i += 1) {
-    const c = depleted ? THEME.error : pick(GAUGE_RAMP, p > 0 ? (i + 0.5) / (p * width) : 0)
+    const c = pick(colors, p > 0 ? (i + 0.5) / (p * width) : 0)
     if (i < full) out.push({ ch: '█', fg: c })
     else if (i === full && part > 0) out.push({ ch: EIGHTHS[part] ?? '█', fg: c })
     else out.push({ ch: '░', fg: THEME.muted })
   }
   return out
+}
+
+// The arc reactor as a bar: dark gold to warm white, red when depleted.
+export function gaugeBar(width: number, pct: number, depleted: boolean): Cell[] {
+  return rampBar(width, pct, depleted ? [THEME.error] : GAUGE_RAMP)
 }
 
 // Today's tokens by hour as an area chart `rows` cells tall and `width` wide, heat by

@@ -12,9 +12,12 @@ import {
   gaugeBar,
   gaugeCells,
   mix,
+  partsGaugeCells,
+  partsRingPixels,
   pick,
   pixelsToCells,
   ramp,
+  rampBar,
   ringPixels,
 } from '../hooks/fleetChart'
 
@@ -156,5 +159,65 @@ describe('fleet cells to segments', () => {
     const segs = cellsToSegs(cells)
     expect(segs).toEqual([{ t: '▀▀', color: THEME.frame }, { t: '█', color: THEME.error }, { t: ' ' }])
     expect(cellWidth(segs.map(s => s.t).join(''))).toBe(4)
+  })
+})
+
+describe('parts ring', () => {
+  test('arcs run clockwise from twelve in the order of the parts; what is left is muted', () => {
+    const px = partsRingPixels(RING_BIG, [
+      { share: 0.25, color: '#111111' },
+      { share: 0.25, color: '#222222' },
+    ])
+    const at = (x: number, y: number) => px[y]?.[x]
+    expect(at(10, 1)).toBe('#111111') // upper right: the first quarter
+    expect(at(10, 12)).toBe('#222222') // lower right: the second
+    expect(at(3, 12)).toBe(THEME.muted) // lower left: nothing
+    expect(at(3, 1)).toBe(THEME.muted) // upper left: nothing
+    expect(at(7, 7)).toBeUndefined() // the hole
+  })
+
+  test('parts that fill the turn leave nothing muted', () => {
+    const flat = partsRingPixels(RING_SMALL, [
+      { share: 0.6, color: '#111111' },
+      { share: 0.4, color: '#222222' },
+    ]).flat()
+    expect(flat.filter(c => c === THEME.muted)).toHaveLength(0)
+    expect(flat.includes('#111111')).toBe(true)
+    expect(flat.includes('#222222')).toBe(true)
+  })
+
+  test('each arc starts where the one before ends: straight down begins the second half', () => {
+    const px = partsRingPixels(RING_SMALL, [
+      { share: 0.5, color: '#111111' },
+      { share: 0.5, color: '#222222' },
+    ])
+    expect(px[0]?.[3]).toBe('#111111') // straight up: the turn starts
+    expect(px[5]?.[3]).toBe('#222222') // straight down: half a turn
+  })
+
+  test('partsGaugeCells sets each overlay centered on its row', () => {
+    const cells = partsGaugeCells(RING_BIG, [{ share: 1, color: '#111111' }], [
+      { row: 3, text: '42%', color: THEME.bright, bold: true },
+    ])
+    const row = cells[3] ?? []
+    expect(row.map(c => c.ch).join('').includes('42%')).toBe(true)
+    expect(row.find(c => c.ch === '4')).toMatchObject({ fg: THEME.bright, bold: true })
+  })
+})
+
+describe('ramp bar', () => {
+  test('fills to eighths of a cell, colors along the ramp, shades the rest', () => {
+    const cells = rampBar(4, 0.5, ['#111111', '#222222'])
+    expect(cells.map(c => c.ch).join('')).toBe('██░░')
+    expect(cells[0]?.fg).toBe('#111111')
+    expect(cells[1]?.fg).toBe('#222222')
+    expect(cells[2]?.fg).toBe(THEME.muted)
+    expect(rampBar(4, 0.53, ['#111111']).map(c => c.ch).join('')).toBe('██▏░')
+    expect(rampBar(3, 0, ['#111111']).map(c => c.ch).join('')).toBe('░░░')
+  })
+
+  test('gaugeBar is rampBar on the gauge glow, all red when depleted', () => {
+    expect(gaugeBar(6, 0.5, false)).toEqual(rampBar(6, 0.5, GAUGE_RAMP))
+    expect(gaugeBar(6, 0.5, true)).toEqual(rampBar(6, 0.5, [THEME.error]))
   })
 })
