@@ -1,7 +1,6 @@
 import type { EngineInterface, RenderElement } from 'claude-code'
 
 import type {
-  FleetQuota,
   FleetSession,
   FleetStatus,
   FleetView,
@@ -11,22 +10,12 @@ import type {
   JarvisPage,
   QuotaWindow,
 } from '../types'
-import {
-  BEATS,
-  CONTEXT_ALERT,
-  CONTEXT_WARN,
-  beatLine,
-  beatsOf,
-  decommissionCount,
-  fleetSections,
-  fleetTotals,
-  fmtAgo,
-  fmtBig,
-  forecast,
-  quotaStale,
-  wrapCells,
-} from './fleet'
-import type { FleetSections } from './fleet'
+import { fleetSections, fmtAgo, fmtBig, wrapCells } from './fleet'
+import { burnChart, cellsToSegs } from './fleetChart'
+import { idlePerRow, planFleet } from './fleetLayout'
+import type { FleetPlan } from './fleetLayout'
+import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
+import type { CardLines } from './fleetCards'
 import {
   CHAIN_WARN,
   FAMILY_COLOR,
@@ -218,29 +207,13 @@ const TABS: { page: JarvisPage; hotkey: string; label: string }[] = [
   { page: 'fleet', hotkey: 'f', label: '艦隊' },
 ]
 
-// A fleet row: the icon, the title (at least FLEET_TITLE_MIN), THIS on this session's row,
-// the workspace, the heartbeat, the context, how long idle. Too narrow, THIS goes first,
-// then the workspace, then the heartbeat, then the idle time.
-type SuitFit = { self: boolean; ws: boolean; beats: boolean; idle: boolean }
-const SUIT_FITS: SuitFit[] = [
-  { self: true, ws: true, beats: true, idle: true },
-  { self: false, ws: true, beats: true, idle: true },
-  { self: false, ws: false, beats: true, idle: true },
-  { self: false, ws: false, beats: false, idle: true },
-]
-const SUIT_NARROWEST: SuitFit = { self: false, ws: false, beats: false, idle: false }
-const FLEET_TITLE_MIN = 8
-const WS_W = 12
-const CTX_W = 4
-const IDLE_W = 4
-const QUOTA_BAR = 10
-const SELF_TEXT = 'THIS'
-
-const FLEET_SECTIONS: { key: keyof FleetSections; label: string; color: string }[] = [
-  { key: 'blocked', label: 'AWAITING ORDERS', color: THEME.error },
-  { key: 'working', label: 'IN FLIGHT', color: THEME.accent },
-  { key: 'idle', label: 'STANDBY', color: THEME.frame },
-]
+// The burn chart's width at each breakpoint but wide (which takes the pane less 4).
+const BURN_MID_W = 48
+const BURN_NARROW_W = 24
+const QUOTA_WINDOWS = [
+  { key: 'fiveHour', label: '5H' },
+  { key: 'sevenDay', label: '7D' },
+] as const
 
 const FLEET_STATUS_TEXT: Record<FleetStatus, { t: string; color: string }> = {
   blocked: { t: 'AWAITING ORDERS', color: THEME.error },
@@ -1127,129 +1100,95 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         ? { t: ctx.frame, color: ACCENT }
         : { t: '⣀', color: FRAME }
 
-  const ctxSeg = (pct: number | undefined): Seg =>
-    pct === undefined
-      ? sp(CTX_W)
-      : { t: padCells(`${pct}%`, CTX_W, 'right'), color: pct >= CONTEXT_ALERT ? ERROR : pct >= CONTEXT_WARN ? ACCENT : PRIMARY }
+  // A suit's number Button: the hotkey 1-9, past 9 its number drawn inside; its label the
+  // card's corner and icon (or a line's icon).
+  const suitChip = (s: FleetSession, n: number, chip: Seg[]) => (
+    <Button key={`suit-${n}`} {...(n > MAX_NUMBERED ? {} : { hotkey: String(n) })} plain onPress={() => ctx.openFleet(s.paneId)}>
+      {texts([...(n > MAX_NUMBERED ? [{ t: padCells(String(n), HOTKEY_W), color: FRAME }] : []), ...chip])}
+    </Button>
+  )
 
-  const suitRow = (s: FleetSession, n: number, width: number, maxBeat: number): Line => {
-    const isSelf = ctx.sessionId !== '' && s.sessionId === ctx.sessionId
-    const selfW = cellWidth(SELF_TEXT) + 1
-    const fixed = (f: SuitFit) =>
-      HOTKEY_W +
-      2 +
-      (f.self && isSelf ? selfW : 0) +
-      (f.ws ? WS_W + 1 : 0) +
-      (f.beats ? BEATS + 1 : 0) +
-      CTX_W +
-      1 +
-      (f.idle ? IDLE_W + 1 : 0)
-    const fit = SUIT_FITS.find(f => width - fixed(f) >= FLEET_TITLE_MIN) ?? SUIT_NARROWEST
-    const titleW = Math.max(1, width - fixed(fit))
-    const idle = s.status !== 'working' && s.lastAt !== undefined ? fmtAgo(view.now - s.lastAt) : ''
-    const titleSeg: Seg = { t: '', color: s.status === 'blocked' ? BRIGHT : PRIMARY, bold: s.status === 'blocked' }
-    const titleSegs: Seg[] =
-      fit.self && isSelf
-        ? [
-            { ...titleSeg, t: fitCells(s.title, titleW) },
-            sp(1),
-            { t: SELF_TEXT, color: FRAME, bold: true },
-            sp(titleW - cellWidth(fitCells(s.title, titleW))),
-          ]
-        : [{ ...titleSeg, t: padCells(s.title, titleW) }]
-    const rest: Seg[] = [
-      sp(1),
-      ...titleSegs,
-      ...(fit.ws ? [sp(1), { t: padCells(s.workspace, WS_W), color: FRAME }] : []),
-      ...(fit.beats
-        ? [sp(1), { t: beatLine(beatsOf(s.stamps, view.now), maxBeat), color: s.status === 'working' ? ACCENT : PRIMARY }]
-        : []),
-      sp(1),
-      ctxSeg(s.contextPct),
-      ...(fit.idle ? [sp(1), { t: padCells(idle, IDLE_W, 'right'), color: FRAME }] : []),
-    ]
-    const chip: Seg[] = [...(n > MAX_NUMBERED ? [{ t: padCells(String(n), HOTKEY_W), color: FRAME }] : []), suitIcon(s)]
-    return {
-      h: 1,
-      node: (
+  // One card or line: the Button and its first row, the rows below set in by the hotkey cells.
+  const suitBlock = (s: FleetSession, n: number, c: CardLines): Block => ({
+    h: 1 + c.body.length,
+    node: (
+      <Box flexDirection="column">
         <Box flexDirection="row">
-          <Button
-            key={`suit-${n}`}
-            {...(n > MAX_NUMBERED ? {} : { hotkey: String(n) })}
-            plain
-            onPress={() => ctx.openFleet(s.paneId)}
-          >
-            {texts(chip)}
-          </Button>
-          {texts(clip(rest, Math.max(0, width - HOTKEY_W - 1)))}
+          {suitChip(s, n, c.chip)}
+          {texts(c.top)}
+        </Box>
+        {c.body.map(r => lineNode([sp(HOTKEY_W), ...r]))}
+      </Box>
+    ),
+  })
+
+  // Cards side by side, one cell apart.
+  const suitGrid = (group: { s: FleetSession; n: number; c: CardLines }[]): Block => {
+    const tall = Math.max(0, ...group.map(g => g.c.body.length))
+    return {
+      h: 1 + tall,
+      node: (
+        <Box flexDirection="column">
+          <Box flexDirection="row">
+            {group.flatMap((g, i) => [...(i > 0 ? texts([sp(1)]) : []), suitChip(g.s, g.n, g.c.chip), ...texts(g.c.top)])}
+          </Box>
+          {Array.from({ length: tall }, (_, j) =>
+            lineNode(group.flatMap((g, i) => [...(i > 0 ? [sp(1)] : []), sp(HOTKEY_W), ...(g.c.body[j] ?? [])])),
+          )}
         </Box>
       ),
     }
   }
 
-  const fmtReset = (ts: number): string => {
-    const hm = fmtClock(ts).slice(0, 5)
-    return ts - view.now < 86_400_000 ? hm : `${fmtDate(ts)} ${hm}`
-  }
-
-  const quotaLine = (label: string, w: QuotaWindow, q: FleetQuota): Seg[] => {
-    const pct = Math.max(0, Math.min(100, Math.round(w.usedPct)))
-    const fill = Math.round((pct / 100) * QUOTA_BAR)
-    const tone = pct >= CONTEXT_ALERT ? ERROR : pct >= CONTEXT_WARN ? ACCENT : PRIMARY
-    const stale = quotaStale(q, view.now)
-    const f = stale ? undefined : forecast(w, q.fetchedAt)
-    const reset = `RESET ${fmtReset(w.resetsAt)}`
-    // a window that runs out before its reset is one line of the error color
-    if (f?.beforeReset) {
-      const out = w.usedPct >= 100 ? 'DEPLETED' : `DEPLETED IN ~${fmtAgo(Math.max(0, f.depleteAt - view.now))}`
-      return [
-        { t: `${label} `, color: ERROR, bold: true },
-        { t: '█'.repeat(fill), color: ERROR },
-        { t: '░'.repeat(QUOTA_BAR - fill), color: ERROR },
-        { t: padCells(`${pct}%`, 5, 'right'), color: ERROR, bold: true },
-        sp(2),
-        { t: out, color: ERROR, bold: true },
-        { t: ` · ${reset}`, color: ERROR },
-      ]
+  // The legion: the busy suits first (cards or lines), then the idle (cards, lines or the
+  // summary), numbered in that order; cut by rows with a count when even lines do not fit.
+  const legionBlocks = (plan: FleetPlan, active: FleetSession[], idle: FleetSession[]): Block[] => {
+    if (active.length + idle.length === 0) {
+      return [{ h: 1, node: lineNode([{ t: fleetView.at === 0 ? '掃描艦隊中…' : '艦隊目前沒有 Claude session', color: FRAME }]) }]
     }
-    const tail: Seg[] = stale
-      ? [
-          { t: 'STALE', color: FRAME, bold: true },
-          { t: ` · ${reset}`, color: FRAME },
-        ]
-      : [{ t: reset, color: FRAME }]
-    return [
-      { t: `${label} `, color: FRAME, bold: true },
-      { t: '█'.repeat(fill), color: tone },
-      { t: '░'.repeat(QUOTA_BAR - fill), color: MUTED },
-      { t: padCells(`${pct}%`, 5, 'right'), color: BRIGHT, bold: true },
-      sp(2),
-      ...tail,
-    ]
-  }
-
-  const powerBlock = (): Block => {
-    const q = fleetView.quota
-    const totals = fleetTotals(fleetView.sessions)
-    const lines: Line[] = [[title('POWER', PRIMARY)]]
-    if (q?.fiveHour) lines.push(quotaLine('5h', q.fiveHour, q))
-    if (q?.sevenDay) lines.push(quotaLine('7d', q.sevenDay, q))
-    // today's numbers wait for the first scan of the transcripts to catch up
-    lines.push(
-      fleetView.scanning
-        ? [
-            { t: 'TODAY ', color: FRAME, bold: true },
-            { t: 'SCANNING…', color: FRAME },
-          ]
-        : [
-            { t: 'TODAY ', color: FRAME, bold: true },
-            { t: `${fmtBig(totals.tokens)} tok`, color: BRIGHT, bold: true },
-            { t: ' · ', color: MUTED },
-            { t: fmtUsd(totals.cost), color: BRIGHT, bold: true },
-            ...(totals.top ? [{ t: ' · top: ', color: FRAME }, { t: totals.top, color: PRIMARY }] : []),
-          ],
-    )
-    return cardRow([{ w: cols, color: FRAME, lines }])
+    const now = view.now
+    // every idle suit's day is scaled to the fleet's idle peak
+    const idleMax = idleHourMax(idle)
+    const opts = (s: FleetSession) => ({ now, self: ctx.sessionId !== '' && s.sessionId === ctx.sessionId, idleMax })
+    const w = cols - HOTKEY_W
+    const spark = plan.mode === 'narrow' ? 6 : 10
+    const units: { b: Block; suits: number }[] = []
+    let n = 0
+    for (const s of active) {
+      n += 1
+      const c = plan.active === 'cards' ? wideCard(s, w, opts(s)) : suitLine(s, w, { ...opts(s), spark })
+      units.push({ b: suitBlock(s, n, c), suits: 1 })
+    }
+    if (idle.length > 0 && plan.idle === 'summary') {
+      units.push({ b: { h: 1, node: lineNode(clip(idleSummary(idle, now), cols)) }, suits: idle.length })
+    } else if (idle.length > 0 && plan.idle === 'lines') {
+      for (const s of idle) {
+        n += 1
+        units.push({ b: suitBlock(s, n, suitLine(s, w, { ...opts(s), spark: 0 })), suits: 1 })
+      }
+    } else if (idle.length > 0) {
+      const per = idlePerRow(plan.mode)
+      const cw = Math.floor((cols - (per - 1)) / per) - HOTKEY_W
+      for (let i = 0; i < idle.length; i += per) {
+        const group = idle.slice(i, i + per).map(s => {
+          n += 1
+          return { s, n, c: smallCard(s, cw, opts(s)) }
+        })
+        units.push({ b: suitGrid(group), suits: group.length })
+      }
+    }
+    const height = units.reduce((h, u) => h + u.b.h, 0)
+    if (plan.cut === undefined || height <= plan.cut) return units.map(u => u.b)
+    // the units whose rows fit above the count line
+    const kept: typeof units = []
+    let used = 0
+    for (const u of units) {
+      if (used + u.b.h > plan.cut - 1) break
+      kept.push(u)
+      used += u.b.h
+    }
+    const hidden = active.length + idle.length - kept.reduce((k, u) => k + u.suits, 0)
+    return [...kept.map(u => u.b), { h: 1, node: lineNode(clip([{ t: `… 還有 ${hidden} 艘`, color: FRAME }], cols)) }]
   }
 
   const fleetBlocks = (room: number): Block[] => {
@@ -1264,38 +1203,29 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         ]),
       ]
     }
-    const out: Block[] = [powerBlock()]
-    const inner = cols - 4
+    const now = view.now
+    const q = fleetView.quota
+    const hourly = hourlyOf(fleetView)
+    const wins = q ? QUOTA_WINDOWS.flatMap(x => (q[x.key] ? [{ label: x.label, w: q[x.key] as QuotaWindow }] : [])) : []
     const sec = fleetSections(fleetView.sessions)
-    const maxBeat = Math.max(0, ...fleetView.sessions.flatMap(s => beatsOf(s.stamps, view.now)))
-    const decom = decommissionCount(fleetView.sessions, view.now)
-    if (fleetView.sessions.length === 0) {
-      const empty = fleetView.at === 0 ? '掃描艦隊中…' : '艦隊目前沒有 Claude session'
-      out.push(cardRow([{ w: cols, color: FRAME, lines: [[{ t: empty, color: FRAME }]] }]))
+    const active = [...sec.blocked, ...sec.working]
+    const plan = planFleet({ cols, room, windows: wins.length, active: active.length, idle: sec.idle.length })
+    const line = (segs: Seg[]): Block => ({ h: 1, node: lineNode(clip(segs, cols)) })
+    const total = hourly.reduce((a, b) => a + b, 0)
+    const sigma = fleetView.scanning ? 'Σ SCANNING…' : `Σ ${fmtBig(total)} TOK`
+    const sections: Block[][] = []
+    if (plan.gauge !== 'none' && q && wins.length > 0) {
+      const gauges = wins.map(x => ({ label: x.label, used: x.w.usedPct, foot: windowFoot(x.w, q, now, plan.gauge === 'big') }))
+      sections.push([line(sectionHeader('ARC REACTOR', cols)), ...reactorRows(plan.gauge, gauges, cols).map(line)])
     }
-    let left = room - out.reduce((h, b) => h + b.h, 0) - (decom > 0 ? 1 : 0)
-    let n = 0
-    for (const x of FLEET_SECTIONS) {
-      const list = sec[x.key]
-      if (list.length === 0) continue
-      // a card is its border and title around its rows; standby gives way when rows run out
-      const fits = Math.max(1, left - 3)
-      const shown = x.key === 'idle' && list.length > fits ? list.slice(0, Math.max(0, fits - 1)) : list
-      const lines: Line[] = [[title(x.label, x.color)]]
-      for (const s of shown) {
-        n += 1
-        lines.push(suitRow(s, n, inner, maxBeat))
-      }
-      if (shown.length < list.length) {
-        lines.push([{ t: `… 還有 ${list.length - shown.length} 艘`, color: FRAME }])
-        n += list.length - shown.length
-      }
-      const block = cardRow([{ w: cols, color: x.color, lines }])
-      out.push(block)
-      left -= block.h
+    if (plan.burnRows > 0) {
+      const w = plan.mode === 'wide' ? cols - 4 : plan.mode === 'mid' ? BURN_MID_W : BURN_NARROW_W
+      const ticks = plan.mode === 'narrow' ? [0, 12] : [0, 6, 12, 18]
+      const chart = burnChart(hourly, w, plan.burnRows, new Date(now).getHours(), ticks)
+      sections.push([line(sectionHeader('TODAY BURN', cols, sigma)), ...chart.map(r => line([sp(2), ...cellsToSegs(r)]))])
     }
-    if (decom > 0) out.push({ h: 1, node: lineNode([{ t: `${decom} SUITS READY FOR DECOMMISSION`, color: ACCENT, bold: true }]) })
-    return out
+    sections.push([line(sectionHeader('IRON LEGION', cols, plan.burnRows === 0 ? sigma : undefined)), ...legionBlocks(plan, active, sec.idle)])
+    return sections.flatMap((s, i) => (i > 0 && plan.blanks ? [line(BLANK), ...s] : s))
   }
 
   const fleetDetailBlock = (s: FleetSession): Block => {

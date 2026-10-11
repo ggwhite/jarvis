@@ -4,6 +4,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { FleetSession } from '../types'
 import { FAMILY_COLOR, THEME, cellWidth, costAt } from '../hooks/jarvis'
+import { BURN_RAMP, GAUGE_RAMP } from '../hooks/fleetChart'
 import {
   BEATS,
   BEAT_GLYPHS,
@@ -940,105 +941,15 @@ const openFleet = async ($: Engine, clock: { advance: (ms: number) => Promise<vo
 
 const paneLists = (w: World) => w.calls.filter(c => c[0] === 'herdr' && c[1] === 'pane' && c[2] === 'list').length
 
-const ALLOWED = new Set<string>([...Object.values(THEME), ...Object.values(FAMILY_COLOR)])
+const ALLOWED = new Set<string>([...Object.values(THEME), ...Object.values(FAMILY_COLOR), ...GAUGE_RAMP, ...BURN_RAMP])
 
 describe('fleet page', () => {
-  test('three sections in order, codex left out, the header counts the suits', async ($, on) => {
-    const w = sampleWorld()
-    const clock = fleetEngine(on, w)
-    const lines = linesOf(await openFleet($, clock)).join('\n')
-    expect(lines).toContain('IRON LEGION · 3 SUITS')
-    // each found after the one before: the costliest's title also reads in POWER, above them all
-    const order: number[] = []
-    for (const t of ['AWAITING ORDERS', 'Alpha review', 'IN FLIGHT', 'Bravo build', 'STANDBY', 'Charlie docs']) {
-      order.push(lines.indexOf(t, (order.at(-1) ?? -1) + 1))
-    }
-    expect(order.every(x => x >= 0)).toBe(true)
-    expect(lines).not.toContain('Codex job')
-  })
-
   test('the list never shows what was said', async ($, on) => {
     const w = sampleWorld()
     const clock = fleetEngine(on, w)
     const lines = linesOf(await openFleet($, clock)).join('\n')
     expect(lines).not.toContain('SECRET-PROMPT')
     expect(lines).not.toContain('SECRET-REPLY')
-  })
-
-  test('POWER: 92% weekly runs out before the reset, today adds up, the costliest is named', async ($, on) => {
-    const w = sampleWorld()
-    const clock = fleetEngine(on, w)
-    const lines = linesOf(await openFleet($, clock)).join('\n')
-    expect(lines).toMatch(/7d .* 92%.*DEPLETED IN ~\d+h/)
-    expect(lines).toMatch(/5h .*  5%.*RESET/)
-    expect(lines).toMatch(/TODAY 165 tok · \$\d+\.\d+ · top: Alpha review/)
-  })
-
-  test('a stale quota says STALE and makes no forecast', async ($, on) => {
-    const w = sampleWorld({ quota: limitsJson(92, T0 - 16 * MIN) })
-    const clock = fleetEngine(on, w)
-    const lines = linesOf(await openFleet($, clock)).join('\n')
-    expect(lines).toContain('STALE')
-    expect(lines).not.toContain('DEPLETED')
-  })
-
-  test('a stale quota still shows when it resets', async ($, on) => {
-    const w = sampleWorld({ quota: limitsJson(92, T0 - 16 * MIN) })
-    const clock = fleetEngine(on, w)
-    const lines = linesOf(await openFleet($, clock)).join('\n')
-    expect(lines).toMatch(/7d .* 92%  STALE · RESET \d\d:\d\d/)
-  })
-
-  test('a forecast that runs out before the reset paints its whole line in the error color', async ($, on) => {
-    const w = sampleWorld()
-    const clock = fleetEngine(on, w)
-    const tree = await openFleet($, clock)
-    const colors = (label: string) =>
-      allTexts(rowNodes(tree).find(r => textOf(r).startsWith(label)) ?? {})
-        .filter(t => textOf(t).trim() !== '')
-        .map(t => t.props?.['color'])
-    expect(colors('7d ').length).toBeGreaterThan(0)
-    expect(colors('7d ').every(c => c === THEME.error)).toBe(true)
-    expect(colors('5h ').every(c => c === THEME.error)).toBe(false)
-  })
-
-  test('a window used up reads DEPLETED, not a countdown, in the error color', async ($, on) => {
-    const w = sampleWorld({ quota: limitsJson(100) })
-    const clock = fleetEngine(on, w)
-    const tree = await openFleet($, clock)
-    const lines = linesOf(tree).join('\n')
-    expect(lines).toMatch(/7d .*100%  DEPLETED · RESET \d\d:\d\d/)
-    expect(lines).not.toContain('DEPLETED IN')
-    expect(allTexts(tree).find(t => textOf(t).trim() === 'DEPLETED')?.props?.['color']).toBe(THEME.error)
-  })
-
-  test('a full context is red, an old idle suit is up for decommission', async ($, on) => {
-    const w = sampleWorld()
-    const clock = fleetEngine(on, w)
-    const tree = await openFleet($, clock)
-    expect(allTexts(tree).find(t => textOf(t).trim() === '95%')?.props?.['color']).toBe(THEME.error)
-    expect(linesOf(tree).join('\n')).toContain('1 SUITS READY FOR DECOMMISSION')
-  })
-
-  test('only the number and icon are a Button; 1-9 carry their hotkey', async ($, on) => {
-    const w = sampleWorld()
-    const clock = fleetEngine(on, w)
-    const suits = buttons(await openFleet($, clock)).filter(b => String(b.props?.['key'] ?? '').startsWith('suit-'))
-    expect(suits.map(b => [b.props?.['key'], b.props?.['hotkey'], b.props?.['plain'], cellWidth(textOf(b))])).toEqual([
-      ['suit-1', '1', true, 1],
-      ['suit-2', '2', true, 1],
-      ['suit-3', '3', true, 1],
-    ])
-  })
-
-  test('every text the fleet page draws wears a theme or model color', async ($, on) => {
-    const w = sampleWorld()
-    const clock = fleetEngine(on, w)
-    const bad = allTexts(await openFleet($, clock))
-      .filter(t => textOf(t).trim() !== '')
-      .filter(t => !ALLOWED.has(String(t.props?.['color'] ?? '')))
-      .map(textOf)
-    expect(bad).toEqual([])
   })
 
   for (const cols of [40, 64, 80]) {
@@ -1070,16 +981,6 @@ describe('fleet page', () => {
       await press($, key, 40, 40)
       expect(tabBarWidth(await draw($, 40, 40))).toBeLessThanOrEqual(40)
     }
-  })
-
-  test('many standby suits are cut with a count; POWER and the waiting stay', async ($, on) => {
-    const many = Array.from({ length: 30 }, (_, i) => pane({ pane_id: `w1:x${i}`, label: `Idle ${i}`, agent_session: { value: `idle-${i}` } }))
-    const w = sampleWorld({ panes: [pane({ agent_status: 'blocked', label: 'Alpha review' }), ...many] })
-    const clock = fleetEngine(on, w)
-    const lines = linesOf(await openFleet($, clock, 24, 80)).join('\n')
-    expect(lines).toContain('POWER')
-    expect(lines).toContain('Alpha review')
-    expect(lines).toMatch(/… 還有 \d+ 艘/)
   })
 
   test('herdr down: FLEET LINK LOST, the last suits kept', async ($, on) => {
@@ -1152,17 +1053,123 @@ describe('fleet page', () => {
     }
   })
 
-  test('TODAY reads SCANNING… until the first scan has caught up', async ($, on) => {
+  test('the dashboard: rings, the burn, then the legion, the waiting before the working before the idle', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const lines = linesOf(await openFleet($, clock)).join('\n')
+    expect(lines).toContain('IRON LEGION · 3 SUITS')
+    const order: number[] = []
+    for (const t of ['ARC REACTOR', 'TODAY BURN', '── IRON LEGION', 'Alpha review', 'AWAITING', 'Bravo build', 'ACTIVE', 'Charlie docs', 'RETIRE']) {
+      order.push(lines.indexOf(t, (order.at(-1) ?? -1) + 1))
+    }
+    expect(order.every(x => x >= 0)).toBe(true)
+    expect(lines).not.toContain('Codex job')
+  })
+
+  test('ARC REACTOR: 92% weekly runs out before the reset, 5h resets, the burn adds up today', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const lines = linesOf(await openFleet($, clock)).join('\n')
+    expect(lines).toMatch(/7D  92%/)
+    expect(lines).toMatch(/DEPLETED ~\d+h/)
+    expect(lines).toMatch(/5H  5%/)
+    expect(lines).toMatch(/RESET \d\d:\d\d/)
+    expect(lines).toMatch(/TODAY BURN ─+ Σ 165 TOK ──/)
+  })
+
+  test('a busy card reads the model, the tool in flight, the run and today', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const lines = linesOf(await openFleet($, clock)).join('\n')
+    expect(lines).toMatch(/Opus 5\.5 · Bash/)
+    expect(lines).toMatch(/Opus 5\.5 · 3m/)
+    expect(lines).toMatch(/TODAY 150 · \$\d+\.\d+/)
+  })
+
+  test('a stale quota says STALE with its reset and makes no forecast', async ($, on) => {
+    const w = sampleWorld({ quota: limitsJson(92, T0 - 16 * MIN) })
+    const clock = fleetEngine(on, w)
+    const lines = linesOf(await openFleet($, clock)).join('\n')
+    expect(lines).toMatch(/STALE · RESET \d\d:\d\d/)
+    expect(lines).not.toContain('DEPLETED')
+  })
+
+  test('a window that runs out first burns its ring and foot red; the other stays cool', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const tree = await openFleet($, clock)
+    const texts = allTexts(tree)
+    expect(texts.find(t => textOf(t).trim().startsWith('DEPLETED'))?.props?.['color']).toBe(THEME.error)
+    expect(texts.find(t => textOf(t).trim().startsWith('RESET'))?.props?.['color']).toBe(THEME.frame)
+    expect(texts.some(t => /[▀▄█]/.test(textOf(t)) && (t.props?.['color'] === THEME.error || t.props?.['backgroundColor'] === THEME.error))).toBe(true)
+  })
+
+  test('a window used up reads DEPLETED, not a countdown', async ($, on) => {
+    const w = sampleWorld({ quota: limitsJson(100) })
+    const clock = fleetEngine(on, w)
+    const tree = await openFleet($, clock)
+    expect(allTexts(tree).find(t => textOf(t).trim() === 'DEPLETED')?.props?.['color']).toBe(THEME.error)
+    expect(linesOf(tree).join('\n')).not.toMatch(/DEPLETED ~/)
+  })
+
+  test('a full context is red; an idle suit past a day reads RETIRE', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const tree = await openFleet($, clock)
+    expect(allTexts(tree).find(t => textOf(t).trim() === '95%')?.props?.['color']).toBe(THEME.error)
+    expect(linesOf(tree).find(l => l.includes('Charlie docs'))).toContain('RETIRE')
+  })
+
+  test('only the corner and icon of a card are its Button; 1-9 carry their hotkey', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const suits = buttons(await openFleet($, clock)).filter(b => String(b.props?.['key'] ?? '').startsWith('suit-'))
+    expect(suits.map(b => [b.props?.['key'], b.props?.['hotkey'], b.props?.['plain'], textOf(b)])).toEqual([
+      ['suit-1', '1', true, '╭─ ▲'],
+      ['suit-2', '2', true, '╭─ ◆'],
+      ['suit-3', '3', true, '╭─ ◇'],
+    ])
+  })
+
+  test('every text the fleet page draws wears a theme color, a ramp color or a model color', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const bad = allTexts(await openFleet($, clock))
+      .filter(t => textOf(t).trim() !== '')
+      .filter(t => !ALLOWED.has(String(t.props?.['color'] ?? '')) || (t.props?.['backgroundColor'] !== undefined && !ALLOWED.has(String(t.props['backgroundColor']))))
+      .map(textOf)
+    expect(bad).toEqual([])
+  })
+
+  test('many idle suits fold into the standby summary; the rings and the waiting stay', async ($, on) => {
+    const many = Array.from({ length: 30 }, (_, i) => pane({ pane_id: `w1:x${i}`, label: `Idle ${i}`, agent_session: { value: `idle-${i}` } }))
+    const w = sampleWorld({ panes: [pane({ agent_status: 'blocked', label: 'Alpha review' }), ...many] })
+    const clock = fleetEngine(on, w)
+    const lines = linesOf(await openFleet($, clock, 24, 80)).join('\n')
+    expect(lines).toContain('ARC REACTOR')
+    expect(lines).toContain('Alpha review')
+    expect(lines).toContain('STANDBY 30 艘')
+  })
+
+  test('too many busy suits for the rows are cut with a count', async ($, on) => {
+    const busy = Array.from({ length: 8 }, (_, i) => pane({ pane_id: `w1:b${i}`, label: `Busy ${i}`, agent_status: 'working', agent_session: { value: `busy-${i}` } }))
+    const w = sampleWorld({ panes: busy })
+    const clock = fleetEngine(on, w)
+    const tree = await openFleet($, clock, 12, 80)
+    expect(linesOf(tree).join('\n')).toMatch(/… 還有 \d+ 艘/)
+    expect(linesOf(tree).length).toBeLessThanOrEqual(12)
+  })
+
+  test('Σ reads SCANNING… until the first scan has caught up', async ($, on) => {
     const w = sampleWorld()
     const clock = fleetEngine(on, w)
     await start($)
     await press($, 'tab-fleet')
-    const before = allTexts(await draw($)).find(t => textOf(t).includes('SCANNING…'))
-    expect(before?.props?.['color']).toBe(THEME.frame)
+    expect(linesOf(await draw($)).join('\n')).toContain('Σ SCANNING…')
     await clock.advance(10)
     const lines = linesOf(await draw($)).join('\n')
     expect(lines).not.toContain('SCANNING…')
-    expect(lines).toMatch(/TODAY 165 tok/)
+    expect(lines).toContain('Σ 165 TOK')
   })
 
   test('this session is marked THIS, in the frame color', async ($, on) => {
@@ -1170,17 +1177,118 @@ describe('fleet page', () => {
     const clock = fleetEngine(on, w)
     const tree = await openFleet($, clock)
     const lines = linesOf(tree)
-    expect(lines.find(l => l.includes('Charlie docs'))).toMatch(/Charlie docs\s+THIS/)
-    expect(lines.filter(l => l.includes('THIS'))).toHaveLength(1)
+    expect(lines.find(l => l.includes('Charlie docs'))).toMatch(/Charlie docs THIS/)
+    expect(lines.filter(l => /\bTHIS\b/.test(l))).toHaveLength(1)
     expect(allTexts(tree).find(t => textOf(t).trim() === 'THIS')?.props?.['color']).toBe(THEME.frame)
   })
 
-  test('too narrow, THIS goes before the workspace', async ($, on) => {
-    const w = sampleWorld({ selfId: 'sess-c' })
+  test('mid: idle cards two abreast; narrow: every suit a line and the rings bars; wide: big rings side by side', async ($, on) => {
+    const idle = ['Delta', 'Echo', 'Foxtrot'].map((label, i) => pane({ pane_id: `w1:i${i}`, label, agent_session: { value: `idle-${i}` } }))
+    const w = sampleWorld({ panes: [...SAMPLE_PANES, ...idle] })
     const clock = fleetEngine(on, w)
-    const row = linesOf(await openFleet($, clock, 40, 57)).find(l => l.includes('Charlie')) ?? ''
-    expect(row).toContain('Acme')
-    expect(row).not.toContain('THIS')
+    const mid = linesOf(await openFleet($, clock, 45, 65))
+    expect(mid.some(l => (l.match(/╭─/g) ?? []).length === 2)).toBe(true)
+    const narrow = linesOf(await draw($, 45, 44))
+    expect(narrow.some(l => l.includes('╭─'))).toBe(false)
+    expect(narrow.some(l => l.includes('▕'))).toBe(true)
+    const wide = linesOf(await draw($, 60, 120))
+    expect(wide.some(l => l.includes('5H') && l.includes('7D'))).toBe(true)
+  })
+
+  test('every width and height stays inside the pane', async ($, on) => {
+    const idle = Array.from({ length: 7 }, (_, i) => pane({ pane_id: `w1:i${i}`, label: `閒置任務 ${i} 很長的標題`, agent_session: { value: `idle-${i}` } }))
+    const w = sampleWorld({ panes: [...SAMPLE_PANES, ...idle] })
+    const clock = fleetEngine(on, w)
+    await openFleet($, clock)
+    for (const cols of [40, 44, 65, 100]) {
+      for (const rows of [8, 10, 14, 24, 45]) {
+        const tree = await draw($, rows, cols)
+        expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
+        expect(linesOf(tree).length).toBeLessThanOrEqual(rows)
+      }
+    }
+  })
+
+  test('suits past 9 carry their number inside the Button, no hotkey, no wider', async ($, on) => {
+    const busy = Array.from({ length: 12 }, (_, i) => pane({ pane_id: `w1:b${i}`, label: `Busy ${i}`, agent_status: 'working', agent_session: { value: `busy-${i}` } }))
+    const w = sampleWorld({ panes: busy })
+    const clock = fleetEngine(on, w)
+    const tree = await openFleet($, clock, 90, 80)
+    const tenth = buttons(tree).find(b => b.props?.['key'] === 'suit-10')
+    expect(tenth?.props?.['hotkey']).toBeUndefined()
+    expect(textOf(tenth ?? {})).toMatch(/^10 /)
+    expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(80)
+  })
+
+  test('with rows to spare a blank line parts the sections; short of rows they close up', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const roomy = linesOf(await openFleet($, clock))
+    for (const head of ['── TODAY BURN', '── IRON LEGION']) {
+      expect(roomy[roomy.findIndex(l => l.startsWith(head)) - 1]?.trim()).toBe('')
+    }
+    const tight = linesOf(await draw($, 12, 80))
+    const legion = tight.findIndex(l => l.startsWith('── IRON LEGION'))
+    expect(tight[legion - 1]?.trim()).not.toBe('')
+  })
+
+  test('idle cards side by side keep a cell between them', async ($, on) => {
+    const idle = ['Delta', 'Echo'].map((label, i) => pane({ pane_id: `w1:i${i}`, label, agent_session: { value: `idle-${i}` } }))
+    const w = sampleWorld({ panes: idle })
+    const clock = fleetEngine(on, w)
+    const lines = linesOf(await openFleet($, clock))
+    expect(lines.some(l => l.includes('╮ ╭─'))).toBe(true)
+    expect(lines.some(l => l.includes('╯    ╰'))).toBe(true)
+  })
+
+  test('with the burn chart gone, Σ moves to the IRON LEGION header', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const lines = linesOf(await openFleet($, clock, 10, 80))
+    expect(lines.join('\n')).not.toContain('TODAY BURN')
+    expect(lines.find(l => l.includes('── IRON LEGION'))).toMatch(/Σ 165 TOK ──$/)
+  })
+
+  test('the idle cards draw today against one peak: a quiet suit stays low beside a busy one', async ($, on) => {
+    const idle = [
+      pane({ pane_id: 'w1:i0', label: 'Delta', cwd: '/srv/delta', agent_session: { value: 'sess-d' } }),
+      pane({ pane_id: 'w1:i1', label: 'Echo', cwd: '/srv/echo', agent_session: { value: 'sess-e' } }),
+    ]
+    const w = sampleWorld({
+      panes: idle,
+      files: {
+        [pathOf('/srv/delta', 'sess-d')]: jsonl(reply(T0 - 30 * MIN, 'd1', [text('x')], use(1000, 0))),
+        [pathOf('/srv/echo', 'sess-e')]: jsonl(reply(T0 - 30 * MIN, 'e1', [text('x')], use(10, 0))),
+      },
+    })
+    const clock = fleetEngine(on, w)
+    const lines = linesOf(await openFleet($, clock))
+    const row = lines[lines.findIndex(l => l.includes('Delta') && l.includes('Echo')) + 1] ?? ''
+    const [delta, echo] = row.match(/[\u2800-\u28FF]+/g) ?? []
+    expect(delta).toBeDefined()
+    expect(echo).not.toBe(delta)
+  })
+
+  test('a quota file with no window in it draws no reactor', async ($, on) => {
+    const w = sampleWorld({ quota: JSON.stringify({ fetchedAtMs: T0 }) })
+    const clock = fleetEngine(on, w)
+    const lines = linesOf(await openFleet($, clock)).join('\n')
+    expect(lines).not.toContain('ARC REACTOR')
+    expect(lines).toContain('── IRON LEGION')
+  })
+
+  test('one quota window draws one gauge; no quota file draws none, Σ stays', async ($, on) => {
+    const only5h = JSON.stringify({ fiveHour: { usedPercentage: 5, resetsAt: Math.floor(T0 / 1000) + 120 * 60, windowMinutes: 300 }, fetchedAtMs: T0 })
+    const w = sampleWorld({ quota: only5h })
+    const clock = fleetEngine(on, w)
+    const lines = linesOf(await openFleet($, clock)).join('\n')
+    expect(lines).toContain('5H')
+    expect(lines).not.toContain('7D')
+    w.quota = undefined
+    await clock.advance(FLEET_MS)
+    const none = linesOf(await draw($)).join('\n')
+    expect(none).not.toContain('ARC REACTOR')
+    expect(none).toContain('Σ 165 TOK')
   })
 })
 
@@ -1222,7 +1330,7 @@ describe('fleet detail page', () => {
     await clock.advance(10)
     expect(w.calls.some(c => c.join(' ') === 'herdr agent focus w2:p2')).toBe(true)
     await press($, 'back')
-    expect(linesOf(await draw($)).join('\n')).toContain('STANDBY')
+    expect(linesOf(await draw($)).join('\n')).toContain('── IRON LEGION')
   })
 
   test('a failed jump says so on that suit only', async ($, on) => {
@@ -1247,7 +1355,7 @@ describe('fleet detail page', () => {
     await draw($)
     await clock.advance(FLEET_MS)
     const lines = linesOf(await draw($)).join('\n')
-    expect(lines).toContain('IN FLIGHT')
+    expect(lines).toContain('── IRON LEGION')
     expect(lines).not.toContain('最後提問')
   })
 
