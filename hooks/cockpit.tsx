@@ -166,6 +166,7 @@ export const RECOVERED = '↻'
 const PHASE_TEXT: Record<Phase, { full: string; label: string; short: string }> = {
   init: { full: 'INITIALIZING…', label: 'INITIALIZING', short: 'INIT…' },
   active: { full: 'ACTIVE', label: 'ACTIVE', short: 'ACTIVE' },
+  waiting: { full: 'WAITING ON BACKGROUND', label: 'WAITING', short: 'WAIT' },
   complete: { full: 'MISSION COMPLETE', label: 'MISSION COMPLETE', short: 'COMPLETE' },
   failed: { full: 'MISSION FAILED', label: 'MISSION FAILED', short: 'FAILED' },
   lost: { full: 'SIGNAL LOST', label: 'SIGNAL LOST', short: 'LOST' },
@@ -764,7 +765,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const icon = (a: JarvisAgent, compact: boolean): string => {
       const p = phase(a)
       if (p === 'init') return compact ? [...ctx.scan][0] ?? '' : ctx.scan
-      return p === 'active' ? ctx.frame : p === 'complete' ? '✓' : p === 'failed' ? '✗' : '?'
+      return p === 'active' || p === 'waiting' ? ctx.frame : p === 'complete' ? '✓' : p === 'failed' ? '✗' : '?'
     }
     const iconW = (compact: boolean) => Math.max(1, ...agentsShown.map(x => cellWidth(icon(x.a, compact))))
     const nameW = Math.min(15, Math.max(4, ...agentsShown.filter(x => !x.member).map(x => cellWidth(typeLabel(x.a.type)))))
@@ -812,7 +813,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const row = (a: JarvisAgent, member?: 'mid' | 'last'): Line => {
       const p = phase(a)
       const { n, color } = memberOf(a)
-      const live = p === 'init' || p === 'active'
+      const live = p === 'init' || p === 'active' || p === 'waiting'
       const lock = view.locks.get(a.id)
       // a finished, failed or lost card reads in the frame gold; its brackets and mark are
       // the dark brown
@@ -824,7 +825,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
             ? BRIGHT
             : p === 'init'
               ? PRIMARY
-              : p === 'active'
+              : p === 'active' || p === 'waiting'
                 ? ACCENT
                 : p === 'failed'
                   ? ERROR
@@ -972,11 +973,13 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         ? [{ t: `${ctx.scan} ${words}`, color: PRIMARY, bold: true }]
         : p === 'active'
           ? [{ t: `${ctx.frame} ${words}`, color: ACCENT, bold: true }, ...(a.tool !== '' ? [{ t: ` · ${a.tool}`, color: FRAME }] : [])]
-          : p === 'complete'
-            ? [{ t: `✓ ${words}`, color: FRAME }]
-            : p === 'failed'
-              ? [{ t: `✗ ${words}`, color: ERROR }]
-              : [{ t: `? ${words}`, color: FRAME }]
+          : p === 'waiting'
+            ? [{ t: `${ctx.frame} ${words}`, color: ACCENT, bold: true }]
+            : p === 'complete'
+              ? [{ t: `✓ ${words}`, color: FRAME }]
+              : p === 'failed'
+                ? [{ t: `✗ ${words}`, color: ERROR }]
+                : [{ t: `? ${words}`, color: FRAME }]
     const lines: Line[] = [
       [
         { t: `${a.status === 'running' ? `⌜ ${mkOf(a)} ⌝` : `⌞ ${mkOf(a)} ⌟`} `, color, bold: true },

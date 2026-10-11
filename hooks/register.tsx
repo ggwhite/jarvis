@@ -16,14 +16,16 @@ import {
   healthOfState,
   finishTurn,
   markStale,
+  needsReconcile,
   noteTool,
+  reconcileAgents,
   runningOf,
   scanFrame,
   tickMs,
   MAIN_ACTOR,
   MAIN_SOURCE,
 } from './jarvis'
-import type { Completion } from './jarvis'
+import type { Completion, EngineAgent } from './jarvis'
 import { drawCockpit } from './cockpit'
 import { RUN_TIMEOUT_MS, createReporter, jarvisText, inHerdr } from './herdr'
 import type { Reporter } from './herdr'
@@ -65,13 +67,31 @@ const fleetCursor = atom({ plugin: 'jarvis', key: 'fleetCursor' } as const, {})
 // counting them in flight would hide a stuck subagent.
 const UNTRACKED = new Set(['Agent', 'Workflow'])
 
+// What the engine says of its agents, as reconcileAgents reads it; [] when it cannot say.
+async function engineAgents($: Pick<EngineInterface, 'agent'>): Promise<EngineAgent[]> {
+  try {
+    return (await $.agent.list()).map(a => ({ id: a.id, status: a.status, type: a.type, description: a.description }))
+  } catch {
+    return []
+  }
+}
+
+async function reconcile($: Pick<EngineInterface, 'agent' | 'state'>, now: number): Promise<void> {
+  const info = await engineAgents($)
+  if (info.length === 0) return
+  await update($, agents, list => {
+    const out = reconcileAgents(list, info, now)
+    return out === list ? list : [...out]
+  })
+}
+
 // The session's one tick, started at session.start: it counts the clock of running
 // rows and turns the spinners; at most once per IDLE_MS it also marks lost subagents
 // and feeds the Herdr row (`slow.at` is when it last did). It runs every ANIM_MS while
 // a subagent runs or the boot plays and the pane is in view, every IDLE_MS otherwise
 // (`pace` picks); with nothing running and no boot it only reads state, so nothing redraws.
 async function tickOnce(
-  $: Pick<EngineInterface, 'clock' | 'state'>,
+  $: Pick<EngineInterface, 'clock' | 'state' | 'agent'>,
   reporter: Reporter | undefined,
   pace: (list: readonly JarvisAgent[], now: number) => void,
   slow: { at: number },
@@ -81,6 +101,10 @@ async function tickOnce(
     const now = await $.clock.now()
     const due = now - slow.at >= IDLE_MS
     let list = await read($, agents)
+    if (due && needsReconcile(list, now)) {
+      await reconcile($, now)
+      list = await read($, agents)
+    }
     if (runningOf(list).length > 0 && due && markStale(list, now) !== list) {
       await update($, agents, l => [...markStale(l, now)])
       list = await read($, agents)
@@ -348,6 +372,17 @@ export const register: Register = on => {
           lastDesc: desc,
         }))
       } else {
+        const known = (await read($, agents)).some(a => a.id === id)
+        if (!known) {
+          const info = (await engineAgents($)).find(a => a.id === id)
+          if (info) {
+            await update($, agents, list =>
+              list.some(a => a.id === id)
+                ? list
+                : addAgent(list, { id, type: info.type ?? 'subagent', description: info.description ?? '', model: '', now }),
+            )
+          }
+        }
         await update($, agents, list => noteTool(list, id, tool, now))
         await update($, tick, t => ({ n: t.n + 1, now }))
         const list = await read($, agents)
@@ -431,6 +466,7 @@ export const register: Register = on => {
           known = list.some(a => a.id === id)
           return known ? finishTurn(list, id, c, now) : list
         })
+        if (known) await reconcile($, now)
         if (!known) {
           early.set(id, [...(early.get(id) ?? []), c])
           if (early.size > MAX_EARLY) {

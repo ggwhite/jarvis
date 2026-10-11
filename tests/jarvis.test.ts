@@ -6,6 +6,7 @@ import type { JarvisAgent, JarvisEvent, JarvisInflight, JarvisMain } from '../ty
 import {
   MAX_EVENTS,
   MAX_NUMBERED,
+  RECONCILE_RECENT_MS,
   STALE_MS,
   STUCK_MS,
   addAgent,
@@ -19,6 +20,8 @@ import {
   healthOf,
   healthOfState,
   modelShares,
+  needsReconcile,
+  reconcileAgents,
   roleOf,
   shareLabel,
   costAt,
@@ -3777,5 +3780,105 @@ describe('standby suit', () => {
     expect(short).toContain('J.A.R.V.I.S. ONLINE')
     expect(short).not.toMatch(/[▀▄]/)
     expect(linesOf(await draw($, 20, 27)).join('\n')).not.toMatch(/[▀▄]/)
+  })
+})
+
+describe('background wait', () => {
+  const base = (over: Partial<JarvisAgent> = {}): JarvisAgent => ({
+    id: 'w1', type: 'verifier', description: 'check', model: 'claude-sonnet-5-5', status: 'done', tool: '',
+    runStartedAt: 0, lastSeenAt: 1000, doneMs: 1000, endedAt: 1000, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, seq: 0,
+    ...over,
+  })
+
+  test('an engine waiting on background work shows the agent running and waiting', () => {
+    const out = reconcileAgents([base()], [{ id: 'w1', status: 'waiting' }], 5000)
+    expect(out[0]?.status).toBe('running')
+    expect(out[0]?.waiting).toBe(true)
+    expect(out[0]?.runStartedAt).toBe(5000)
+    expect(phaseOf(out[0] as JarvisAgent, 9000)).toBe('waiting')
+  })
+
+  test('an engine still running a finished agent shows it running, not waiting', () => {
+    const out = reconcileAgents([base()], [{ id: 'w1', status: 'running' }], 5000)
+    expect(out[0]?.status).toBe('running')
+    expect(out[0]?.waiting).toBeUndefined()
+  })
+
+  test('waiting, then completed: back to done once', () => {
+    const waiting = reconcileAgents([base()], [{ id: 'w1', status: 'waiting' }], 5000)
+    const done = reconcileAgents(waiting, [{ id: 'w1', status: 'completed' }], 8000)
+    expect(done[0]?.status).toBe('done')
+    expect(done[0]?.waiting).toBeUndefined()
+    expect(done[0]?.endedAt).toBe(8000)
+    expect(done[0]?.doneMs).toBe(1000 + 3000)
+    expect(reconcileAgents(done, [{ id: 'w1', status: 'completed' }], 9000)).toBe(done)
+  })
+
+  test('failed or killed ends a waiting agent as failed', () => {
+    const waiting = reconcileAgents([base()], [{ id: 'w1', status: 'waiting' }], 5000)
+    expect(reconcileAgents(waiting, [{ id: 'w1', status: 'killed' }], 6000)[0]?.status).toBe('failed')
+    expect(reconcileAgents(waiting, [{ id: 'w1', status: 'failed' }], 6000)[0]?.status).toBe('failed')
+  })
+
+  test('an agent the engine no longer lists is left as it is', () => {
+    const list = [base()]
+    expect(reconcileAgents(list, [], 5000)).toBe(list)
+  })
+
+  test('a tool call clears waiting', () => {
+    const waiting = reconcileAgents([base()], [{ id: 'w1', status: 'waiting' }], 5000)
+    const out = noteTool(waiting, 'w1', 'Bash', 6000)
+    expect(out[0]?.waiting).toBeUndefined()
+    expect(out[0]?.status).toBe('running')
+  })
+
+  test('a waiting subagent is never marked stale', () => {
+    const waiting = reconcileAgents([base()], [{ id: 'w1', status: 'waiting' }], 5000)
+    expect(markStale(waiting, 5000 + STALE_MS + 1)).toBe(waiting)
+  })
+
+  test('reconcile is due while one waits or one finished in the last minute', () => {
+    expect(needsReconcile([base({ endedAt: 1000 })], 1000 + RECONCILE_RECENT_MS)).toBe(true)
+    expect(needsReconcile([base({ endedAt: 1000 })], 1000 + RECONCILE_RECENT_MS + 1)).toBe(false)
+    expect(needsReconcile([base({ status: 'running', waiting: true, endedAt: 0 })], 10 * RECONCILE_RECENT_MS)).toBe(true)
+  })
+})
+
+describe('background wait, wired', () => {
+  const listed = (on: On, rows: { id: string; status: string; type?: string; description?: string }[]) =>
+    on('agent.list', async () => ({ value: rows.map(r => ({ id: r.id, status: r.status, type: r.type ?? 'verifier', description: r.description ?? 'check' })) as never }))
+
+  test('a turn that ends while the engine waits leaves the agent WAITING', async ($, on) => {
+    engine(on, 'agent-1')
+    const engineRows = [{ id: 'agent-1', status: 'waiting' }]
+    listed(on, engineRows)
+    await start($)
+    await $.agent.spawn(spawnInput({ description: 'check', subagentType: 'verifier' }))
+    await $.turn.complete(complete('agent-1'))
+    const lines = linesOf(await draw($, 40, 80)).join('\n')
+    expect(lines).toContain('WAITING')
+    expect(lines).not.toContain('MISSION COMPLETE')
+  })
+
+  test('the tick brings a waiting agent back to complete once the engine ends it', async ($, on) => {
+    const clock = engine(on, 'agent-1')
+    const engineRows = [{ id: 'agent-1', status: 'waiting' }]
+    listed(on, engineRows)
+    await start($)
+    await $.agent.spawn(spawnInput({ description: 'check', subagentType: 'verifier' }))
+    await $.turn.complete(complete('agent-1'))
+    engineRows[0] = { id: 'agent-1', status: 'completed' }
+    await clock.advance(1500)
+    expect(linesOf(await draw($, 40, 80)).join('\n')).not.toContain('WAITING')
+  })
+
+  test('a tool call from an agent no longer listed brings it back once', async ($, on) => {
+    engine(on)
+    listed(on, [{ id: 'ghost', status: 'running', type: 'worker', description: 'woken' }])
+    await start($)
+    await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'ghost' } as never)
+    await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'ghost' } as never)
+    const lines = linesOf(await draw($, 40, 80)).join('\n')
+    expect(lines.match(/woken/g)?.length ?? 0).toBe(1)
   })
 })

@@ -20,6 +20,8 @@ export type JarvisAgent = {
   // set when a workflow script's agent() started it: the run and its place in the run
   runId?: string
   agentIndex?: number
+  // the engine says it is waiting on background work it owns: running, shown as WAITING
+  waiting?: boolean
 }
 
 // One finished tool call, main loop or subagent. `ts` is when it started.
