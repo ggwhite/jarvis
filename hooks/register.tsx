@@ -1,9 +1,11 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { CrewPage, CrewUi } from '../types'
+import type { CrewAgent, CrewPage, CrewUi } from '../types'
 
 import {
+  ANIM_MS,
+  IDLE_MS,
   SPINNER,
   addAgent,
   addEvent,
@@ -14,6 +16,8 @@ import {
   markStale,
   noteTool,
   runningOf,
+  scanFrame,
+  tickMs,
   MAIN_ACTOR,
   MAIN_SOURCE,
 } from './crew'
@@ -51,23 +55,31 @@ const eventTotal = atom({ plugin: 'crew', key: 'eventTotal' } as const, 0)
 // counting them in flight would hide a stuck subagent.
 const UNTRACKED = new Set(['Agent', 'Workflow'])
 
-// One tick a second for the whole session, started at session.start: it counts
-// the clock of running rows, marks lost subagents and feeds the Herdr row. With
+// The session's one tick, started at session.start: it counts the clock of running
+// rows and turns the spinners; at most once per IDLE_MS it also marks lost subagents
+// and feeds the Herdr row (`slow.at` is when it last did). It runs every ANIM_MS while
+// a subagent runs and the pane is in view, every IDLE_MS otherwise (`pace` picks); with
 // nothing running it only reads state, so nothing redraws.
 async function tickOnce(
   $: Pick<EngineInterface, 'clock' | 'state'>,
   reporter: Reporter | undefined,
+  pace: (list: readonly CrewAgent[], now: number) => void,
+  slow: { at: number },
 ): Promise<void> {
   try {
     const now = await $.clock.now()
+    const due = now - slow.at >= IDLE_MS
     let list = await read($, agents)
     if (runningOf(list).length > 0) {
-      if (markStale(list, now) !== list) {
+      if (due && markStale(list, now) !== list) {
         await update($, agents, l => [...markStale(l, now)])
         list = await read($, agents)
       }
       if (runningOf(list).length > 0) await update($, tick, t => ({ n: t.n + 1, now }))
     }
+    pace(list, now)
+    if (!due) return
+    slow.at = now
     const health = healthOfState(
       {
         agents: list,
@@ -87,6 +99,11 @@ export const register: Register = on => {
   // A subagent can finish before its spawn has been recorded; park its turns here.
   const early = new Map<string, Completion[]>()
   let timer: Timer | undefined
+  let period = 0
+  // when the pane was last drawn: the tick animates only a pane in view
+  let drawnAt = -Infinity
+  // restarts the tick at `ms` when it runs at another period; set at session.start
+  let pace: ((ms: number) => void) | undefined
 
   on('session.start', async ($, e, next) => {
     try {
@@ -116,12 +133,24 @@ export const register: Register = on => {
       // no Herdr row without a readable environment
     }
 
-    try {
-      timer?.cancel()
-      timer = $.clock.every(1000, () => tickOnce($, reporter))
-    } catch {
-      // no live clock; the pane still shows what happened
+    const slow = { at: -Infinity }
+    const setPace = (ms: number) => {
+      if (timer !== undefined && ms === period) return
+      try {
+        timer?.cancel()
+        period = ms
+        timer = $.clock.every(ms, () =>
+          tickOnce($, reporter, (list, now) => setPace(tickMs(list, now, drawnAt)), slow),
+        )
+      } catch {
+        // no live clock; the pane still shows what happened
+        timer = undefined
+      }
     }
+    pace = setPace
+    timer?.cancel()
+    timer = undefined
+    setPace(IDLE_MS)
 
     try {
       await update($, inflight, () => [])
@@ -164,6 +193,7 @@ export const register: Register = on => {
           return rows
         })
         await update($, tick, t => ({ n: t.n + 1, now }))
+        pace?.(tickMs(await read($, agents), now, drawnAt))
       }
     } catch {
       // recording failed; the spawn itself already happened
@@ -205,6 +235,7 @@ export const register: Register = on => {
         await update($, agents, list => noteTool(list, id, tool, now))
         await update($, tick, t => ({ n: t.n + 1, now }))
         const list = await read($, agents)
+        pace?.(tickMs(list, now, drawnAt))
         source = list.find(a => a.id === id)?.type ?? 'subagent'
       }
     } catch {
@@ -336,6 +367,9 @@ export const register: Register = on => {
       },
       now,
     )
+    // a pane in view with a crew member running animates at once, not at the next idle tick
+    drawnAt = now
+    if (view.running.length > 0) pace?.(ANIM_MS)
     const shown = await read($, ui)
     const total = await read($, eventTotal)
     // what a press changes, written from its onPress (state is not written while drawing)
@@ -353,6 +387,7 @@ export const register: Register = on => {
       cols: e.props.bodyColumns,
       rows: e.props.scroll.bodyRows,
       frame: SPINNER[t.n % SPINNER.length] ?? '⠋',
+      scan: scanFrame(t.n),
       page: shown.page,
       agentId: shown.agentId,
       paused: shown.paused,

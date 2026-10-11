@@ -15,6 +15,8 @@ export type CrewAgent = {
   output: number
   cacheRead: number
   cacheWrite: number
+  // dispatch order, picks the crew member's color; missing on records from before it was kept
+  seq?: number
   // set when a workflow script's agent() started it: the run and its place in the run
   runId?: string
   agentIndex?: number

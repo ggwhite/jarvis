@@ -5,28 +5,32 @@ import {
   CHAIN_WARN,
   FAMILY_COLOR,
   FAMILY_NAME,
+  MAIN_ACTOR,
   MAX_EVENTS,
   MAX_NUMBERED,
   SLOW_MS,
+  THEME,
   barLen,
   cellWidth,
   elapsedMs,
+  eventRows,
   fitCells,
   fmtClock,
+  fmtDate,
   fmtDur,
   fmtK,
   fmtMs,
   fmtUsd,
   nameFamilyOf,
   padCells,
-  roleOf,
+  phaseOf,
   shareLabel,
   shortModel,
   tokenTotal,
   tokensOf,
   WORKFLOW_TYPE,
 } from './crew'
-import type { Cockpit, Health, ListUnit, ModelShare, Role, RoleStat } from './crew'
+import type { Cockpit, EventRow, Health, ListUnit, ModelShare, Outcome, Phase, Role, RoleStat } from './crew'
 
 // At this many columns the stats page sets the main and dispatch cards side by side.
 export const WIDE_COLS = 120
@@ -62,7 +66,9 @@ type CardSpec = { w: number; color: string; lines: Line[] }
 export type Ctx = {
   cols: number
   rows: number
+  // the spinner's frame, and the scan sweep's, at this tick
   frame: string
+  scan: string
   page: CrewPage
   // the subagent the detail page is about
   agentId: string
@@ -74,29 +80,52 @@ export type Ctx = {
   pause: () => void
 }
 
-const HEALTH_COLOR: Record<Health, string> = { ok: 'green', loop: 'red', stuck: 'yellow' }
+const PRIMARY = THEME.primary
+const ACCENT = THEME.accent
+const ERROR = THEME.error
+const MUTED = THEME.muted
 
-const HEALTH_TEXT: Record<Health, string> = { ok: '✓ 正常', loop: '⚠ 可能在繞圈', stuck: '⚠ 可能卡住' }
+export const TITLE = '⌜ C.R.E.W. ⌝'
 
-// One color per role wherever a subagent's type is drawn; the main loop is Opus yellow.
-export const ROLE_COLOR: Record<Role, string> = {
-  Explore: 'cyan',
-  clerk: 'green',
-  worker: 'blue',
-  verifier: 'magenta',
-  fork: 'white',
-  workflow: '#f472b6',
-  other: 'gray',
+const HEALTH_COLOR: Record<Health, string> = { ok: PRIMARY, loop: ERROR, stuck: ACCENT }
+
+export const HEALTH_TEXT: Record<Health, string> = {
+  ok: 'ALL SYSTEMS NOMINAL',
+  loop: 'WARNING: LOOP DETECTED',
+  stuck: 'WARNING: STALL DETECTED',
 }
-export const MAIN_COLOR = FAMILY_COLOR.opus
+
+// One color per role in the dispatch flow; the main loop is the accent gold everywhere.
+export const ROLE_COLOR: Record<Role, string> = {
+  Explore: '#00E5FF',
+  clerk: '#7CFF6B',
+  worker: '#4D9FFF',
+  verifier: '#FF6EC7',
+  fork: '#B388FF',
+  workflow: '#FF9F43',
+  other: MUTED,
+}
+export const MAIN_COLOR = ACCENT
 
 // The frame colors of the now, log and detail pages' cards.
-const LIST_COLOR = '#8b9cf6'
-const EVENT_COLOR = 'cyan'
-const FLIGHT_COLOR = 'yellow'
-const IDLE_COLOR = 'gray'
+const LIST_COLOR = PRIMARY
+const EVENT_COLOR = PRIMARY
+const FLIGHT_COLOR = ACCENT
+const IDLE_COLOR = MUTED
 
-const roleColor = (type: string): string => ROLE_COLOR[roleOf(type)]
+export const RECOVERED = '↻ RECOVERED'
+
+// A crew member's status words: full, and the short form a narrow card falls back to.
+const PHASE_TEXT: Record<Phase, { full: string; short: string }> = {
+  init: { full: 'INITIALIZING…', short: 'INIT…' },
+  active: { full: 'ACTIVE', short: 'ACTIVE' },
+  complete: { full: 'MISSION COMPLETE', short: 'COMPLETE' },
+  failed: { full: 'MISSION FAILED', short: 'FAILED' },
+  lost: { full: 'SIGNAL LOST', short: 'LOST' },
+}
+
+// The least a crew card's description keeps before its status words go short.
+const DESC_MIN = 8
 
 const TABS: { page: CrewPage; hotkey: string; label: string }[] = [
   { page: 'now', hotkey: 'n', label: '現況' },
@@ -153,7 +182,7 @@ export function splitCols(total: number, count: number, gap = 1): number[] {
 }
 
 export function eventDuration(ms: number): Seg {
-  return ms > SLOW_MS ? { t: fmtMs(ms), color: 'yellow' } : { t: fmtMs(ms), dim: true }
+  return ms > SLOW_MS ? { t: fmtMs(ms), color: ACCENT } : { t: fmtMs(ms), dim: true }
 }
 
 // How a role box shows its counts: `執行中 1 · 完成 3` on one line, the two on two
@@ -289,10 +318,32 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return family ? { t: badgeText(model), color: FAMILY_COLOR[family] } : { t: badgeText(model), dim: true }
   }
 
+  // who ran a call: the main loop by name, a listed crew member as `●N` in its color
+  const ACTOR_W = 5
+  const actorSeg = (actor: string): Seg => {
+    if (actor === MAIN_ACTOR) return { t: padCells('主線', ACTOR_W), color: MAIN_COLOR, bold: true }
+    const member = view.roster.get(actor)
+    return member
+      ? { t: padCells(`●${member.n}`, ACTOR_W), color: member.color }
+      : { t: padCells('●?', ACTOR_W), color: MUTED }
+  }
+
   const listed = [...view.running, ...view.stale, ...view.finished]
   const selected = ctx.page === 'detail' ? listed.find(a => a.id === ctx.agentId) : undefined
   // a detail page whose subagent left the list is the now page
   const page: CrewPage = ctx.page === 'detail' && !selected ? 'now' : ctx.page
+
+  // ---- 標題列 -------------------------------------------------------------
+
+  // the title, its spinner turning while a crew member runs, and the health on the right
+  const titleBar = (): Block => {
+    const left: Seg[] = [
+      { t: TITLE, color: PRIMARY, bold: true },
+      ...(view.running.length > 0 ? [sp(1), { t: ctx.frame, color: PRIMARY }] : []),
+    ]
+    const health: Seg = { t: HEALTH_TEXT[view.health], color: HEALTH_COLOR[view.health], bold: true }
+    return { h: 1, node: lineNode(leftRight(left, [health], cols)) }
+  }
 
   // ---- 分頁列 -------------------------------------------------------------
 
@@ -328,23 +379,11 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     if (page === 'detail') action('back', '0', '返回', () => ctx.go('now'))
     if (page === 'log') action('pause', 'p', ctx.paused ? '繼續' : '暫停', ctx.pause)
 
-    const used = buttons.reduce((n, b) => n + b.w, 0) + (buttons.length - 1)
-    const room = Math.max(0, cols - used - 1)
-    const health = fitCells(HEALTH_TEXT[view.health], room)
-    const gap = Math.max(0, cols - used - cellWidth(health))
     return {
       h: 1,
       node: (
-        <Box flexDirection="row">
-          <Box flexDirection="row" gap={1}>
-            {buttons.map(b => b.node)}
-          </Box>
-          {gap > 0 ? <Text>{' '.repeat(gap)}</Text> : null}
-          {health === '' ? null : (
-            <Text color={HEALTH_COLOR[view.health]} bold>
-              {health}
-            </Text>
-          )}
+        <Box flexDirection="row" gap={1}>
+          {buttons.map(b => b.node)}
         </Box>
       ),
     }
@@ -355,45 +394,58 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // The tool column: as wide as the widest tool listed, 4 to 12 cells.
   const toolWidth = (tools: readonly string[]) => Math.min(12, Math.max(4, ...tools.map(cellWidth)))
 
-  // `withSource` false leaves out who ran the call: the detail page's events are all one agent's
-  const eventLine = (ev: CrewEvent, inner: number, toolW: number, withSource: boolean): Seg[] => {
+  const mark = (outcome: Outcome, markW: number): Seg =>
+    outcome === 'ok'
+      ? { t: padCells('[✓]', markW), color: PRIMARY }
+      : outcome === 'recovered'
+        ? { t: padCells(RECOVERED, markW), color: ACCENT, bold: true }
+        : { t: padCells('[✗]', markW), color: ERROR, bold: true }
+
+  // `withActor` false leaves out who ran the call: the detail page's events are all one agent's
+  const eventLine = (ev: CrewEvent, outcome: Outcome, inner: number, toolW: number, markW: number, withActor: boolean): Seg[] => {
     const timeW = 8
-    const srcW = withSource ? 8 : 0
     const durW = 6
-    const markW = 3
-    const descW = Math.max(4, inner - (timeW + 1 + (withSource ? srcW + 1 : 0) + toolW + 1) - (1 + durW + 1 + markW))
+    const descW = Math.max(4, inner - (timeW + 1 + (withActor ? ACTOR_W + 1 : 0) + toolW + 1) - (1 + durW + 1 + markW))
     const dur = eventDuration(ev.ms)
-    const source: Seg[] = withSource
-      ? [{ t: padCells(typeLabel(ev.source), srcW), color: ev.isMain ? MAIN_COLOR : roleColor(ev.source), bold: ev.isMain }, sp(1)]
-      : []
+    const tone: Partial<Seg> = outcome === 'failed' ? { color: ERROR } : outcome === 'recovered' ? { color: ACCENT } : {}
     return [
       { t: fmtClock(ev.ts), dim: true },
       sp(1),
-      ...source,
+      ...(withActor ? [actorSeg(ev.actor), sp(1)] : []),
       { t: padCells(ev.tool, toolW), bold: true },
       sp(1),
-      { t: padCells(ev.desc, descW), ...(ev.ok ? {} : { color: 'red' }) },
+      { t: padCells(ev.desc, descW), ...tone },
       sp(1),
       { ...dur, t: padCells(dur.t, durW, 'right') },
       sp(1),
-      ev.ok ? { t: '[✓]', color: 'green' } : { t: '[✗]', color: 'red', bold: true },
+      mark(outcome, markW),
     ]
   }
 
-  // A card of events, the newest `room - 3` of `list` at the bottom; `fill` makes it
-  // `room` rows tall however few there are.
+  // the rule between two runs of events more than BREAK_MS apart, dated by the later one
+  const breakLine = (ts: number, inner: number): Seg[] => {
+    const label = `── ${fmtDate(ts)} `
+    return [{ t: label + '─'.repeat(Math.max(0, inner - cellWidth(label))), color: MUTED }]
+  }
+
+  // A card of events, the newest `room - 3` rows of `list` (dated rules count) at the
+  // bottom; `fill` makes it `room` rows tall however few there are.
   const eventCard = (
     head: Seg[],
     list: readonly CrewEvent[],
     room: number,
     empty: string,
     fill: boolean,
-    withSource = true,
+    withActor = true,
   ): Block => {
     const inner = cols - 4
-    const shown = list.slice(-Math.max(1, room - 3))
-    const toolW = toolWidth(shown.map(ev => ev.tool))
-    const body: Line[] = shown.length === 0 ? [[{ t: empty, dim: true }]] : shown.map(ev => eventLine(ev, inner, toolW, withSource))
+    const shown = eventRows(list).slice(-Math.max(1, room - 3))
+    const evs = shown.flatMap(r => (r.kind === 'event' ? [r] : []))
+    const toolW = toolWidth(evs.map(r => r.ev.tool))
+    const markW = evs.some(r => r.outcome === 'recovered') ? cellWidth(RECOVERED) : 3
+    const line = (r: EventRow): Seg[] =>
+      r.kind === 'break' ? breakLine(r.ts, inner) : eventLine(r.ev, r.outcome, inner, toolW, markW, withActor)
+    const body: Line[] = shown.length === 0 ? [[{ t: empty, dim: true }]] : shown.map(line)
     return card({ w: cols, color: EVENT_COLOR, lines: [head, ...body] }, fill ? Math.max(room, body.length + 3) : body.length + 3)
   }
 
@@ -405,16 +457,16 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const mainSpec = (w: number): CardSpec => {
     const inner = w - 4
     const family = nameFamilyOf(m.model)
-    const head: Seg[] = [title('主線', 'cyan')]
+    const head: Seg[] = [title('主線', PRIMARY)]
     if (m.model !== '') {
       head.push({ t: ` · ${shortModel(m.model)}`, ...(family ? { color: FAMILY_COLOR[family] } : { dim: true }) })
     }
-    const state: Seg = m.isRunning ? { t: '● 執行中', color: 'green' } : { t: '○ 閒置', dim: true }
+    const state: Seg = m.isRunning ? { t: '● 執行中', color: PRIMARY } : { t: '○ 閒置', dim: true }
 
     const labelW = 8
     const barW = Math.max(4, Math.min(CHAIN_BAR, inner - labelW - 1 - 1 - 5))
     const fill = Math.min(barW, Math.round((Math.min(m.chain, CHAIN_WARN) / CHAIN_WARN) * barW))
-    const barColor = warn ? 'yellow' : 'cyan'
+    const barColor = warn ? ACCENT : PRIMARY
     const chain: Seg[] = [
       { t: padCells('連續呼叫', labelW), dim: true },
       sp(1),
@@ -422,7 +474,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       { t: '░'.repeat(barW - fill), dim: true },
       sp(1),
       warn
-        ? { t: `${m.chain}/${CHAIN_WARN}`, color: 'yellow', bold: true }
+        ? { t: `${m.chain}/${CHAIN_WARN}`, color: ACCENT, bold: true }
         : { t: `${m.chain}/${CHAIN_WARN}` },
     ]
 
@@ -448,11 +500,11 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
     return {
       w,
-      color: 'cyan',
+      color: PRIMARY,
       // the wide card sits beside the taller dispatch flow and spaces its parts out
       lines: wide
-        ? [leftRight(head, [state], inner), BLANK, chain, BLANK, outcome('成功', m.ok, 'green'), outcome('失敗', m.fail, 'red'), BLANK, last]
-        : [leftRight(head, [state], inner), chain, outcome('成功', m.ok, 'green'), outcome('失敗', m.fail, 'red'), last],
+        ? [leftRight(head, [state], inner), BLANK, chain, BLANK, outcome('成功', m.ok, PRIMARY), outcome('失敗', m.fail, ERROR), BLANK, last]
+        : [leftRight(head, [state], inner), chain, outcome('成功', m.ok, PRIMARY), outcome('失敗', m.fail, ERROR), last],
     }
   }
 
@@ -471,15 +523,15 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const box = (r: RoleStat, bw: number) => {
       const active = r.running > 0
       const iw = bw - 2
-      const tone: Partial<Seg> = active ? { color: 'yellow', bold: true } : { dim: true }
+      const tone: Partial<Seg> = active ? { color: ACCENT, bold: true } : { dim: true }
       const name: Seg[] = [{ t: r.label, bold: true, color: ROLE_COLOR[r.role] }]
-      if (r.failed > 0) name.push({ t: ` ✗${r.failed}`, color: 'red' })
+      if (r.failed > 0) name.push({ t: ` ✗${r.failed}`, color: ERROR })
       const stats = roleStatLines(r, layout.format)
       const stat: Seg[][] =
         layout.format === 'two'
           ? [
               [{ t: stats[0] ?? '', ...tone }],
-              [{ t: stats[1] ?? '', ...(r.done > 0 ? { color: 'green' } : { dim: true }) }],
+              [{ t: stats[1] ?? '', ...(r.done > 0 ? { color: PRIMARY } : { dim: true }) }],
             ]
           : [[{ t: stats[0] ?? '', ...tone }]]
       return (
@@ -489,7 +541,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
           width={bw}
           height={boxH}
           borderStyle="round"
-          borderColor={active ? 'yellow' : 'gray'}
+          borderColor={active ? ACCENT : MUTED}
         >
           {[name, ...stat].map(l => lineNode(centered(l, iw)))}
         </Box>
@@ -511,19 +563,19 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       ),
     }
 
-    const arrow = centered([{ t: '▼', color: 'yellow' }], inner)
+    const arrow = centered([{ t: '▼', color: ACCENT }], inner)
     const top = centered(
       [{ t: m.model === '' ? '主 session' : `主 session · ${shortModel(m.model)}`, bold: true }],
       inner,
     )
     return {
       w,
-      color: 'yellow',
+      color: ACCENT,
       lines: [
-        [title('派工流程', 'yellow')],
+        [title('派工流程', ACCENT)],
         ...Array.from({ length: Math.floor(extra / 2) }, () => BLANK),
         top,
-        ...(extra % 2 === 1 ? [centered([{ t: '│', color: 'yellow' }], inner)] : []),
+        ...(extra % 2 === 1 ? [centered([{ t: '│', color: ACCENT }], inner)] : []),
         arrow,
         roleRows,
         arrow,
@@ -541,8 +593,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     savedPct === undefined
       ? { t: '未計價', dim: true, bold: true }
       : savedPct >= 0
-        ? { t: `省${savedPct}%`, color: 'green', bold: true }
-        : { t: `多花${-savedPct}%`, color: 'red', bold: true }
+        ? { t: `省${savedPct}%`, color: PRIMARY, bold: true }
+        : { t: `多花${-savedPct}%`, color: ERROR, bold: true }
   const savedSub: Seg =
     savedPct === undefined
       ? { t: '沒有可計價的模型', dim: true }
@@ -558,7 +610,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const countW = Math.max(0, ...view.models.map(r => cellWidth(countOf(r))))
     const barW = Math.max(3, inner - labelW - countW - 2 - pctW)
     const row = (r: ModelShare): Seg[] => {
-      const color = r.family ? FAMILY_COLOR[r.family] : 'gray'
+      const color = r.family ? FAMILY_COLOR[r.family] : MUTED
       const head: Seg[] = [{ t: padCells(r.label, labelW), color }, { t: padCells(countOf(r), countW), dim: true }, sp(1)]
       if (!r.family) return [...head, { t: '未計價', dim: true }]
       const len = Math.max(1, barLen(r.share, 1, barW))
@@ -571,7 +623,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     }
     const body: Seg[][] =
       view.models.length === 0 ? [[{ t: '還沒有 subagent', dim: true }]] : view.models.map(row)
-    const verdict: Seg[] = [title('省錢', 'magenta'), sp(2), savedBig]
+    const verdict: Seg[] = [title('省錢', ACCENT), sp(2), savedBig]
     const figures: Seg[] = [savedSub]
     const savings: Seg[][] =
       segsWidth(verdict) + 1 + segsWidth(figures) <= inner
@@ -579,8 +631,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         : [verdict, leftRight([], figures, inner)]
     return {
       w,
-      color: 'blue',
-      lines: [[title('模型', 'blue')], ...body, [{ t: '─'.repeat(inner), dim: true }], ...savings],
+      color: PRIMARY,
+      lines: [[title('模型', PRIMARY)], ...body, [{ t: '─'.repeat(inner), dim: true }], ...savings],
     }
   }
 
@@ -600,7 +652,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const listItems = (shownFinished: number): Item[] => {
     const label: Record<string, Seg> = {
       running: { t: `執行中 (${view.running.length})`, dim: true },
-      stale: { t: `失聯 (${view.stale.length})`, color: 'gray' },
+      stale: { t: `失聯 (${view.stale.length})`, color: MUTED },
       finished: { t: `已完成 (${view.finished.length})`, dim: true },
     }
     const items: Item[] = []
@@ -626,15 +678,23 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const listHeight = (shownFinished: number) =>
     view.sections.length === 0 ? 4 : listItems(shownFinished).length + 3
 
+  const memberOf = (a: CrewAgent) => view.roster.get(a.id) ?? { n: 0, color: PRIMARY }
+
+  // the corner-bracketed number a crew card opens with: ⌜ N ⌝ while it runs, ⌞ N ⌟ after
+  const bracket = (a: CrewAgent, numW: number): string => {
+    const n = padCells(String(memberOf(a).n), numW, 'right')
+    return a.status === 'running' ? `⌜ ${n} ⌝` : `⌞ ${n} ⌟`
+  }
+
   const agentBlock = (shownFinished: number, room: number): Block => {
     const inner = cols - 4
     const done = view.finished.filter(a => a.status === 'done').length
     const failed = view.finished.length - done
     const counts: Seg[] = [
-      ...(view.running.length > 0 ? [{ t: `▶${view.running.length} 執行中`, color: 'cyan' }] : []),
-      ...(done > 0 ? [{ t: `✓${done} 完成`, color: 'green' }] : []),
-      ...(failed > 0 ? [{ t: `✗${failed} 失敗`, color: 'red' }] : []),
-      ...(view.stale.length > 0 ? [{ t: `?${view.stale.length} 失聯`, color: 'gray' }] : []),
+      ...(view.running.length > 0 ? [{ t: `▶${view.running.length} 執行中`, color: PRIMARY, bold: true }] : []),
+      ...(done > 0 ? [{ t: `✓${done} 完成`, color: MUTED }] : []),
+      ...(failed > 0 ? [{ t: `✗${failed} 失敗`, color: ERROR }] : []),
+      ...(view.stale.length > 0 ? [{ t: `?${view.stale.length} 失聯`, color: MUTED }] : []),
     ]
     const right = counts.flatMap((x, i): Seg[] => (i === 0 ? [x] : [{ t: ' · ', dim: true }, x]))
     const head: Line = leftRight([title('子代理', LIST_COLOR)], right, inner)
@@ -644,50 +704,68 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
     const items = listItems(shownFinished)
     const agentsShown = items.flatMap(x => (x.kind === 'agent' ? [x] : []))
+    const numW = Math.max(1, ...agentsShown.map(x => String(memberOf(x.a).n).length))
+    const bracketW = 4 + numW
+    const phase = (a: CrewAgent) => phaseOf(a, view.now)
+    const icon = (a: CrewAgent): string => {
+      const p = phase(a)
+      return p === 'init' ? ctx.scan : p === 'active' ? ctx.frame : p === 'complete' ? '✓' : p === 'failed' ? '✗' : '?'
+    }
+    const iconW = Math.max(1, ...agentsShown.map(x => cellWidth(icon(x.a))))
     const nameW = Math.min(15, Math.max(4, ...agentsShown.filter(x => !x.member).map(x => cellWidth(typeLabel(x.a.type)))))
     const badgeW = Math.max(...agentsShown.map(x => cellWidth(badgeText(x.a.model))))
     const durOf = (a: CrewAgent) => fmtDur(elapsedMs(a, view.now))
-    const metaOf = (a: CrewAgent) =>
-      a.status === 'running' ? fitCells(a.tool, 8) : a.status === 'stale' ? '失聯' : fmtK(tokenTotal(tokensOf(a)))
+    const metaOf = (a: CrewAgent) => {
+      const n = tokenTotal(tokensOf(a))
+      return a.status === 'running' && n === 0 ? '' : fmtK(n)
+    }
+    const statusOf = (a: CrewAgent, full: boolean): string => {
+      const p = phase(a)
+      const words = full ? PHASE_TEXT[p].full : PHASE_TEXT[p].short
+      return p === 'active' && full && a.tool !== '' ? `${words} · ${fitCells(a.tool, 10)}` : words
+    }
     const durW = Math.max(...agentsShown.map(x => cellWidth(durOf(x.a))))
     const metaW = Math.max(...agentsShown.map(x => cellWidth(metaOf(x.a))))
     const width = inner - HOTKEY_W
-    const descW = Math.max(4, width - (1 + 1 + nameW + 1 + badgeW + 1) - (1 + durW + 2 + metaW))
+    const fixedW = bracketW + 1 + iconW + 1 + nameW + 1 + badgeW + 1 + (1 + durW + 2 + metaW) + 1
+    const statusW = (full: boolean) => Math.max(...agentsShown.map(x => cellWidth(statusOf(x.a, full))))
+    // the status words go short when the full ones would squeeze the description
+    const full = width - fixedW - statusW(true) >= DESC_MIN
+    const stW = statusW(full)
+    const descW = Math.max(4, width - fixedW - stW)
 
-    let number = 0
     const row = (a: CrewAgent, member?: 'mid' | 'last'): Line => {
-      const icon: Seg =
-        a.status === 'running'
-          ? { t: ctx.frame, color: 'cyan' }
-          : a.status === 'stale'
-            ? { t: '?', color: 'gray' }
-            : a.status === 'done'
-              ? { t: '✓', color: 'green' }
-              : { t: '✗', color: 'red' }
-      const tone: Partial<Seg> = a.status === 'running' ? {} : a.status === 'stale' ? { color: 'gray' } : { dim: true }
+      const p = phase(a)
+      const { n, color } = memberOf(a)
+      const live = p === 'init' || p === 'active'
+      // a finished, failed or lost card is all in the muted tone
+      const tone: Partial<Seg> = live ? {} : { color: MUTED }
+      const statusColor = p === 'init' ? ACCENT : p === 'active' ? PRIMARY : p === 'failed' ? ERROR : MUTED
       const name: Seg = member
-        ? { t: padCells(member === 'last' ? '└─' : '├─', nameW), color: ROLE_COLOR.workflow }
-        : { t: padCells(typeLabel(a.type), nameW), bold: true, color: a.status === 'stale' ? 'gray' : roleColor(a.type) }
+        ? { t: padCells(member === 'last' ? '└─' : '├─', nameW), color: live ? ROLE_COLOR.workflow : MUTED }
+        : { t: padCells(typeLabel(a.type), nameW), bold: true, color: live ? color : MUTED }
       const b = badge(a.model)
       const segs = clip(
         [
-          icon,
+          { t: bracket(a, numW), color: live ? color : MUTED, bold: live },
+          sp(1),
+          { t: padCells(icon(a), iconW), color: live ? color : p === 'failed' ? ERROR : MUTED },
           sp(1),
           name,
           sp(1),
-          { ...b, t: padCells(b.t, badgeW), ...(tone.color ? tone : {}) },
+          { ...b, t: padCells(b.t, badgeW), ...tone },
           sp(1),
           { t: padCells(a.description, descW), ...tone },
           sp(1),
-          { t: padCells(durOf(a), durW, 'right'), ...(a.status === 'running' ? {} : tone) },
+          { t: padCells(statusOf(a, full), stW), color: statusColor, bold: live },
+          sp(1),
+          { t: padCells(durOf(a), durW, 'right'), ...tone },
           sp(2),
-          { t: padCells(metaOf(a), metaW, 'right'), ...(a.status === 'stale' ? { color: 'gray' } : { dim: true }) },
+          { t: padCells(metaOf(a), metaW, 'right'), ...(live ? { dim: true } : tone) },
         ],
         width,
       )
-      if (number >= MAX_NUMBERED) return [sp(HOTKEY_W), ...segs]
-      number += 1
-      const n = number
+      if (n < 1 || n > MAX_NUMBERED) return [sp(HOTKEY_W), ...segs]
       return {
         h: 1,
         node: (
@@ -718,7 +796,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         sp(HOTKEY_W),
         { t: '▾ ', color: ROLE_COLOR.workflow },
         { t: 'workflow', bold: true, color: ROLE_COLOR.workflow },
-        { t: ` ${id}`, color: 'gray' },
+        { t: ` ${id}`, color: MUTED },
         { t: ` · ${parts.join(' · ')}`, dim: true },
       ]
     }
@@ -751,15 +829,13 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       list.length > 0 ? [{ t: `${list.length} 個`, dim: true }] : [],
       inner,
     )
-    const srcW = 8
     const toolW = toolWidth(list.map(f => f.tool))
     const durW = 6
-    const descW = Math.max(4, inner - (srcW + 1 + toolW + 1) - (1 + durW))
+    const descW = Math.max(4, inner - (ACTOR_W + 1 + toolW + 1) - (1 + durW))
     const line = (f: CrewInflight): Seg[] => {
-      const isMain = f.actor === 'main'
       const dur = eventDuration(view.now - f.startedAt)
       return [
-        { t: padCells(typeLabel(f.source), srcW), color: isMain ? MAIN_COLOR : roleColor(f.source), bold: isMain },
+        actorSeg(f.actor),
         sp(1),
         { t: padCells(f.tool, toolW), bold: true },
         sp(1),
@@ -780,18 +856,22 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   const detailBlock = (a: CrewAgent): Block => {
     const labelW = 9
-    const color = roleColor(a.type)
+    const color = memberOf(a).color
     const field = (label: string, value: Seg[]): Seg[] => [{ t: padCells(label, labelW), dim: true }, ...value]
+    const p = phaseOf(a, view.now)
+    const words = PHASE_TEXT[p].full
     const status: Seg[] =
-      a.status === 'running'
-        ? [{ t: `${ctx.frame} 執行中`, color: 'cyan' }, ...(a.tool !== '' ? [{ t: ` · ${a.tool}`, dim: true }] : [])]
-        : a.status === 'done'
-          ? [{ t: '✓ 完成', color: 'green' }]
-          : a.status === 'failed'
-            ? [{ t: '✗ 失敗', color: 'red' }]
-            : [{ t: '? 失聯', color: 'gray' }]
+      p === 'init'
+        ? [{ t: `${ctx.scan} ${words}`, color: ACCENT, bold: true }]
+        : p === 'active'
+          ? [{ t: `${ctx.frame} ${words}`, color: PRIMARY, bold: true }, ...(a.tool !== '' ? [{ t: ` · ${a.tool}`, dim: true }] : [])]
+          : p === 'complete'
+            ? [{ t: `✓ ${words}`, color: MUTED }]
+            : p === 'failed'
+              ? [{ t: `✗ ${words}`, color: ERROR }]
+              : [{ t: `? ${words}`, color: MUTED }]
     const lines: Line[] = [
-      [title('子代理', color), { t: ` · ${typeLabel(a.type)}`, bold: true, color }],
+      [{ t: `${bracket(a, String(memberOf(a).n).length)} `, color, bold: true }, title('子代理', color), { t: ` · ${typeLabel(a.type)}`, bold: true, color }],
       field('類型', [{ t: a.type, bold: true, color }]),
       field('模型', [{ ...badge(a.model), t: shortModel(a.model) }]),
       field('狀態', status),
@@ -827,14 +907,15 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   // ---- 組版 ---------------------------------------------------------------
 
-  const blocks: Block[] = [tabBar()]
+  const blocks: Block[] = [titleBar(), tabBar()]
   const left = () => rows - blocks.reduce((n, b) => n + b.h, 0)
   let footer: RenderElement | undefined
 
   if (page === 'now') {
     // the least each card needs, then the rows left over: finished subagents first, then events
     const flight = inflightBlock()
-    const total = view.events.length
+    // event rows: a dated rule takes a row like an event
+    const total = eventRows(view.events).length
     const recentH = (n: number) => Math.max(1, n) + 3
     const room = left() - flight.h
     let shown = Math.min(finishedUnits.length, MIN_FINISHED)
@@ -842,14 +923,14 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     while (shown < finishedUnits.length && listHeight(shown + 1) + recentH(recent) <= room) shown += 1
     recent = Math.max(recent, Math.min(total, room - listHeight(shown) - 3))
     blocks.push(agentBlock(shown, room - recentH(recent)), flight)
-    blocks.push(eventCard([title('最近事件', EVENT_COLOR)], view.events.slice(-Math.max(1, recent)), recentH(recent), '還沒有工具呼叫', false))
+    blocks.push(eventCard([title('最近事件', EVENT_COLOR)], view.events, recentH(recent), '還沒有工具呼叫', false))
   } else if (page === 'log') {
     const total = view.events.length
     const list = ctx.paused ? view.events.slice(0, Math.max(0, total - ctx.fresh)) : view.events
     const head = leftRight(
       [
         title('事件流', EVENT_COLOR),
-        ...(ctx.paused ? [sp(1), { t: `⏸ 已暫停 · 新增 ${ctx.fresh} 則`, color: 'yellow', bold: true }] : []),
+        ...(ctx.paused ? [sp(1), { t: `⏸ 已暫停 · 新增 ${ctx.fresh} 則`, color: ACCENT, bold: true }] : []),
       ],
       [{ t: `${total}/${MAX_EVENTS} 則`, dim: true }],
       cols - 4,

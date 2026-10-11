@@ -12,6 +12,29 @@ export const DESC_MAX = 60
 // Subagents on the list that take a digit hotkey to their detail page.
 export const MAX_NUMBERED = 9
 export const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+// The sweep a freshly dispatched crew member shows while it starts up.
+export const SCAN = ['░▒▓', '▒▓░', '▓░▒']
+// How long after its dispatch a crew member reads INITIALIZING.
+export const INIT_MS = 2000
+// The tick period while a crew member runs and the pane is in view (the animation),
+// and otherwise; the pane counts as in view for SEEN_MS after it was last drawn.
+export const ANIM_MS = 150
+export const IDLE_MS = 1000
+export const SEEN_MS = 5000
+// Two events further apart than this are drawn with a dated rule between them.
+export const BREAK_MS = 60 * 60 * 1000
+
+// The HUD palette: primary cyan, accent gold, error red, and the dark teal of what is
+// finished or old.
+export const THEME = {
+  primary: '#00E5FF',
+  accent: '#FFC940',
+  error: '#FF4D4D',
+  muted: '#3A6B7A',
+} as const
+
+// One color per crew member, by dispatch order; none is the accent, error or muted tone.
+export const CREW_PALETTE = ['#00E5FF', '#FF6EC7', '#7CFF6B', '#B388FF', '#FF9F43', '#4D9FFF']
 
 export type Family = 'fable' | 'opus' | 'sonnet' | 'haiku'
 
@@ -25,10 +48,10 @@ export const FAMILY_NAME: Record<Family, string> = {
 }
 
 export const FAMILY_COLOR: Record<Family, string> = {
-  fable: 'magenta',
-  opus: 'yellow',
-  sonnet: 'blue',
-  haiku: 'cyan',
+  fable: '#B388FF',
+  opus: THEME.accent,
+  sonnet: '#4D9FFF',
+  haiku: THEME.primary,
 }
 
 // USD per million tokens, input / output.
@@ -191,6 +214,7 @@ function trim(list: CrewAgent[]): CrewAgent[] {
 export function addAgent(list: readonly CrewAgent[], s: Spawned): CrewAgent[] {
   const fresh: CrewAgent = {
     id: s.id,
+    seq: list.reduce((m, a, i) => Math.max(m, a.seq ?? i), -1) + 1,
     type: s.type,
     description: s.description,
     model: s.model,
@@ -367,6 +391,36 @@ export function addEvent(list: readonly CrewEvent[], ev: CrewEvent): CrewEvent[]
   return [...list, ev].slice(-MAX_EVENTS)
 }
 
+// recovered: a failed call whose actor's very next call is the same tool, and it worked.
+export type Outcome = 'ok' | 'recovered' | 'failed'
+
+export function outcomesOf(events: readonly CrewEvent[]): Outcome[] {
+  const out: Outcome[] = events.map(ev => (ev.ok ? 'ok' : 'failed'))
+  const last = new Map<string, number>()
+  events.forEach((ev, i) => {
+    const prev = last.get(ev.actor)
+    const before = prev === undefined ? undefined : events[prev]
+    if (prev !== undefined && before && !before.ok && ev.ok && before.tool === ev.tool) out[prev] = 'recovered'
+    last.set(ev.actor, i)
+  })
+  return out
+}
+
+// An event list as drawn: each event with its outcome, a dated rule wherever two
+// neighbours are more than BREAK_MS apart (`ts` is when the later run begins).
+export type EventRow = { kind: 'event'; ev: CrewEvent; outcome: Outcome } | { kind: 'break'; ts: number }
+
+export function eventRows(events: readonly CrewEvent[]): EventRow[] {
+  const outcomes = outcomesOf(events)
+  const rows: EventRow[] = []
+  events.forEach((ev, i) => {
+    const prev = events[i - 1]
+    if (prev && ev.ts - prev.ts > BREAK_MS) rows.push({ kind: 'break', ts: ev.ts })
+    rows.push({ kind: 'event', ev, outcome: outcomes[i] ?? 'ok' })
+  })
+  return rows
+}
+
 export type HealthScope = {
   // tool calls that started and have not returned
   inFlight?: number
@@ -539,6 +593,50 @@ export function agentSections(agents: readonly CrewAgent[]): ListSection[] {
   }).filter(s => s.units.length > 0)
 }
 
+// A crew member's color, by its place in dispatch order.
+export function crewColor(seq: number): string {
+  const n = CREW_PALETTE.length
+  const i = Number.isFinite(seq) ? ((Math.floor(seq) % n) + n) % n : 0
+  return CREW_PALETTE[i] ?? THEME.primary
+}
+
+// Every listed subagent's number (1 up, in list order: what its digit opens) and color
+// (by dispatch order, so it keeps its color however the list moves).
+export type Member = { n: number; color: string }
+
+export function rosterOf(agents: readonly CrewAgent[], sections: readonly ListSection[]): Map<string, Member> {
+  const seq = new Map(agents.map((a, i) => [a.id, a.seq ?? i]))
+  const out = new Map<string, Member>()
+  for (const section of sections) {
+    for (const u of section.units) {
+      for (const a of u.kind === 'agent' ? [u.agent] : u.agents) {
+        out.set(a.id, { n: out.size + 1, color: crewColor(seq.get(a.id) ?? 0) })
+      }
+    }
+  }
+  return out
+}
+
+export type Phase = 'init' | 'active' | 'complete' | 'failed' | 'lost'
+
+// init: running and dispatched (or resumed) under INIT_MS ago.
+export function phaseOf(a: CrewAgent, now: number): Phase {
+  if (a.status === 'running') return now - a.runStartedAt < INIT_MS ? 'init' : 'active'
+  if (a.status === 'done') return 'complete'
+  if (a.status === 'failed') return 'failed'
+  return 'lost'
+}
+
+export function scanFrame(n: number): string {
+  return SCAN[((Math.floor(n) % SCAN.length) + SCAN.length) % SCAN.length] ?? SCAN[0] ?? ''
+}
+
+// The tick period: ANIM_MS while any crew member runs (initializing ones included) and
+// the pane was drawn within SEEN_MS of `now`, else IDLE_MS.
+export function tickMs(agents: readonly CrewAgent[], now: number, drawnAt: number): number {
+  return runningOf(agents).length > 0 && now - drawnAt <= SEEN_MS ? ANIM_MS : IDLE_MS
+}
+
 export type CrewState = {
   agents: readonly CrewAgent[]
   main: CrewMain
@@ -584,6 +682,8 @@ export type Cockpit = {
   finished: CrewAgent[]
   // the subagent list as drawn
   sections: ListSection[]
+  // each listed subagent's number and color
+  roster: Map<string, Member>
   // tool calls not yet returned, oldest first
   inflight: CrewInflight[]
   summary: Summary
@@ -591,6 +691,7 @@ export type Cockpit = {
 
 export function buildCockpit(state: CrewState, now: number): Cockpit {
   const m = state.main
+  const sections = agentSections(state.agents)
   return {
     now,
     health: healthOfState(state, now),
@@ -609,7 +710,8 @@ export function buildCockpit(state: CrewState, now: number): Cockpit {
     running: runningOf(state.agents),
     stale: staleOf(state.agents),
     finished: finishedOf(state.agents),
-    sections: agentSections(state.agents),
+    sections,
+    roster: rosterOf(state.agents, sections),
     inflight: [...(state.inflight ?? [])].sort((x, y) => x.startedAt - y.startedAt),
     summary: summarize(state.agents),
   }
@@ -670,6 +772,12 @@ export function barLen(value: number, scale: number, width: number): number {
 }
 
 const two = (n: number): string => String(n).padStart(2, '0')
+
+// Local date, MM/DD.
+export function fmtDate(ts: number): string {
+  const d = new Date(ts)
+  return `${two(d.getMonth() + 1)}/${two(d.getDate())}`
+}
 
 // Local wall-clock time, HH:MM:SS.
 export function fmtClock(ts: number): string {
