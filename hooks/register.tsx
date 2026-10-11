@@ -31,7 +31,7 @@ import { drawCockpit } from './cockpit'
 import { RUN_TIMEOUT_MS, createReporter, jarvisText, inHerdr } from './herdr'
 import type { Reporter } from './herdr'
 import { parseQuota } from './fleet'
-import { SUIT_TICK_MS } from './suit'
+import { SUIT_REST_TICK_MS, SUIT_TICK_MS } from './suit'
 import { EMPTY_FLEET, FLEET_MS, FLEET_RUN_TIMEOUT_MS, LIMITS_PATH, focusArgv, refreshFleet, withJump } from './fleetSource'
 import type { FleetIo } from './fleetSource'
 
@@ -181,10 +181,11 @@ export const register: Register = on => {
   let quotaReadAt = -Infinity
   let quotaOn: ((now: number) => void) | undefined
   // the standby suit's frames: one every SUIT_TICK_MS while the now page shows it, drawn
-  // within SEEN_MS; set at session.start
+  // within SEEN_MS, every SUIT_REST_TICK_MS at rest; set at session.start
   let suitTimer: Timer | undefined
+  let suitPeriod = 0
   let suitSeenAt = -Infinity
-  let suitOn: ((now: number) => void) | undefined
+  let suitOn: ((now: number, ms: number) => void) | undefined
   const suitOff = () => {
     suitTimer?.cancel()
     suitTimer = undefined
@@ -367,18 +368,22 @@ export const register: Register = on => {
     } catch {
       // the suit keeps its frame
     }
-    suitOn = (now: number) => {
+    // a drawing that asks for another frame time restarts the timer at it
+    suitOn = (now: number, ms: number) => {
       suitSeenAt = now
-      if (suitTimer !== undefined) return
+      if (suitTimer !== undefined && ms === suitPeriod) return
+      suitOff()
       try {
-        suitTimer = $.clock.every(SUIT_TICK_MS, async () => {
+        suitPeriod = ms
+        suitTimer = $.clock.every(ms, async () => {
           try {
             // a drawing without the suit stops it at once; one not drawn again, here
             if ((await $.clock.now()) - suitSeenAt > SEEN_MS) {
               suitOff()
               return
             }
-            await update($, suit, s => ({ ...s, n: s.n + 1 }))
+            // at rest the turn waits at its start: woken, it plays from STANDBY
+            await update($, suit, s => ({ ...s, n: ms === SUIT_REST_TICK_MS ? 0 : s.n + 1 }))
           } catch {
             // the suit holds its frame
           }
@@ -647,12 +652,12 @@ export const register: Register = on => {
     const quota = await read($, standbyQuota)
     const frame = await read($, suit)
     // the suit animates and reads the quota only while it is drawn
-    const onStandby = (drawn: boolean) => {
+    const onStandby = (drawn: boolean, ms = SUIT_TICK_MS) => {
       if (!drawn) {
         suitOff()
         return
       }
-      suitOn?.(now)
+      suitOn?.(now, ms)
       quotaOn?.(now)
     }
     let sessionId = ''

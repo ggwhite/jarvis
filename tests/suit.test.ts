@@ -16,6 +16,8 @@ import {
   SUIT_CANVAS_COLS,
   SUIT_CANVAS_ROWS,
   SUIT_COLS,
+  SUIT_REST_AFTER_MS,
+  SUIT_REST_TICK_MS,
   SUIT_ROWS,
   SUIT_TICK_MS,
   WAVE_MS,
@@ -26,6 +28,7 @@ import {
   standbyReadouts,
   suitCells,
   suitFrame,
+  suitResting,
 } from '../hooks/suit'
 import type { Readout } from '../hooks/suit'
 
@@ -142,7 +145,7 @@ describe('standby readouts', () => {
 
 describe('suit frames', () => {
   const T = SUIT_TICK_MS
-  const idle = (tick: number, over: Partial<{ busy: boolean; deployedAt: number; now: number }> = {}) =>
+  const idle = (tick: number, over: Partial<{ busy: boolean; deployedAt: number; now: number; resting: boolean }> = {}) =>
     suitFrame(tick, { busy: false, now: 0, ...over })
   // the pixel at canvas row `y`, column `x`: a cell's top half, or its bottom
   const px = (cells: Cell[][], y: number, x: number): string | undefined => {
@@ -312,6 +315,47 @@ describe('suit frames', () => {
     expect(onTheme('#123456')).toBe(false)
     expect(onTheme(mix(THEME.suitRed, THEME.accent, 0.5))).toBe(false)
     expect(onTheme(mix(THEME.suitGold, THEME.bright, 0.35))).toBe(true)
+  })
+
+  test('resting: STANDBY whatever the tick, no scan line, the reactor breathing and the eyes blinking by the clock', () => {
+    expect([SUIT_REST_AFTER_MS, SUIT_REST_TICK_MS]).toEqual([60_000, 1000])
+    const rest = (tick: number, now: number) => idle(tick, { now, resting: true })
+    // the wave's, the hover's, the repulsor's, the charge's frames: all standing by, alike
+    for (const f of [1, 24, 36, 52, 64]) {
+      expect(rest(f, 60_000).pose).toBe('STANDBY')
+      expect(rest(f, 60_000).cells).toEqual(rest(0, 60_000).cells)
+    }
+    // the scan line's row 1 on frame 1, unlit
+    expect(at(rest(1, 60_000).cells, 0, 6)).toBe(THEME.suitRed)
+    // the reactor a 2 s breath by the clock: a frame a second, accent and bright in turn
+    const reactor = (now: number) => at(rest(0, now).cells, 18, 10)
+    expect([reactor(60_000), reactor(61_000), reactor(62_000)]).toEqual([THEME.accent, THEME.bright, THEME.accent])
+    expect(reactor(60_500)).toBe(mix(THEME.accent, THEME.bright, 0.5))
+    // the eyes gold one second in three
+    const eye = (now: number) => [at(rest(0, now).cells, 8, 5), at(rest(0, now).cells, 8, 8)]
+    expect(eye(60_000)).toEqual([THEME.accent, THEME.bright])
+    expect(eye(61_000)).toEqual([THEME.accent, THEME.bright])
+    expect(eye(62_000)).toEqual([THEME.suitGold, THEME.suitGold])
+    expect(eye(63_000)).toEqual([THEME.accent, THEME.bright])
+    expect(eye(65_000)).toEqual([THEME.suitGold, THEME.suitGold])
+    // nothing but its input decides it
+    expect(rest(7, 61_000)).toEqual(rest(7, 61_000))
+  })
+
+  test('the suit rests a minute after the last stir: an event ended, a crew deployed, the session begun', () => {
+    const at = (now: number, over: Partial<{ busy: boolean; lastEventAt: number; deployedAt: number; startedAt: number }> = {}) =>
+      suitResting({ now, busy: false, ...over })
+    expect(at(59_999, { startedAt: 0 })).toBe(false)
+    expect(at(60_000, { startedAt: 0 })).toBe(true)
+    // the latest stir counts
+    expect(at(70_000, { startedAt: 0, lastEventAt: 10_001 })).toBe(false)
+    expect(at(70_000, { startedAt: 0, lastEventAt: 10_000 })).toBe(true)
+    expect(at(70_000, { startedAt: 0, lastEventAt: 5000, deployedAt: 10_001 })).toBe(false)
+    expect(at(70_000, { startedAt: 10_001, deployedAt: 0 })).toBe(false)
+    // a main-loop call out keeps it awake
+    expect(at(600_000, { startedAt: 0, busy: true })).toBe(false)
+    // nothing known: awake
+    expect(at(600_000)).toBe(false)
   })
 })
 

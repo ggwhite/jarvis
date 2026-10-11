@@ -4186,6 +4186,96 @@ describe('standby suit', () => {
     expect(await suitHolds()).toContain('目前沒有執行中的工具呼叫')
   })
 
+  // the suit's writes: its frames, counted beneath the mod
+  const suitWrites = (on: On) => {
+    const count = { n: 0 }
+    on('state.set', { plugin: 'jarvis', key: 'suit' }, async (_$, e, next) => {
+      count.n += 1
+      return next(e)
+    })
+    return count
+  }
+  const poseOf = async ($: Engine) => (linesOf(await draw($, 50)).find(l => l.includes('MARK XLII · ')) ?? '').trim()
+
+  test('a minute without a stir the suit rests: STANDBY, one frame a second, one timer; the next stir wakes it at 250 ms from STANDBY', async ($, on) => {
+    const clock = engine(on)
+    const frames = suitWrites(on)
+    await start($)
+    await clock.advance(54_000)
+    await draw($, 50)
+    await clock.advance(5000)
+    // 59 s since the session began: a frame every 250 ms
+    expect(await poseOf($)).toBe(STANDBY)
+    let base = frames.n
+    await clock.advance(1000)
+    expect(frames.n - base).toBe(4)
+    // 60 s: frame 24 would wave; resting it stands by, a frame a second, the 250 ms timer gone
+    expect(await poseOf($)).toBe(STANDBY)
+    base = frames.n
+    await clock.advance(3000)
+    expect(frames.n - base).toBe(3)
+    expect(await poseOf($)).toBe(STANDBY)
+    // an event: the next drawing back at 250 ms, the turn from STANDBY
+    await $.tool.call({ tool: 'Read', file_path: '/a.ts' })
+    expect(await poseOf($)).toBe(STANDBY)
+    base = frames.n
+    await clock.advance(1000)
+    expect(frames.n - base).toBe(4)
+    // drawn again within SEEN_MS: frame 23 the turn's last standing by, 24 the wave
+    expect(await poseOf($)).toBe(STANDBY)
+    await clock.advance(4750)
+    expect(await poseOf($)).toBe(STANDBY)
+    await clock.advance(SUIT_TICK_MS)
+    expect(await poseOf($)).toBe('MARK XLII · WAVE')
+  })
+
+  test('a crew member deployed is a stir: the suit stays awake a minute more', async ($, on) => {
+    const clock = engine(on, 'agent-1')
+    const frames = suitWrites(on)
+    await start($)
+    await clock.advance(30_000)
+    await draw($, 50)
+    // a foreground run done before its spawn returned: the suit stays up
+    await $.agent.spawn(spawnInput({ description: 'quick look', subagentType: 'Explore' }))
+    await $.turn.complete(complete('agent-1'))
+    await clock.advance(30_000)
+    await draw($, 50)
+    let base = frames.n
+    await clock.advance(1000)
+    expect(frames.n - base).toBe(4)
+    await clock.advance(29_000)
+    await draw($, 50)
+    base = frames.n
+    await clock.advance(2000)
+    expect(frames.n - base).toBe(2)
+  })
+
+  test('a main-loop call out keeps the suit awake past a minute', async ($, on) => {
+    const clock = mock.clock(on, { now: 0 })
+    on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+    const gates: Array<() => void> = []
+    on('tool.call', async () => {
+      await new Promise<void>(r => gates.push(r))
+      return { result: {} } as never
+    })
+    const frames = suitWrites(on)
+    await start($)
+    const call = $.tool.call({ tool: 'Bash', command: 'sleep 90' })
+    while (gates.length < 1) await clock.advance(0)
+    await clock.advance(61_000)
+    await draw($, 50)
+    let base = frames.n
+    await clock.advance(1000)
+    expect(frames.n - base).toBe(4)
+    gates.splice(0).forEach(r => r())
+    await call
+    // the call's end a stir: still awake
+    await draw($, 50)
+    base = frames.n
+    await clock.advance(1000)
+    expect(frames.n - base).toBe(4)
+  })
+
   // one string per drawn row, the texts of a row Box joined as drawn
   const rowsOf = (n: Node | string): string[] =>
     typeof n === 'string' || n.type === 'Text' || n.props?.flexDirection === 'row'

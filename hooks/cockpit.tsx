@@ -22,7 +22,9 @@ import {
   SUIT_BLOCK_ROWS,
   SUIT_CANVAS_COLS,
   SUIT_COLS,
+  SUIT_REST_TICK_MS,
   SUIT_ROWS,
+  SUIT_TICK_MS,
   SUIT_UNDER_ROWS,
   crewDeployed,
   readoutMeterW,
@@ -30,6 +32,7 @@ import {
   standbyReadouts,
   suitCells,
   suitFrame,
+  suitResting,
 } from './suit'
 import type { Readout } from './suit'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
@@ -144,8 +147,8 @@ export type Ctx = {
   // the standby suit's frame, and when a crew member was last deployed
   suitTick?: number
   deployedAt?: number
-  // told each drawing whether the standby suit was drawn
-  onStandby?: (drawn: boolean) => void
+  // told each drawing whether the standby suit was drawn, and drawn, its frame time
+  onStandby?: (drawn: boolean, periodMs?: number) => void
 }
 
 const FRAME = THEME.frame
@@ -1264,6 +1267,16 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // the rows the standby suit takes, its readouts under it when they do not fit beside
   const suitH = SUIT_BLOCK_ROWS + (scanSide ? 0 : SUIT_UNDER_ROWS)
 
+  // a main-loop call out quickens the suit's breath and keeps it awake
+  const suitBusy = view.inflight.some(f => f.actor === MAIN_ACTOR)
+  const suitRests = suitResting({
+    now: view.now,
+    busy: suitBusy,
+    ...(view.events.length > 0 ? { lastEventAt: Math.max(...view.events.map(ev => ev.ts + ev.ms)) } : {}),
+    ...(ctx.deployedAt === undefined ? {} : { deployedAt: ctx.deployedAt }),
+    ...(ctx.startedAt === undefined ? {} : { startedAt: ctx.startedAt }),
+  })
+
   const READOUT_COLOR: Record<Readout['tone'], string> = { primary: PRIMARY, bright: BRIGHT, error: ERROR, frame: FRAME }
 
   // `LABEL ▰▱▱▱▱ value` in the form given: the label in frame, a meter when it keeps one, the
@@ -1301,8 +1314,12 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       failed: view.finished.filter(a => a.status === 'failed').length,
       ...(lastEv ? { lastAgoMs: now - (lastEv.ts + lastEv.ms) } : {}),
     })
-    const busy = view.inflight.some(f => f.actor === MAIN_ACTOR)
-    const frame = suitFrame(ctx.suitTick ?? 0, { busy, now, ...(ctx.deployedAt === undefined ? {} : { deployedAt: ctx.deployedAt }) })
+    const frame = suitFrame(ctx.suitTick ?? 0, {
+      busy: suitBusy,
+      now,
+      resting: suitRests,
+      ...(ctx.deployedAt === undefined ? {} : { deployedAt: ctx.deployedAt }),
+    })
     const sighted = sightedArt(frame.cells)
     let art: Seg[][]
     let under: Seg[][] = []
@@ -1452,7 +1469,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     }
   }
 
-  ctx.onStandby?.(standby)
+  ctx.onStandby?.(standby, suitRests ? SUIT_REST_TICK_MS : SUIT_TICK_MS)
 
   return (
     <Box flexDirection="column">

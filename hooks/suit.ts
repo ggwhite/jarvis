@@ -164,6 +164,9 @@ export const WAVE_MS = 3000
 export const HOVER_MS = 4000
 export const REPULSOR_MS = 3000
 export const CHARGE_MS = 2000
+// a minute without a stir the suit rests: STANDBY, no scan line, a frame a second
+export const SUIT_REST_AFTER_MS = 60_000
+export const SUIT_REST_TICK_MS = 1000
 // the arc reactor's breath, and while the main loop has a call out
 const BREATH_MS = 2000
 const BREATH_BUSY_MS = 1000
@@ -262,16 +265,26 @@ const tri = (phase: number) => 1 - Math.abs(2 * phase - 1)
 // A pose's pixels at its frame `t`: the sprite, how far it is lifted and what it fires.
 type Shot = { sprite: Sprite; dy: number; beam: Map<number, string> }
 
-function standby(t: number, busy: boolean): Shot {
+// standing by `ms` into its breath, the eyes gold when `blink`
+function standbyAt(ms: number, busy: boolean, blink: boolean): Shot {
   const sprite: Sprite = new Map(BASE)
   const breath = busy ? BREATH_BUSY_MS : BREATH_MS
-  const reactor = mix(THEME.accent, THEME.bright, tri(((t * SUIT_TICK_MS) % breath) / breath))
-  const blink = t % ticksOf(BLINK_MS) === ticksOf(BLINK_MS) - 1
+  const reactor = mix(THEME.accent, THEME.bright, tri((ms % breath) / breath))
   for (const [k, v] of sprite) {
     if (v === 'C' || v === 'K') sprite.set(k, reactor)
     else if (blink && (v === 'E' || v === 'Y')) sprite.set(k, 'G')
   }
   return { sprite, dy: 0, beam: new Map() }
+}
+
+function standby(t: number, busy: boolean): Shot {
+  return standbyAt(t * SUIT_TICK_MS, busy, t % ticksOf(BLINK_MS) === ticksOf(BLINK_MS) - 1)
+}
+
+// at rest the breath and the blink go by the clock, a second at a time
+function resting(now: number, busy: boolean): Shot {
+  const n = Math.round(BLINK_MS / SUIT_REST_TICK_MS)
+  return standbyAt(now, busy, Math.floor(now / SUIT_REST_TICK_MS) % n === n - 1)
 }
 
 function wave(t: number): Shot {
@@ -354,20 +367,31 @@ function poseAt(f: number): { i: number; t: number } {
   return { i: 0, t: 0 }
 }
 
+// Whether the suit rests: SUIT_REST_AFTER_MS since the latest stir, an event's end, a crew
+// member deployed or the session's start; never while the main loop has a call out, nor
+// when none is known.
+export function suitResting(input: { now: number; busy: boolean; lastEventAt?: number; deployedAt?: number; startedAt?: number }): boolean {
+  const stirs = [input.lastEventAt, input.deployedAt, input.startedAt].filter((t): t is number => t !== undefined)
+  return !input.busy && stirs.length > 0 && input.now - Math.max(...stirs) >= SUIT_REST_AFTER_MS
+}
+
 // Whether the line under the suit reads `◆ CREW DEPLOYED`: for CREW_SHOW_MS after a spawn.
 export function crewDeployed(now: number, deployedAt: number | undefined): boolean {
   return deployedAt !== undefined && now >= deployedAt && now - deployedAt < CREW_SHOW_MS
 }
 
 // The standby suit at frame `tick`: the poses in turn, the scan line a pixel row lower each
-// frame, the eyes and palms flashing just after a spawn. Nothing but the tick and the
-// times decide it.
-export function suitFrame(tick: number, opts: { busy: boolean; deployedAt?: number; now: number }): { cells: Cell[][]; pose: Pose } {
+// frame, the eyes and palms flashing just after a spawn; `resting`, standing by with no scan
+// line whatever the tick. Nothing but the tick and the times decide it.
+export function suitFrame(
+  tick: number,
+  opts: { busy: boolean; deployedAt?: number; now: number; resting?: boolean },
+): { cells: Cell[][]; pose: Pose } {
   const f = Number.isFinite(tick) ? Math.max(0, Math.floor(tick)) : 0
-  const { i, t } = poseAt(f)
+  const { i, t } = opts.resting ? { i: 0, t: 0 } : poseAt(f)
   const at = POSES[i] ?? POSES[0]
   const pose = at?.pose ?? 'STANDBY'
-  const { sprite, dy, beam } = at ? at.shot(t, opts.busy) : standby(t, opts.busy)
+  const { sprite, dy, beam } = opts.resting ? resting(opts.now, opts.busy) : at ? at.shot(t, opts.busy) : standby(t, opts.busy)
   const since = opts.deployedAt === undefined ? -1 : opts.now - opts.deployedAt
   const flash = since >= 0 && since < CREW_FLASH_FRAMES * SUIT_TICK_MS
   const lit = pose === 'CHARGE' && t === ticksOf(CHARGE_MS) - 1
@@ -386,7 +410,7 @@ export function suitFrame(tick: number, opts: { busy: boolean; deployedAt?: numb
     const [r, c] = rc(k)
     plot(r + OY, c + OX, color)
   }
-  const scan = px[f % CANVAS_PX]
+  const scan = opts.resting ? undefined : px[f % CANVAS_PX]
   if (scan) scan.forEach((color, x) => (scan[x] = color === undefined ? undefined : mix(color, THEME.bright, SCAN_MIX)))
   const cells = pixelsToCells(px).map(row => row.map(c => (c.ch === '█' && c.fg ? { ch: '▀', fg: c.fg, bg: c.fg } : c)))
   return { cells, pose }
