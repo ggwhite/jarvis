@@ -1,6 +1,6 @@
 import type { EngineInterface, RenderElement } from 'claude-code'
 
-import type { CrewAgent, CrewEvent, CrewInflight, CrewPage } from '../types'
+import type { JarvisAgent, JarvisEvent, JarvisInflight, JarvisPage } from '../types'
 import {
   CHAIN_WARN,
   FAMILY_COLOR,
@@ -29,8 +29,8 @@ import {
   tokenTotal,
   tokensOf,
   WORKFLOW_TYPE,
-} from './crew'
-import type { Cockpit, EventRow, Health, ListUnit, ModelShare, Outcome, Phase, Role, RoleStat } from './crew'
+} from './jarvis'
+import type { Cockpit, EventRow, Health, ListUnit, ModelShare, Outcome, Phase, Role, RoleStat } from './jarvis'
 
 // At this many columns the stats page sets the main and dispatch cards side by side.
 export const WIDE_COLS = 120
@@ -69,13 +69,13 @@ export type Ctx = {
   // the spinner's frame, and the scan sweep's, at this tick
   frame: string
   scan: string
-  page: CrewPage
+  page: JarvisPage
   // the subagent the detail page is about
   agentId: string
   paused: boolean
   // events recorded since the pause
   fresh: number
-  go: (page: CrewPage) => void
+  go: (page: JarvisPage) => void
   open: (agentId: string) => void
   pause: () => void
 }
@@ -85,7 +85,7 @@ const ACCENT = THEME.accent
 const ERROR = THEME.error
 const MUTED = THEME.muted
 
-export const TITLE = '⌜ C.R.E.W. ⌝'
+export const TITLE = '⌜ J.A.R.V.I.S. ⌝'
 
 const HEALTH_COLOR: Record<Health, string> = { ok: PRIMARY, loop: ERROR, stuck: ACCENT }
 
@@ -115,7 +115,7 @@ const IDLE_COLOR = MUTED
 
 export const RECOVERED = '↻ RECOVERED'
 
-// A crew member's status words: full, and the short form a narrow card falls back to.
+// A squad member's status words: full, and the short form a narrow card falls back to.
 const PHASE_TEXT: Record<Phase, { full: string; short: string }> = {
   init: { full: 'INITIALIZING…', short: 'INIT…' },
   active: { full: 'ACTIVE', short: 'ACTIVE' },
@@ -124,10 +124,10 @@ const PHASE_TEXT: Record<Phase, { full: string; short: string }> = {
   lost: { full: 'SIGNAL LOST', short: 'LOST' },
 }
 
-// The least a crew card's description keeps before its status words go short.
+// The least a squad card's description keeps before its status words go short.
 const DESC_MIN = 8
 
-const TABS: { page: CrewPage; hotkey: string; label: string }[] = [
+const TABS: { page: JarvisPage; hotkey: string; label: string }[] = [
   { page: 'now', hotkey: 'n', label: '現況' },
   { page: 'log', hotkey: 'l', label: '事件流' },
   { page: 'stats', hotkey: 's', label: '統計' },
@@ -318,7 +318,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return family ? { t: badgeText(model), color: FAMILY_COLOR[family] } : { t: badgeText(model), dim: true }
   }
 
-  // who ran a call: the main loop by name, a listed crew member as `●N` in its color
+  // who ran a call: the main loop by name, a listed squad member as `●N` in its color
   const ACTOR_W = 5
   const actorSeg = (actor: string): Seg => {
     if (actor === MAIN_ACTOR) return { t: padCells('主線', ACTOR_W), color: MAIN_COLOR, bold: true }
@@ -331,11 +331,11 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const listed = [...view.running, ...view.stale, ...view.finished]
   const selected = ctx.page === 'detail' ? listed.find(a => a.id === ctx.agentId) : undefined
   // a detail page whose subagent left the list is the now page
-  const page: CrewPage = ctx.page === 'detail' && !selected ? 'now' : ctx.page
+  const page: JarvisPage = ctx.page === 'detail' && !selected ? 'now' : ctx.page
 
   // ---- 標題列 -------------------------------------------------------------
 
-  // the title, its spinner turning while a crew member runs, and the health on the right
+  // the title, its spinner turning while a squad member runs, and the health on the right
   const titleBar = (): Block => {
     const left: Seg[] = [
       { t: TITLE, color: PRIMARY, bold: true },
@@ -402,7 +402,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         : { t: padCells('[✗]', markW), color: ERROR, bold: true }
 
   // `withActor` false leaves out who ran the call: the detail page's events are all one agent's
-  const eventLine = (ev: CrewEvent, outcome: Outcome, inner: number, toolW: number, markW: number, withActor: boolean): Seg[] => {
+  const eventLine = (ev: JarvisEvent, outcome: Outcome, inner: number, toolW: number, markW: number, withActor: boolean): Seg[] => {
     const timeW = 8
     const durW = 6
     const descW = Math.max(4, inner - (timeW + 1 + (withActor ? ACTOR_W + 1 : 0) + toolW + 1) - (1 + durW + 1 + markW))
@@ -432,7 +432,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // bottom; `fill` makes it `room` rows tall however few there are.
   const eventCard = (
     head: Seg[],
-    list: readonly CrewEvent[],
+    list: readonly JarvisEvent[],
     room: number,
     empty: string,
     fill: boolean,
@@ -641,7 +641,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   type Group = Extract<ListUnit, { kind: 'workflow' }>
   type Item =
     | { kind: 'section'; seg: Seg }
-    | { kind: 'agent'; a: CrewAgent; member?: 'mid' | 'last' }
+    | { kind: 'agent'; a: JarvisAgent; member?: 'mid' | 'last' }
     | { kind: 'group'; u: Group }
     | { kind: 'more'; n: number }
 
@@ -678,10 +678,10 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const listHeight = (shownFinished: number) =>
     view.sections.length === 0 ? 4 : listItems(shownFinished).length + 3
 
-  const memberOf = (a: CrewAgent) => view.roster.get(a.id) ?? { n: 0, color: PRIMARY }
+  const memberOf = (a: JarvisAgent) => view.roster.get(a.id) ?? { n: 0, color: PRIMARY }
 
-  // the corner-bracketed number a crew card opens with: ⌜ N ⌝ while it runs, ⌞ N ⌟ after
-  const bracket = (a: CrewAgent, numW: number): string => {
+  // the corner-bracketed number a squad card opens with: ⌜ N ⌝ while it runs, ⌞ N ⌟ after
+  const bracket = (a: JarvisAgent, numW: number): string => {
     const n = padCells(String(memberOf(a).n), numW, 'right')
     return a.status === 'running' ? `⌜ ${n} ⌝` : `⌞ ${n} ⌟`
   }
@@ -706,20 +706,20 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const agentsShown = items.flatMap(x => (x.kind === 'agent' ? [x] : []))
     const numW = Math.max(1, ...agentsShown.map(x => String(memberOf(x.a).n).length))
     const bracketW = 4 + numW
-    const phase = (a: CrewAgent) => phaseOf(a, view.now)
-    const icon = (a: CrewAgent): string => {
+    const phase = (a: JarvisAgent) => phaseOf(a, view.now)
+    const icon = (a: JarvisAgent): string => {
       const p = phase(a)
       return p === 'init' ? ctx.scan : p === 'active' ? ctx.frame : p === 'complete' ? '✓' : p === 'failed' ? '✗' : '?'
     }
     const iconW = Math.max(1, ...agentsShown.map(x => cellWidth(icon(x.a))))
     const nameW = Math.min(15, Math.max(4, ...agentsShown.filter(x => !x.member).map(x => cellWidth(typeLabel(x.a.type)))))
     const badgeW = Math.max(...agentsShown.map(x => cellWidth(badgeText(x.a.model))))
-    const durOf = (a: CrewAgent) => fmtDur(elapsedMs(a, view.now))
-    const metaOf = (a: CrewAgent) => {
+    const durOf = (a: JarvisAgent) => fmtDur(elapsedMs(a, view.now))
+    const metaOf = (a: JarvisAgent) => {
       const n = tokenTotal(tokensOf(a))
       return a.status === 'running' && n === 0 ? '' : fmtK(n)
     }
-    const statusOf = (a: CrewAgent, full: boolean): string => {
+    const statusOf = (a: JarvisAgent, full: boolean): string => {
       const p = phase(a)
       const words = full ? PHASE_TEXT[p].full : PHASE_TEXT[p].short
       return p === 'active' && full && a.tool !== '' ? `${words} · ${fitCells(a.tool, 10)}` : words
@@ -734,7 +734,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const stW = statusW(full)
     const descW = Math.max(4, width - fixedW - stW)
 
-    const row = (a: CrewAgent, member?: 'mid' | 'last'): Line => {
+    const row = (a: JarvisAgent, member?: 'mid' | 'last'): Line => {
       const p = phase(a)
       const { n, color } = memberOf(a)
       const live = p === 'init' || p === 'active'
@@ -779,7 +779,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     }
 
     const groupHead = (u: Group): Seg[] => {
-      const count = (st: CrewAgent['status']) => u.agents.filter(a => a.status === st).length
+      const count = (st: JarvisAgent['status']) => u.agents.filter(a => a.status === st).length
       const parts = [
         `${u.agents.length} 個`,
         ...([
@@ -832,7 +832,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const toolW = toolWidth(list.map(f => f.tool))
     const durW = 6
     const descW = Math.max(4, inner - (ACTOR_W + 1 + toolW + 1) - (1 + durW))
-    const line = (f: CrewInflight): Seg[] => {
+    const line = (f: JarvisInflight): Seg[] => {
       const dur = eventDuration(view.now - f.startedAt)
       return [
         actorSeg(f.actor),
@@ -854,7 +854,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // a token count: 1.2k, 61k, 2.4M
   const tokens = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : fmtK(n))
 
-  const detailBlock = (a: CrewAgent): Block => {
+  const detailBlock = (a: JarvisAgent): Block => {
     const labelW = 9
     const color = memberOf(a).color
     const field = (label: string, value: Seg[]): Seg[] => [{ t: padCells(label, labelW), dim: true }, ...value]

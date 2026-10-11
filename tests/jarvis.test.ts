@@ -2,7 +2,7 @@ import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import type { CrewAgent, CrewEvent, CrewInflight, CrewMain } from '../types'
+import type { JarvisAgent, JarvisEvent, JarvisInflight, JarvisMain } from '../types'
 import {
   MAX_EVENTS,
   MAX_NUMBERED,
@@ -40,14 +40,14 @@ import {
   familyOf,
   ANIM_MS,
   BREAK_MS,
-  CREW_PALETTE,
+  JARVIS_PALETTE,
   IDLE_MS,
   INIT_MS,
   SCAN,
   SEEN_MS,
   SPINNER,
   THEME,
-  crewColor,
+  jarvisColor,
   eventRows,
   fmtDate,
   outcomesOf,
@@ -55,14 +55,14 @@ import {
   rosterOf,
   scanFrame,
   tickMs,
-} from '../hooks/crew'
+} from '../hooks/jarvis'
 import { HEALTH_TEXT, MIN_EVENT_ROWS, RECOVERED, ROLE_COLOR, TINY_COLS, TITLE, WIDE_COLS } from '../hooks/cockpit'
 import {
   MAX_FAILURES,
   REFRESH_MS,
   THROTTLE_MS,
   createReporter,
-  crewText,
+  jarvisText,
   inHerdr,
   reportArgv,
 } from '../hooks/herdr'
@@ -82,7 +82,7 @@ const usage = (model: string, i: number, o: number, cr: number, cw: number) => (
   cache_creation_input_tokens: cw,
 })
 
-const agent = (over: Partial<CrewAgent>): CrewAgent => ({
+const agent = (over: Partial<JarvisAgent>): JarvisAgent => ({
   id: 'x',
   type: 'worker',
   description: 'd',
@@ -180,7 +180,7 @@ describe('pure logic', () => {
   })
 
   test('one-line summary format', () => {
-    const m = (id: string, n: number, extra: Partial<CrewAgent> = {}) =>
+    const m = (id: string, n: number, extra: Partial<JarvisAgent> = {}) =>
       Array.from({ length: n }, (_, i) => agent({ id: `${id}${i}`, model: id, ...extra }))
     // haiku 1M in = 0.1 each; x5 = 0.5; opus 4 each x5 = 20; sonnet 1M in = 2 vs opus 4
     const single = summarize(m(HAIKU, 1, { input: 1_000_000 }))
@@ -225,7 +225,7 @@ describe('pure logic', () => {
   })
 
   test('only the latest 50 agents are kept, finished ones dropped first', () => {
-    let list: CrewAgent[] = []
+    let list: JarvisAgent[] = []
     list = addAgent(list, { id: 'run', type: 'worker', description: 'd', model: SONNET, now: 0 })
     for (let i = 0; i < 60; i += 1) {
       list = addAgent(list, { id: `a${i}`, type: 'worker', description: 'd', model: SONNET, now: i })
@@ -260,7 +260,7 @@ describe('stale subagents', () => {
     list = [...markStale(list, 100 + STALE_MS + 1)]
     expect(list[0]?.status).toBe('stale')
     // frozen at the last event while stale
-    expect(elapsedMs(list[0] as CrewAgent, 99_999_999)).toBe(0)
+    expect(elapsedMs(list[0] as JarvisAgent, 99_999_999)).toBe(0)
 
     list = noteTool(list, 'a', 'Read', 100 + STALE_MS + 5000)
     expect(list[0]).toMatchObject({ status: 'running', tool: 'Read', runStartedAt: 100 })
@@ -273,27 +273,27 @@ describe('herdr row text', () => {
     const run = (id: string) => agent({ id, status: 'running', model: SONNET })
     const done = (id: string) => agent({ id, model: SONNET, input: 1_000_000, output: 1_000_000 })
     // sonnet 12 vs opus 24: saves 50%
-    expect(crewText([])).toBeUndefined()
-    expect(crewText([run('a'), run('b'), done('c')])).toBe('▶2 ✓1 · 省50%')
-    expect(crewText([done('c'), done('d')])).toBe('✓2 · 省50%')
-    expect(crewText([run('a'), done('c'), agent({ id: 's', status: 'stale', model: SONNET })])).toBe(
+    expect(jarvisText([])).toBeUndefined()
+    expect(jarvisText([run('a'), run('b'), done('c')])).toBe('▶2 ✓1 · 省50%')
+    expect(jarvisText([done('c'), done('d')])).toBe('✓2 · 省50%')
+    expect(jarvisText([run('a'), done('c'), agent({ id: 's', status: 'stale', model: SONNET })])).toBe(
       '▶1 ✓1 ⚠1 · 省50%',
     )
     // an unpriced model has no savings figure
-    expect(crewText([agent({ id: 'x', model: 'mystery-model' })])).toBe('✓1')
+    expect(jarvisText([agent({ id: 'x', model: 'mystery-model' })])).toBe('✓1')
     // dearer than all-Opus
-    expect(crewText([agent({ id: 'f', model: 'claude-fable-5-1', input: 1_000_000 })])).toBe(
+    expect(jarvisText([agent({ id: 'f', model: 'claude-fable-5-1', input: 1_000_000 })])).toBe(
       '✓1 · 多花150%',
     )
   })
 
   test('the command argv', () => {
     expect(reportArgv('p-1', '✓0 · test')).toEqual([
-      'herdr', 'pane', 'report-metadata', 'p-1', '--source', 'crew',
-      '--token', 'crew=✓0 · test', '--ttl-ms', '900000',
+      'herdr', 'pane', 'report-metadata', 'p-1', '--source', 'jarvis',
+      '--token', 'jarvis=✓0 · test', '--ttl-ms', '900000',
     ])
     expect(reportArgv('p-1', undefined)).toEqual([
-      'herdr', 'pane', 'report-metadata', 'p-1', '--source', 'crew', '--clear-token', 'crew',
+      'herdr', 'pane', 'report-metadata', 'p-1', '--source', 'jarvis', '--clear-token', 'jarvis',
     ])
   })
 
@@ -314,7 +314,7 @@ describe('herdr row text', () => {
     expect(sent).toHaveLength(1)
     await r.step('a', REFRESH_MS)
     expect(sent).toHaveLength(2)
-    expect(sent[1]).toContain('crew=a')
+    expect(sent[1]).toContain('jarvis=a')
 
     await r.step(undefined, REFRESH_MS + THROTTLE_MS) // cleared once
     await r.step(undefined, REFRESH_MS * 3) // a cleared row is never resent
@@ -337,13 +337,13 @@ describe('herdr row text', () => {
     expect(sent).toHaveLength(1)
     await r.step('b', 10_000 + THROTTLE_MS)
     expect(sent).toHaveLength(2)
-    expect(sent[1]).toContain('crew=b')
+    expect(sent[1]).toContain('jarvis=b')
 
     await r.step('c', 10_000 + THROTTLE_MS + 1) // changed again 1 ms later: held
     expect(sent).toHaveLength(2)
     await r.step('c', 10_000 + THROTTLE_MS * 2) // the last change always goes out
     expect(sent).toHaveLength(3)
-    expect(sent[2]).toContain('crew=c')
+    expect(sent[2]).toContain('jarvis=c')
 
     await r.step(undefined, 20_000) // everything gone: clear
     expect(sent[3]).toEqual(reportArgv('p-1', undefined))
@@ -408,10 +408,10 @@ const draw = async ($: Engine, rows = 30, cols = 80): Promise<Node> =>
   (await $.ui.render({
     surface: 'terminal',
     component: 'Pane',
-    requestId: 'crew',
+    requestId: 'jarvis',
     viewport: { columns: cols + 20, rows: rows + 10 },
     props: {
-      title: 'Crew',
+      title: 'Jarvis',
       isFocused: false,
       bodyColumns: cols,
       placement: 'dock',
@@ -421,7 +421,7 @@ const draw = async ($: Engine, rows = 30, cols = 80): Promise<Node> =>
   })) as RenderElement as Node
 
 const PANE_PROPS = (rows = 30, cols = 80) => ({
-  title: 'Crew',
+  title: 'Jarvis',
   isFocused: true,
   bodyColumns: cols,
   placement: 'dock' as const,
@@ -431,10 +431,10 @@ const PANE_PROPS = (rows = 30, cols = 80) => ({
 
 const mountPane = ($: Engine, rows = 30, cols = 80) =>
   $.ui.mount({
-    plugin: 'crew',
+    plugin: 'jarvis',
     surface: 'terminal',
     component: 'Pane',
-    requestId: 'crew',
+    requestId: 'jarvis',
     props: PANE_PROPS(rows, cols),
     viewport: { columns: cols + 20, rows: rows + 10 },
   })
@@ -495,7 +495,7 @@ const start = ($: Engine) =>
 // how many times the mod has written its tick: counted beneath the mod, at the state bottom
 const ticks = (on: On) => {
   const count = { n: 0 }
-  on('state.set', { plugin: 'crew', key: 'tick' }, async (_$, e, next) => {
+  on('state.set', { plugin: 'jarvis', key: 'tick' }, async (_$, e, next) => {
     count.n += 1
     return next(e)
   })
@@ -812,7 +812,7 @@ describe('herdr reporting', () => {
     await clock.advance(5000) // five ticks, one report
     expect(calls).toHaveLength(1)
     expect(calls[0]?.slice(0, 4)).toEqual(['herdr', 'pane', 'report-metadata', 'pane-7'])
-    expect(calls[0]?.[7]).toMatch(/^crew=▶1/)
+    expect(calls[0]?.[7]).toMatch(/^jarvis=▶1/)
 
     await clock.advance(60_000) // nothing changed for a minute: still one
     expect(calls).toHaveLength(1)
@@ -820,7 +820,7 @@ describe('herdr reporting', () => {
     await $.turn.complete(complete('agent-9', { usage: usage(HAIKU, 1000, 1000, 0, 0) }))
     await clock.advance(5000)
     expect(calls).toHaveLength(2)
-    expect(calls[1]?.[7]).toMatch(/^crew=✓1 · 省\d+%$/)
+    expect(calls[1]?.[7]).toMatch(/^jarvis=✓1 · 省\d+%$/)
   })
 
   test('a failing herdr is swallowed and the reporter stops after 3 failures', async ($, on) => {
@@ -842,7 +842,7 @@ describe('herdr reporting', () => {
   })
 })
 
-const ev = (over: Partial<CrewEvent> = {}): CrewEvent => ({
+const ev = (over: Partial<JarvisEvent> = {}): JarvisEvent => ({
   ts: 0,
   actor: 'main',
   source: '主線',
@@ -861,7 +861,7 @@ describe('event stream logic', () => {
     expect(describeCall('Bash', { command: 'ls -la', description: 'List files' })).toBe('List files')
     expect(describeCall('Bash', { command: 'go test ./...\nnext line' })).toBe('go test ./...')
     expect(describeCall('Bash', { command: '\n  make build  ', description: '  ' })).toBe('make build')
-    expect(describeCall('Read', { file_path: '/a/b/crew.ts' })).toBe('crew.ts')
+    expect(describeCall('Read', { file_path: '/a/b/jarvis.ts' })).toBe('jarvis.ts')
     expect(describeCall('Edit', { file_path: '/a/b/register.tsx' })).toBe('register.tsx')
     expect(describeCall('Write', { file_path: 'plain.md' })).toBe('plain.md')
     expect(describeCall('Grep', { pattern: 'foo.*bar', path: '/x' })).toBe('foo.*bar')
@@ -874,7 +874,7 @@ describe('event stream logic', () => {
   })
 
   test('only the latest 200 events are kept', () => {
-    let list: CrewEvent[] = []
+    let list: JarvisEvent[] = []
     for (let i = 0; i < 205; i += 1) list = addEvent(list, ev({ ts: i }))
     expect(list).toHaveLength(MAX_EVENTS)
     expect(list[0]?.ts).toBe(5)
@@ -954,7 +954,7 @@ describe('event stream logic', () => {
   })
 
   test('buildCockpit gathers the view model', () => {
-    const main: CrewMain = {
+    const main: JarvisMain = {
       model: 'claude-opus-5-5',
       chain: 3,
       ok: 7,
@@ -986,7 +986,7 @@ describe('event stream logic', () => {
 describe('health: in-flight calls and per-executor loops', () => {
   const fail = (actor: string, tool = 'Bash', ts = 0) =>
     ev({ actor, isMain: actor === 'main', source: actor === 'main' ? '主線' : 'worker', tool, ok: false, ts })
-  const flight = (over: Partial<CrewInflight> = {}): CrewInflight => ({
+  const flight = (over: Partial<JarvisInflight> = {}): JarvisInflight => ({
     key: 'c1',
     actor: 'main',
     source: '主線',
@@ -994,7 +994,7 @@ describe('health: in-flight calls and per-executor loops', () => {
     startedAt: 0,
     ...over,
   })
-  const mainRunning: CrewMain = {
+  const mainRunning: JarvisMain = {
     model: '',
     chain: 0,
     ok: 0,
@@ -1091,25 +1091,25 @@ describe('health: in-flight calls and per-executor loops', () => {
 describe('herdr warning prefix', () => {
   test('loop and stuck lead the text, ok leaves it alone', () => {
     const list = [agent({ id: 'r', status: 'running' })]
-    expect(crewText(list, 'ok')).toBe('▶1')
-    expect(crewText(list, 'loop')).toBe('⚠繞圈 ▶1')
-    expect(crewText(list, 'stuck')).toBe('⚠卡住 ▶1')
-    expect(crewText(list)).toBe(crewText(list, 'ok'))
+    expect(jarvisText(list, 'ok')).toBe('▶1')
+    expect(jarvisText(list, 'loop')).toBe('⚠繞圈 ▶1')
+    expect(jarvisText(list, 'stuck')).toBe('⚠卡住 ▶1')
+    expect(jarvisText(list)).toBe(jarvisText(list, 'ok'))
     // with no subagents the warning still shows; ok shows nothing
-    expect(crewText([], 'loop')).toBe('⚠繞圈')
-    expect(crewText([], 'stuck')).toBe('⚠卡住')
-    expect(crewText([], 'ok')).toBeUndefined()
+    expect(jarvisText([], 'loop')).toBe('⚠繞圈')
+    expect(jarvisText([], 'stuck')).toBe('⚠卡住')
+    expect(jarvisText([], 'ok')).toBeUndefined()
   })
 })
 
 // the latest value the mod wrote for its events and main records, seen beneath the mod
 const watch = (on: On) => {
-  const seen: { events: CrewEvent[]; main: CrewMain | undefined } = { events: [], main: undefined }
-  on('state.set', { plugin: 'crew', key: 'events' }, async (_$, e, next) => {
+  const seen: { events: JarvisEvent[]; main: JarvisMain | undefined } = { events: [], main: undefined }
+  on('state.set', { plugin: 'jarvis', key: 'events' }, async (_$, e, next) => {
     seen.events = [...e.value]
     return next(e)
   })
-  on('state.set', { plugin: 'crew', key: 'main' }, async (_$, e, next) => {
+  on('state.set', { plugin: 'jarvis', key: 'main' }, async (_$, e, next) => {
     seen.main = e.value
     return next(e)
   })
@@ -1118,8 +1118,8 @@ const watch = (on: On) => {
 
 // every value the mod wrote for its in-flight list, seen beneath the mod
 const watchFlight = (on: On) => {
-  const seen: { history: CrewInflight[][] } = { history: [] }
-  on('state.set', { plugin: 'crew', key: 'inflight' }, async (_$, e, next) => {
+  const seen: { history: JarvisInflight[][] } = { history: [] }
+  on('state.set', { plugin: 'jarvis', key: 'inflight' }, async (_$, e, next) => {
     seen.history.push([...e.value])
     return next(e)
   })
@@ -1139,20 +1139,20 @@ describe('event stream hooks', () => {
     const out = await $.tool.call({ tool: 'Bash', command: 'ls -la', description: 'List files' })
     expect(out).toMatchObject({ result: {} })
     answer = { isError: true, result: 'boom', text: 'boom' }
-    const bad = await $.tool.call({ tool: 'Read', file_path: '/a/b/crew.ts' })
+    const bad = await $.tool.call({ tool: 'Read', file_path: '/a/b/jarvis.ts' })
     expect(bad).toMatchObject({ isError: true, text: 'boom' })
 
     const list = w.events
     expect(list).toEqual([
       { ts: 1000, actor: 'main', source: '主線', isMain: true, tool: 'Bash', desc: 'List files', ms: 250, ok: true },
-      { ts: 1250, actor: 'main', source: '主線', isMain: true, tool: 'Read', desc: 'crew.ts', ms: 250, ok: false },
+      { ts: 1250, actor: 'main', source: '主線', isMain: true, tool: 'Read', desc: 'jarvis.ts', ms: 250, ok: false },
     ])
     expect(w.main).toMatchObject({
       ok: 1,
       fail: 1,
       chain: 2,
       lastTool: 'Read',
-      lastDesc: 'crew.ts',
+      lastDesc: 'jarvis.ts',
     })
   })
 
@@ -1201,7 +1201,7 @@ describe('event stream hooks', () => {
     }
     register(take as unknown as On, {})
 
-    const boom = new Error('crew-test: next crashed')
+    const boom = new Error('jarvis-test: next crashed')
     let caught: unknown
     try {
       await (hook as Hook)(fake, { tool: 'Bash', command: 'x' }, async () => {
@@ -1350,8 +1350,8 @@ describe('event stream hooks', () => {
     await $.agent.spawn(spawnInput({ description: 'build it', subagentType: 'worker' }))
     await $.tool.call({ tool: 'Agent', description: 'build it', prompt: 'p', subagent_type: 'worker' })
     expect(seenWhileRunning).toEqual([
-      '--token crew=▶1 --ttl-ms 900000',
-      '--token crew=⚠卡住 ▶1 --ttl-ms 900000',
+      '--token jarvis=▶1 --ttl-ms 900000',
+      '--token jarvis=⚠卡住 ▶1 --ttl-ms 900000',
     ])
     expect(flight.history.flat().some(x => x.tool === 'Agent')).toBe(false)
     expect(w.events).toEqual([expect.objectContaining({ tool: 'Agent', desc: 'build it', isMain: true, ok: true })])
@@ -1384,8 +1384,8 @@ describe('event stream hooks', () => {
     }
     const before = load()
     const after = load()
-    const history: CrewInflight[][] = []
-    const flight = () => (store.get('inflight')?.value ?? []) as CrewInflight[]
+    const history: JarvisInflight[][] = []
+    const flight = () => (store.get('inflight')?.value ?? []) as JarvisInflight[]
     const e = { tool: 'Bash', command: 'x' }
     const out = await before(fake, e, async () => {
       history.push(flight())
@@ -1485,7 +1485,7 @@ describe('event stream hooks', () => {
     expect(sent).toEqual([])
     // the call returned; five more quiet minutes and the run is stuck as before
     await clock.advance(STUCK_MS + 5000)
-    expect(sent).toEqual(['--token crew=⚠卡住 --ttl-ms 900000'])
+    expect(sent).toEqual(['--token jarvis=⚠卡住 --ttl-ms 900000'])
   })
 
   test('turn.start / main turn.complete flag the main loop as running', async ($, on) => {
@@ -1515,12 +1515,12 @@ describe('event stream hooks', () => {
     await clock.advance(STUCK_MS - 1000)
     expect(sent).toEqual([])
     await clock.advance(5000)
-    expect(sent).toEqual(['--token crew=⚠卡住 --ttl-ms 900000'])
+    expect(sent).toEqual(['--token jarvis=⚠卡住 --ttl-ms 900000'])
 
     await $.tool.call({ tool: 'Read', file_path: '/x' })
     await clock.advance(5000)
     expect(sent).toHaveLength(2)
-    expect(sent[1]).toBe('--clear-token crew') // activity resumed: the warning is cleared
+    expect(sent[1]).toBe('--clear-token jarvis') // activity resumed: the warning is cleared
   })
 })
 
@@ -1831,7 +1831,7 @@ describe('pages', () => {
     expect(await health()).toEqual({ text: 'WARNING: STALL DETECTED', color: THEME.accent })
   })
 
-  test('the title reads C.R.E.W., its spinner turning only while a crew member runs', async ($, on) => {
+  test('the title reads J.A.R.V.I.S., its spinner turning only while a squad member runs', async ($, on) => {
     const clock = engineAll(on)
     await start($)
     const bar = async () => (((await draw($)).children ?? [])[0] ?? {}) as Node
@@ -1840,8 +1840,8 @@ describe('pages', () => {
       const node = findText(await bar(), spinner)
       return node ? textOf(node) : undefined
     }
-    expect(TITLE).toBe('⌜ C.R.E.W. ⌝')
-    expect(findText(await bar(), /^⌜ C\.R\.E\.W\. ⌝$/)?.props?.color).toBe(THEME.primary)
+    expect(TITLE).toBe('⌜ J.A.R.V.I.S. ⌝')
+    expect(findText(await bar(), /^⌜ J\.A\.R\.V\.I\.S\. ⌝$/)?.props?.color).toBe(THEME.primary)
     expect(await frame()).toBeUndefined()
 
     await $.agent.spawn(spawnIn('job', 'worker'))
@@ -2151,7 +2151,7 @@ describe('in-flight card', () => {
     expect(findText(tree, /^目前沒有執行中的工具呼叫$/)?.props?.dimColor).toBe(true)
   })
 
-  test('each call shows who runs it (主線, or the crew member ●N), tool, description and how long it has run', async ($, on) => {
+  test('each call shows who runs it (主線, or the squad member ●N), tool, description and how long it has run', async ($, on) => {
     const clock = mock.clock(on, { now: 0 })
     spawner(on)
     const gates: Array<() => void> = []
@@ -2337,7 +2337,7 @@ describe('beauty pass 2', () => {
     expect(linesOf(tree).join('\n')).not.toContain('看統計')
   })
 
-  test('the now page cards wear the HUD colors; a crew member keeps one color everywhere', async ($, on) => {
+  test('the now page cards wear the HUD colors; a squad member keeps one color everywhere', async ($, on) => {
     const clock = mock.clock(on, { now: 0 })
     spawner(on)
     const gates: Array<() => void> = []
@@ -2349,7 +2349,7 @@ describe('beauty pass 2', () => {
     await $.agent.spawn(spawnIn('check it', 'verifier'))
     await $.tool.call({ tool: 'Read', file_path: '/a.ts' })
     await $.tool.call({ tool: 'Read', file_path: '/b.ts', agentId: 'agent-1' } as never)
-    const member = crewColor(0)
+    const member = jarvisColor(0)
     let tree = await draw($)
     expect(frameOf(tree, /^子代理$/)).toBe(THEME.primary)
     expect(findText(tree, /^子代理$/)?.props?.color).toBe(THEME.primary)
@@ -2410,7 +2410,7 @@ describe('beauty pass 2', () => {
 
   test('a Bash call without a description shows the command past cd and variable settings', () => {
     const d = (command: string) => describeCall('Bash', { command })
-    expect(d('cd ~/dotfiles/claude/mods/crew && claude plugin test')).toBe('claude plugin test')
+    expect(d('cd ~/dotfiles/claude/mods/jarvis && claude plugin test')).toBe('claude plugin test')
     expect(d('cd /tmp; ls -la')).toBe('ls -la')
     expect(d('cd "/a b" && make')).toBe('make')
     expect(d('FOO=1 BAR="x y" go test ./...')).toBe('go test ./...')
@@ -2571,15 +2571,15 @@ describe('beauty pass 4', () => {
 })
 
 describe('HUD logic', () => {
-  test('crew colors cycle through the palette by dispatch order, none the accent, error or muted tone', () => {
-    expect(CREW_PALETTE.length).toBeGreaterThanOrEqual(6)
-    expect(CREW_PALETTE.map((_, i) => crewColor(i))).toEqual(CREW_PALETTE)
-    expect(crewColor(CREW_PALETTE.length)).toBe(CREW_PALETTE[0])
-    expect(crewColor(CREW_PALETTE.length + 2)).toBe(CREW_PALETTE[2])
-    expect(crewColor(-1)).toBe(CREW_PALETTE[CREW_PALETTE.length - 1])
-    expect(crewColor(Number.NaN)).toBe(CREW_PALETTE[0])
-    expect(new Set(CREW_PALETTE).size).toBe(CREW_PALETTE.length)
-    for (const c of [THEME.accent, THEME.error, THEME.muted]) expect(CREW_PALETTE).not.toContain(c)
+  test('jarvis colors cycle through the palette by dispatch order, none the accent, error or muted tone', () => {
+    expect(JARVIS_PALETTE.length).toBeGreaterThanOrEqual(6)
+    expect(JARVIS_PALETTE.map((_, i) => jarvisColor(i))).toEqual(JARVIS_PALETTE)
+    expect(jarvisColor(JARVIS_PALETTE.length)).toBe(JARVIS_PALETTE[0])
+    expect(jarvisColor(JARVIS_PALETTE.length + 2)).toBe(JARVIS_PALETTE[2])
+    expect(jarvisColor(-1)).toBe(JARVIS_PALETTE[JARVIS_PALETTE.length - 1])
+    expect(jarvisColor(Number.NaN)).toBe(JARVIS_PALETTE[0])
+    expect(new Set(JARVIS_PALETTE).size).toBe(JARVIS_PALETTE.length)
+    for (const c of [THEME.accent, THEME.error, THEME.muted]) expect(JARVIS_PALETTE).not.toContain(c)
   })
 
   test('addAgent stamps the dispatch order; the roster numbers by list order, colors by dispatch order', () => {
@@ -2591,9 +2591,9 @@ describe('HUD logic', () => {
     list = finishTurn(list, 'a', { reason: 'answer', durationMs: 1 }, 5)
     const roster = rosterOf(list, agentSections(list))
     expect([...roster.entries()]).toEqual([
-      ['b', { n: 1, color: crewColor(1) }],
-      ['c', { n: 2, color: crewColor(2) }],
-      ['a', { n: 3, color: crewColor(0) }],
+      ['b', { n: 1, color: jarvisColor(1) }],
+      ['c', { n: 2, color: jarvisColor(2) }],
+      ['a', { n: 3, color: jarvisColor(0) }],
     ])
     // past the 50 kept, the order still climbs: colors never shift when old ones drop
     for (let i = 0; i < 60; i += 1) {
@@ -2603,7 +2603,7 @@ describe('HUD logic', () => {
     expect(list.find(a => a.id === 'x59')?.seq).toBe(62)
     // a record from before the order was kept falls back to its place
     const legacy = [agent({ id: 'p' }), agent({ id: 'q' })]
-    expect(rosterOf(legacy, agentSections(legacy)).get('q')?.color).toBe(crewColor(1))
+    expect(rosterOf(legacy, agentSections(legacy)).get('q')?.color).toBe(jarvisColor(1))
     expect(buildCockpit({ agents: list, main: { model: '', chain: 0, ok: 0, fail: 0, lastTool: '', lastDesc: '', isRunning: false, runSince: 0 }, events: [] }, 0).roster.size).toBe(list.length)
   })
 
@@ -2662,7 +2662,7 @@ describe('HUD logic', () => {
     expect([0, 1, 2, 3].map(scanFrame)).toEqual([SCAN[0], SCAN[1], SCAN[2], SCAN[0]])
   })
 
-  test('the tick runs at 150ms while a crew member runs in a pane in view, and at the idle pace otherwise', () => {
+  test('the tick runs at 150ms while a squad member runs in a pane in view, and at the idle pace otherwise', () => {
     expect(ANIM_MS).toBe(150)
     const run = [agent({ status: 'running' })]
     expect(tickMs([], 1000, 1000)).toBe(IDLE_MS)
@@ -2676,7 +2676,7 @@ describe('HUD logic', () => {
 })
 
 describe('HUD pages', () => {
-  test('a crew card: initializing, then active with its tool, then complete in the muted tone', async ($, on) => {
+  test('a squad card: initializing, then active with its tool, then complete in the muted tone', async ($, on) => {
     const clock = engineAll(on)
     await $.agent.spawn(spawnIn('wire the hud', 'worker'))
     const cardRow = async () => linesOf(await draw($, 30, 120)).find(l => l.includes('wire the hud')) ?? ''
@@ -2684,7 +2684,7 @@ describe('HUD pages', () => {
     let tree = await draw($, 30, 120)
     expect(await cardRow()).toContain('INITIALIZING…')
     expect(findText(tree, new RegExp(`^(${SCAN.join('|')})$`))).toBeDefined()
-    expect(findText(tree, /^⌜ 1 ⌝$/)?.props?.color).toBe(crewColor(0))
+    expect(findText(tree, /^⌜ 1 ⌝$/)?.props?.color).toBe(jarvisColor(0))
     expect(findText(tree, /^INITIALIZING…\s*$/)?.props?.color).toBe(THEME.accent)
 
     await clock.advance(INIT_MS)

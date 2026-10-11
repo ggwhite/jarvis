@@ -1,6 +1,6 @@
-import type { CrewAgent } from '../types'
-import { runningOf, staleOf, summarize } from './crew'
-import type { Health } from './crew'
+import type { JarvisAgent } from '../types'
+import { runningOf, staleOf, summarize } from './jarvis'
+import type { Health } from './jarvis'
 
 export const THROTTLE_MS = 2000
 export const TTL_MS = 900_000
@@ -11,16 +11,16 @@ export const RUN_TIMEOUT_MS = 5000
 
 const WARN_PREFIX: Record<Health, string> = { ok: '', loop: '⚠繞圈 ', stuck: '⚠卡住 ' }
 
-// The sidebar text for a session's crew; undefined when there is nothing to show.
+// The sidebar text for a session's squad; undefined when there is nothing to show.
 // A health warning leads the text, and shows even with no subagents.
-export function crewText(list: readonly CrewAgent[], health: Health = 'ok'): string | undefined {
+export function jarvisText(list: readonly JarvisAgent[], health: Health = 'ok'): string | undefined {
   const body = countsText(list)
   const prefix = WARN_PREFIX[health]
   if (prefix === '') return body
   return body === undefined ? prefix.trimEnd() : `${prefix}${body}`
 }
 
-function countsText(list: readonly CrewAgent[]): string | undefined {
+function countsText(list: readonly JarvisAgent[]): string | undefined {
   if (list.length === 0) return undefined
   const running = runningOf(list).length
   const stale = staleOf(list).length
@@ -42,10 +42,10 @@ export function inHerdr(env: string | undefined, paneId: string | undefined): bo
 }
 
 export function reportArgv(paneId: string, text: string | undefined): string[] {
-  const head = ['herdr', 'pane', 'report-metadata', paneId, '--source', 'crew']
+  const head = ['herdr', 'pane', 'report-metadata', paneId, '--source', 'jarvis']
   return text === undefined
-    ? [...head, '--clear-token', 'crew']
-    : [...head, '--token', `crew=${text}`, '--ttl-ms', String(TTL_MS)]
+    ? [...head, '--clear-token', 'jarvis']
+    : [...head, '--token', `jarvis=${text}`, '--ttl-ms', String(TTL_MS)]
 }
 
 export type Reporter = {

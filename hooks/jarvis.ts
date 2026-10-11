@@ -1,4 +1,4 @@
-import type { CrewAgent, CrewEvent, CrewInflight, CrewMain } from '../types'
+import type { JarvisAgent, JarvisEvent, JarvisInflight, JarvisMain } from '../types'
 
 export const MAX_AGENTS = 50
 export const CHAIN_WARN = 4
@@ -12,11 +12,11 @@ export const DESC_MAX = 60
 // Subagents on the list that take a digit hotkey to their detail page.
 export const MAX_NUMBERED = 9
 export const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-// The sweep a freshly dispatched crew member shows while it starts up.
+// The sweep a freshly dispatched squad member shows while it starts up.
 export const SCAN = ['░▒▓', '▒▓░', '▓░▒']
-// How long after its dispatch a crew member reads INITIALIZING.
+// How long after its dispatch a squad member reads INITIALIZING.
 export const INIT_MS = 2000
-// The tick period while a crew member runs and the pane is in view (the animation),
+// The tick period while a squad member runs and the pane is in view (the animation),
 // and otherwise; the pane counts as in view for SEEN_MS after it was last drawn.
 export const ANIM_MS = 150
 export const IDLE_MS = 1000
@@ -33,8 +33,8 @@ export const THEME = {
   muted: '#3A6B7A',
 } as const
 
-// One color per crew member, by dispatch order; none is the accent, error or muted tone.
-export const CREW_PALETTE = ['#00E5FF', '#FF6EC7', '#7CFF6B', '#B388FF', '#FF9F43', '#4D9FFF']
+// One color per squad member, by dispatch order; none is the accent, error or muted tone.
+export const JARVIS_PALETTE = ['#00E5FF', '#FF6EC7', '#7CFF6B', '#B388FF', '#FF9F43', '#4D9FFF']
 
 export type Family = 'fable' | 'opus' | 'sonnet' | 'haiku'
 
@@ -123,7 +123,7 @@ export function tokenTotal(t: Tokens): number {
   return t.input + t.output
 }
 
-export function tokensOf(a: CrewAgent): Tokens {
+export function tokensOf(a: JarvisAgent): Tokens {
   return { input: a.input, output: a.output, cacheRead: a.cacheRead, cacheWrite: a.cacheWrite }
 }
 
@@ -152,7 +152,7 @@ export type Summary = {
   savedPct: number | undefined
 }
 
-export function summarize(agents: readonly CrewAgent[]): Summary {
+export function summarize(agents: readonly JarvisAgent[]): Summary {
   const byKey = new Map<string, Group>()
   let cost = 0
   let opusCost = 0
@@ -196,13 +196,13 @@ export function fmtDur(ms: number): string {
   return `${m}m${String(s % 60).padStart(2, '0')}s`
 }
 
-export function elapsedMs(a: CrewAgent, now: number): number {
+export function elapsedMs(a: JarvisAgent, now: number): number {
   if (a.status === 'running') return a.doneMs + Math.max(0, now - a.runStartedAt)
   if (a.status === 'stale') return a.doneMs + Math.max(0, a.lastSeenAt - a.runStartedAt)
   return a.doneMs
 }
 
-function trim(list: CrewAgent[]): CrewAgent[] {
+function trim(list: JarvisAgent[]): JarvisAgent[] {
   const out = list.slice()
   while (out.length > MAX_AGENTS) {
     const idx = out.findIndex(a => a.status !== 'running')
@@ -211,8 +211,8 @@ function trim(list: CrewAgent[]): CrewAgent[] {
   return out
 }
 
-export function addAgent(list: readonly CrewAgent[], s: Spawned): CrewAgent[] {
-  const fresh: CrewAgent = {
+export function addAgent(list: readonly JarvisAgent[], s: Spawned): JarvisAgent[] {
+  const fresh: JarvisAgent = {
     id: s.id,
     seq: list.reduce((m, a, i) => Math.max(m, a.seq ?? i), -1) + 1,
     type: s.type,
@@ -237,11 +237,11 @@ export function addAgent(list: readonly CrewAgent[], s: Spawned): CrewAgent[] {
 // finished and called a tool again (SendMessage resumed it) as running. A stale
 // one that is heard from again was running all along: its run keeps counting.
 export function noteTool(
-  list: readonly CrewAgent[],
+  list: readonly JarvisAgent[],
   id: string,
   tool: string,
   now: number,
-): CrewAgent[] {
+): JarvisAgent[] {
   return list.map(a => {
     if (a.id !== id) return a
     if (a.status === 'running') return { ...a, tool, lastSeenAt: now }
@@ -252,11 +252,11 @@ export function noteTool(
 
 // A turn of a subagent ended: usage accumulates across the turns of one agent.
 export function finishTurn(
-  list: readonly CrewAgent[],
+  list: readonly JarvisAgent[],
   id: string,
   c: Completion,
   now: number,
-): CrewAgent[] {
+): JarvisAgent[] {
   return list.map(a => {
     if (a.id !== id) return a
     const u = c.usage
@@ -278,7 +278,7 @@ export function finishTurn(
 
 // A running subagent with no tool call or finished turn for STALE_MS is lost.
 // Returns the same array when nothing changed.
-export function markStale(list: readonly CrewAgent[], now: number): readonly CrewAgent[] {
+export function markStale(list: readonly JarvisAgent[], now: number): readonly JarvisAgent[] {
   if (!list.some(a => a.status === 'running' && now - a.lastSeenAt > STALE_MS)) return list
   return list.map(a =>
     a.status === 'running' && now - a.lastSeenAt > STALE_MS
@@ -287,15 +287,15 @@ export function markStale(list: readonly CrewAgent[], now: number): readonly Cre
   )
 }
 
-export function staleOf(list: readonly CrewAgent[]): CrewAgent[] {
+export function staleOf(list: readonly JarvisAgent[]): JarvisAgent[] {
   return list.filter(a => a.status === 'stale')
 }
 
-export function runningOf(list: readonly CrewAgent[]): CrewAgent[] {
+export function runningOf(list: readonly JarvisAgent[]): JarvisAgent[] {
   return list.filter(a => a.status === 'running')
 }
 
-export function finishedOf(list: readonly CrewAgent[]): CrewAgent[] {
+export function finishedOf(list: readonly JarvisAgent[]): JarvisAgent[] {
   return list
     .map((a, i) => ({ a, i }))
     .filter(x => x.a.status === 'done' || x.a.status === 'failed')
@@ -387,14 +387,14 @@ export function describeCall(tool: string, input: Record<string, unknown>): stri
 }
 
 // Keeps the latest MAX_EVENTS events, oldest first.
-export function addEvent(list: readonly CrewEvent[], ev: CrewEvent): CrewEvent[] {
+export function addEvent(list: readonly JarvisEvent[], ev: JarvisEvent): JarvisEvent[] {
   return [...list, ev].slice(-MAX_EVENTS)
 }
 
 // recovered: a failed call whose actor's very next call is the same tool, and it worked.
 export type Outcome = 'ok' | 'recovered' | 'failed'
 
-export function outcomesOf(events: readonly CrewEvent[]): Outcome[] {
+export function outcomesOf(events: readonly JarvisEvent[]): Outcome[] {
   const out: Outcome[] = events.map(ev => (ev.ok ? 'ok' : 'failed'))
   const last = new Map<string, number>()
   events.forEach((ev, i) => {
@@ -408,9 +408,9 @@ export function outcomesOf(events: readonly CrewEvent[]): Outcome[] {
 
 // An event list as drawn: each event with its outcome, a dated rule wherever two
 // neighbours are more than BREAK_MS apart (`ts` is when the later run begins).
-export type EventRow = { kind: 'event'; ev: CrewEvent; outcome: Outcome } | { kind: 'break'; ts: number }
+export type EventRow = { kind: 'event'; ev: JarvisEvent; outcome: Outcome } | { kind: 'break'; ts: number }
 
-export function eventRows(events: readonly CrewEvent[]): EventRow[] {
+export function eventRows(events: readonly JarvisEvent[]): EventRow[] {
   const outcomes = outcomesOf(events)
   const rows: EventRow[] = []
   events.forEach((ev, i) => {
@@ -430,8 +430,8 @@ export type HealthScope = {
 
 // One executor's own events, oldest first. The main loop is one executor; each subagent
 // is another, by agentId, so two workers never merge.
-function looping(events: readonly CrewEvent[], live: ReadonlySet<string>): boolean {
-  const byActor = new Map<string, CrewEvent[]>()
+function looping(events: readonly JarvisEvent[], live: ReadonlySet<string>): boolean {
+  const byActor = new Map<string, JarvisEvent[]>()
   for (const ev of events) {
     if (!ev.isMain && !live.has(ev.actor)) continue
     const key = `${ev.isMain ? 'm' : 's'}:${ev.actor}`
@@ -459,7 +459,7 @@ function looping(events: readonly CrewEvent[], live: ReadonlySet<string>): boole
 // when nothing runs), no tool call is in flight, and nothing has finished or begun for
 // STUCK_MS. loop wins over stuck.
 export function healthOf(
-  events: readonly CrewEvent[],
+  events: readonly JarvisEvent[],
   now: number,
   activeSince: number | undefined,
   scope: HealthScope = {},
@@ -482,13 +482,13 @@ export function roleOf(type: string): Role {
 
 // A workflow script's agents count as the workflow role: by their run, or by the type
 // the engine gives them when the record predates the run being kept.
-export function dispatchRoleOf(a: CrewAgent): Role {
+export function dispatchRoleOf(a: JarvisAgent): Role {
   return a.runId !== undefined ? 'workflow' : roleOf(a.type)
 }
 
 export type RoleStat = { role: Role; label: string; running: number; done: number; failed: number }
 
-export function dispatchStats(agents: readonly CrewAgent[]): RoleStat[] {
+export function dispatchStats(agents: readonly JarvisAgent[]): RoleStat[] {
   const stats = ROLES.map(role => ({ role, label: ROLE_LABEL[role], running: 0, done: 0, failed: 0 }))
   for (const a of agents) {
     const stat = stats.find(x => x.role === dispatchRoleOf(a))
@@ -503,7 +503,7 @@ export function dispatchStats(agents: readonly CrewAgent[]): RoleStat[] {
 // share is the fraction (0..1) of the priced total; unpriced models cost 0.
 export type ModelShare = { label: string; family?: Family; count: number; cost: number; share: number }
 
-export function modelShares(agents: readonly CrewAgent[]): ModelShare[] {
+export function modelShares(agents: readonly JarvisAgent[]): ModelShare[] {
   const byKey = new Map<string, ModelShare>()
   let total = 0
   for (const a of agents) {
@@ -536,8 +536,8 @@ export function shareLabel(share: number): string {
 
 // One row group of the subagent list: a lone subagent, or a workflow run's agents.
 export type ListUnit =
-  | { kind: 'agent'; agent: CrewAgent }
-  | { kind: 'workflow'; runId: string; agents: CrewAgent[] }
+  | { kind: 'agent'; agent: JarvisAgent }
+  | { kind: 'workflow'; runId: string; agents: JarvisAgent[] }
 
 export type ListSection = {
   status: 'running' | 'stale' | 'finished'
@@ -546,12 +546,12 @@ export type ListSection = {
   units: ListUnit[]
 }
 
-const RANK: Record<CrewAgent['status'], number> = { running: 0, stale: 1, done: 2, failed: 2 }
+const RANK: Record<JarvisAgent['status'], number> = { running: 0, stale: 1, done: 2, failed: 2 }
 const SECTION: ListSection['status'][] = ['running', 'stale', 'finished']
 
 // The subagent list as drawn: running first, then lost, then finished (latest first). A
 // workflow run's agents are one unit, in the section of its liveliest agent, by agentIndex.
-export function agentSections(agents: readonly CrewAgent[]): ListSection[] {
+export function agentSections(agents: readonly JarvisAgent[]): ListSection[] {
   type Slot = { unit: ListUnit; rank: number; first: number; ended: number }
   const slots: Slot[] = []
   const runs = new Map<string, Slot>()
@@ -593,24 +593,24 @@ export function agentSections(agents: readonly CrewAgent[]): ListSection[] {
   }).filter(s => s.units.length > 0)
 }
 
-// A crew member's color, by its place in dispatch order.
-export function crewColor(seq: number): string {
-  const n = CREW_PALETTE.length
+// A squad member's color, by its place in dispatch order.
+export function jarvisColor(seq: number): string {
+  const n = JARVIS_PALETTE.length
   const i = Number.isFinite(seq) ? ((Math.floor(seq) % n) + n) % n : 0
-  return CREW_PALETTE[i] ?? THEME.primary
+  return JARVIS_PALETTE[i] ?? THEME.primary
 }
 
 // Every listed subagent's number (1 up, in list order: what its digit opens) and color
 // (by dispatch order, so it keeps its color however the list moves).
 export type Member = { n: number; color: string }
 
-export function rosterOf(agents: readonly CrewAgent[], sections: readonly ListSection[]): Map<string, Member> {
+export function rosterOf(agents: readonly JarvisAgent[], sections: readonly ListSection[]): Map<string, Member> {
   const seq = new Map(agents.map((a, i) => [a.id, a.seq ?? i]))
   const out = new Map<string, Member>()
   for (const section of sections) {
     for (const u of section.units) {
       for (const a of u.kind === 'agent' ? [u.agent] : u.agents) {
-        out.set(a.id, { n: out.size + 1, color: crewColor(seq.get(a.id) ?? 0) })
+        out.set(a.id, { n: out.size + 1, color: jarvisColor(seq.get(a.id) ?? 0) })
       }
     }
   }
@@ -620,7 +620,7 @@ export function rosterOf(agents: readonly CrewAgent[], sections: readonly ListSe
 export type Phase = 'init' | 'active' | 'complete' | 'failed' | 'lost'
 
 // init: running and dispatched (or resumed) under INIT_MS ago.
-export function phaseOf(a: CrewAgent, now: number): Phase {
+export function phaseOf(a: JarvisAgent, now: number): Phase {
   if (a.status === 'running') return now - a.runStartedAt < INIT_MS ? 'init' : 'active'
   if (a.status === 'done') return 'complete'
   if (a.status === 'failed') return 'failed'
@@ -631,27 +631,27 @@ export function scanFrame(n: number): string {
   return SCAN[((Math.floor(n) % SCAN.length) + SCAN.length) % SCAN.length] ?? SCAN[0] ?? ''
 }
 
-// The tick period: ANIM_MS while any crew member runs (initializing ones included) and
+// The tick period: ANIM_MS while any squad member runs (initializing ones included) and
 // the pane was drawn within SEEN_MS of `now`, else IDLE_MS.
-export function tickMs(agents: readonly CrewAgent[], now: number, drawnAt: number): number {
+export function tickMs(agents: readonly JarvisAgent[], now: number, drawnAt: number): number {
   return runningOf(agents).length > 0 && now - drawnAt <= SEEN_MS ? ANIM_MS : IDLE_MS
 }
 
-export type CrewState = {
-  agents: readonly CrewAgent[]
-  main: CrewMain
-  events: readonly CrewEvent[]
-  inflight?: readonly CrewInflight[]
+export type JarvisState = {
+  agents: readonly JarvisAgent[]
+  main: JarvisMain
+  events: readonly JarvisEvent[]
+  inflight?: readonly JarvisInflight[]
 }
 
 // When the latest running thing began: the main turn, or a running subagent.
-export function activeSinceOf(state: CrewState): number | undefined {
+export function activeSinceOf(state: JarvisState): number | undefined {
   const starts = runningOf(state.agents).map(a => a.runStartedAt)
   if (state.main.isRunning) starts.push(state.main.runSince)
   return starts.length === 0 ? undefined : Math.max(...starts)
 }
 
-export function healthOfState(state: CrewState, now: number): Health {
+export function healthOfState(state: JarvisState, now: number): Health {
   return healthOf(state.events, now, activeSinceOf(state), {
     inFlight: state.inflight?.length ?? 0,
     liveAgents: new Set(runningOf(state.agents).map(a => a.id)),
@@ -672,24 +672,24 @@ export type Cockpit = {
     isRunning: boolean
   }
   // the latest MAX_EVENTS tool calls, oldest first
-  events: CrewEvent[]
+  events: JarvisEvent[]
   // every role, in ROLES order
   dispatch: RoleStat[]
   // per priced model family, highest cost first; share sums to 1 (all 0 when nothing is priced)
   models: ModelShare[]
-  running: CrewAgent[]
-  stale: CrewAgent[]
-  finished: CrewAgent[]
+  running: JarvisAgent[]
+  stale: JarvisAgent[]
+  finished: JarvisAgent[]
   // the subagent list as drawn
   sections: ListSection[]
   // each listed subagent's number and color
   roster: Map<string, Member>
   // tool calls not yet returned, oldest first
-  inflight: CrewInflight[]
+  inflight: JarvisInflight[]
   summary: Summary
 }
 
-export function buildCockpit(state: CrewState, now: number): Cockpit {
+export function buildCockpit(state: JarvisState, now: number): Cockpit {
   const m = state.main
   const sections = agentSections(state.agents)
   return {

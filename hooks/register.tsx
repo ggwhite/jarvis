@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { CrewAgent, CrewPage, CrewUi } from '../types'
+import type { JarvisAgent, JarvisPage, JarvisUi } from '../types'
 
 import {
   ANIM_MS,
@@ -20,17 +20,17 @@ import {
   tickMs,
   MAIN_ACTOR,
   MAIN_SOURCE,
-} from './crew'
-import type { Completion } from './crew'
+} from './jarvis'
+import type { Completion } from './jarvis'
 import { drawCockpit } from './cockpit'
-import { RUN_TIMEOUT_MS, createReporter, crewText, inHerdr } from './herdr'
+import { RUN_TIMEOUT_MS, createReporter, jarvisText, inHerdr } from './herdr'
 import type { Reporter } from './herdr'
 
-const PANE = 'crew'
+const PANE = 'jarvis'
 const MAX_EARLY = 100
 
-const agents = atom({ plugin: 'crew', key: 'agents' } as const, [])
-const main = atom({ plugin: 'crew', key: 'main' } as const, {
+const agents = atom({ plugin: 'jarvis', key: 'agents' } as const, [])
+const main = atom({ plugin: 'jarvis', key: 'main' } as const, {
   model: '',
   chain: 0,
   ok: 0,
@@ -40,16 +40,16 @@ const main = atom({ plugin: 'crew', key: 'main' } as const, {
   isRunning: false,
   runSince: 0,
 })
-const events = atom({ plugin: 'crew', key: 'events' } as const, [])
-const inflight = atom({ plugin: 'crew', key: 'inflight' } as const, [])
-const tick = atom({ plugin: 'crew', key: 'tick' } as const, { n: 0, now: 0 })
-const ui = atom({ plugin: 'crew', key: 'ui' } as const, {
+const events = atom({ plugin: 'jarvis', key: 'events' } as const, [])
+const inflight = atom({ plugin: 'jarvis', key: 'inflight' } as const, [])
+const tick = atom({ plugin: 'jarvis', key: 'tick' } as const, { n: 0, now: 0 })
+const ui = atom({ plugin: 'jarvis', key: 'ui' } as const, {
   page: 'now',
   agentId: '',
   paused: false,
   pausedTotal: 0,
 })
-const eventTotal = atom({ plugin: 'crew', key: 'eventTotal' } as const, 0)
+const eventTotal = atom({ plugin: 'jarvis', key: 'eventTotal' } as const, 0)
 
 // Tool calls that last as long as the agents they start, whose own calls are tracked:
 // counting them in flight would hide a stuck subagent.
@@ -63,7 +63,7 @@ const UNTRACKED = new Set(['Agent', 'Workflow'])
 async function tickOnce(
   $: Pick<EngineInterface, 'clock' | 'state'>,
   reporter: Reporter | undefined,
-  pace: (list: readonly CrewAgent[], now: number) => void,
+  pace: (list: readonly JarvisAgent[], now: number) => void,
   slow: { at: number },
 ): Promise<void> {
   try {
@@ -89,7 +89,7 @@ async function tickOnce(
       },
       now,
     )
-    await reporter?.step(crewText(list, health), now)
+    await reporter?.step(jarvisText(list, health), now)
   } catch {
     // a broken tick must never reach Claude's work
   }
@@ -108,7 +108,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     try {
       await $.command.register({
-        name: 'crew',
+        name: 'jarvis',
         description: 'Show a live pane of subagent dispatch',
       })
     } catch {
@@ -161,14 +161,14 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'crew' }, async $ => {
+  on('command.run', { command: 'jarvis' }, async $ => {
     try {
-      await $.ui.open({ id: PANE, title: 'Crew' })
+      await $.ui.open({ id: PANE, title: 'Jarvis' })
     } catch {
-      return { text: 'Crew 面板開啟失敗' }
+      return { text: 'Jarvis 面板開啟失敗' }
     }
 
-    return { text: 'Crew 面板已開啟' }
+    return { text: 'Jarvis 面板已開啟' }
   })
 
   on('agent.spawn', async ($, e, next) => {
@@ -367,13 +367,13 @@ export const register: Register = on => {
       },
       now,
     )
-    // a pane in view with a crew member running animates at once, not at the next idle tick
+    // a pane in view with a squad member running animates at once, not at the next idle tick
     drawnAt = now
     if (view.running.length > 0) pace?.(ANIM_MS)
     const shown = await read($, ui)
     const total = await read($, eventTotal)
     // what a press changes, written from its onPress (state is not written while drawing)
-    const setUi = (fn: (u: CrewUi, recorded: number) => CrewUi) => {
+    const setUi = (fn: (u: JarvisUi, recorded: number) => JarvisUi) => {
       void (async () => {
         try {
           const recorded = await read($, eventTotal)
@@ -392,7 +392,7 @@ export const register: Register = on => {
       agentId: shown.agentId,
       paused: shown.paused,
       fresh: shown.paused ? Math.max(0, total - shown.pausedTotal) : 0,
-      go: (page: CrewPage) => setUi(u => ({ ...u, page })),
+      go: (page: JarvisPage) => setUi(u => ({ ...u, page })),
       open: (agentId: string) => setUi(u => ({ ...u, page: 'detail', agentId })),
       pause: () =>
         setUi((u, recorded) => (u.paused ? { ...u, paused: false } : { ...u, paused: true, pausedTotal: recorded })),

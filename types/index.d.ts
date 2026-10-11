@@ -1,11 +1,11 @@
-export type CrewStatus = 'running' | 'done' | 'failed' | 'stale'
+export type JarvisStatus = 'running' | 'done' | 'failed' | 'stale'
 
-export type CrewAgent = {
+export type JarvisAgent = {
   id: string
   type: string
   description: string
   model: string
-  status: CrewStatus
+  status: JarvisStatus
   tool: string
   runStartedAt: number
   lastSeenAt: number
@@ -15,7 +15,7 @@ export type CrewAgent = {
   output: number
   cacheRead: number
   cacheWrite: number
-  // dispatch order, picks the crew member's color; missing on records from before it was kept
+  // dispatch order, picks the squad member's color; missing on records from before it was kept
   seq?: number
   // set when a workflow script's agent() started it: the run and its place in the run
   runId?: string
@@ -25,7 +25,7 @@ export type CrewAgent = {
 // One finished tool call, main loop or subagent. `ts` is when it started.
 // `actor` tells who ran it: MAIN_ACTOR for the main loop, the agentId for a subagent
 // (two workers have two actors); `source` is only the display label.
-export type CrewEvent = {
+export type JarvisEvent = {
   ts: number
   actor: string
   source: string
@@ -38,7 +38,7 @@ export type CrewEvent = {
 
 // A tool call that has started and not yet returned. `key` is unique per call.
 // `desc` is optional: a call recorded by an earlier load of the module has none.
-export type CrewInflight = {
+export type JarvisInflight = {
   key: string
   actor: string
   source: string
@@ -47,7 +47,7 @@ export type CrewInflight = {
   startedAt: number
 }
 
-export type CrewMain = {
+export type JarvisMain = {
   model: string
   chain: number
   ok: number
@@ -58,14 +58,14 @@ export type CrewMain = {
   runSince: number
 }
 
-export type CrewTick = { n: number; now: number }
+export type JarvisTick = { n: number; now: number }
 
-export type CrewPage = 'now' | 'log' | 'stats' | 'detail'
+export type JarvisPage = 'now' | 'log' | 'stats' | 'detail'
 
 // What the pane shows: the page, the subagent the detail page is about, and whether the
 // event stream is paused at `pausedTotal` events recorded.
-export type CrewUi = {
-  page: CrewPage
+export type JarvisUi = {
+  page: JarvisPage
   agentId: string
   paused: boolean
   pausedTotal: number
@@ -73,13 +73,13 @@ export type CrewUi = {
 
 declare module 'claude-code' {
   interface PluginState {
-    crew: {
-      agents: CrewAgent[]
-      main: CrewMain
-      tick: CrewTick
-      events: CrewEvent[]
-      inflight: CrewInflight[]
-      ui: CrewUi
+    jarvis: {
+      agents: JarvisAgent[]
+      main: JarvisMain
+      tick: JarvisTick
+      events: JarvisEvent[]
+      inflight: JarvisInflight[]
+      ui: JarvisUi
       // every event ever recorded this session, past the MAX_EVENTS kept
       eventTotal: number
     }
