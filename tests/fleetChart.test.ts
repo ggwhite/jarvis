@@ -1,24 +1,27 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { THEME, cellWidth } from '../hooks/jarvis'
+import { FAMILY_COLOR, THEME, cellWidth } from '../hooks/jarvis'
 import {
+  BIG_ROWS,
   BURN_RAMP,
   GAUGE_RAMP,
   RING_BIG,
   RING_SMALL,
+  bigText,
+  bigWidth,
   brailleLine,
   burnChart,
   cellsToSegs,
   gaugeBar,
   gaugeCells,
   mix,
-  partsGaugeCells,
   partsRingPixels,
   pick,
   pixelsToCells,
   ramp,
   rampBar,
   ringPixels,
+  stackedBar,
 } from '../hooks/fleetChart'
 
 const lit = (px: (string | undefined)[][]) => px.flat().filter(c => c !== undefined && c !== THEME.muted)
@@ -194,15 +197,6 @@ describe('parts ring', () => {
     expect(px[0]?.[3]).toBe('#111111') // straight up: the turn starts
     expect(px[5]?.[3]).toBe('#222222') // straight down: half a turn
   })
-
-  test('partsGaugeCells sets each overlay centered on its row', () => {
-    const cells = partsGaugeCells(RING_BIG, [{ share: 1, color: '#111111' }], [
-      { row: 3, text: '42%', color: THEME.bright, bold: true },
-    ])
-    const row = cells[3] ?? []
-    expect(row.map(c => c.ch).join('').includes('42%')).toBe(true)
-    expect(row.find(c => c.ch === '4')).toMatchObject({ fg: THEME.bright, bold: true })
-  })
 })
 
 describe('ramp bar', () => {
@@ -219,5 +213,46 @@ describe('ramp bar', () => {
   test('gaugeBar is rampBar on the gauge glow, all red when depleted', () => {
     expect(gaugeBar(6, 0.5, false)).toEqual(rampBar(6, 0.5, GAUGE_RAMP))
     expect(gaugeBar(6, 0.5, true)).toEqual(rampBar(6, 0.5, [THEME.error]))
+  })
+})
+
+describe('big digits', () => {
+  test('three rows, three cells a glyph and one between', () => {
+    const cells = bigText('98%', THEME.primary)
+    expect(cells.length).toBe(BIG_ROWS)
+    expect(bigWidth('98%')).toBe(11)
+    for (const row of cells) expect(row.length).toBe(11)
+  })
+  test('only half blocks and spaces, in the one color', () => {
+    for (const row of bigText('0123456789%-', THEME.error)) {
+      for (const c of row) {
+        expect([' ', '▀', '▄', '█']).toContain(c.ch)
+        if (c.ch !== ' ') expect(c.fg).toBe(THEME.error)
+      }
+    }
+  })
+  test('every digit differs from every other', () => {
+    const shape = (d: string) => bigText(d, THEME.primary).map(r => r.map(c => c.ch).join('')).join('|')
+    const shapes = new Set('0123456789'.split('').map(shape))
+    expect(shapes.size).toBe(10)
+  })
+  test('the column between glyphs is blank', () => {
+    for (const row of bigText('88', THEME.primary)) expect(row[3]?.ch).toBe(' ')
+  })
+})
+
+describe('stacked bar', () => {
+  test('fills the width, each part its share, at least a cell each', () => {
+    const bar = stackedBar(20, [{ share: 0.85, color: FAMILY_COLOR.opus }, { share: 0.14, color: FAMILY_COLOR.sonnet }, { share: 0.01, color: FAMILY_COLOR.haiku }])
+    expect(bar.length).toBe(20)
+    expect(bar.filter(c => c.fg === FAMILY_COLOR.opus).length).toBe(16)
+    expect(bar.filter(c => c.fg === FAMILY_COLOR.sonnet).length).toBe(3)
+    expect(bar.filter(c => c.fg === FAMILY_COLOR.haiku).length).toBe(1)
+    expect(bar.every(c => c.ch === '█')).toBe(true)
+  })
+  test('nothing priced is an empty track', () => {
+    const bar = stackedBar(8, [])
+    expect(bar.map(c => c.ch).join('')).toBe('░'.repeat(8))
+    expect(bar.every(c => c.fg === THEME.muted)).toBe(true)
   })
 })

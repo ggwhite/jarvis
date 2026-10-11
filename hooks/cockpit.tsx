@@ -1,6 +1,7 @@
 import type { EngineInterface, RenderElement } from 'claude-code'
 
 import type {
+  FleetQuota,
   FleetSession,
   FleetStatus,
   FleetView,
@@ -11,12 +12,29 @@ import type {
   QuotaWindow,
 } from '../types'
 import { fleetSections, fmtAgo, fmtBig, wrapCells } from './fleet'
-import { BURN_RAMP, RING_BIG, RING_SMALL, brailleLine, burnChart, cellsToSegs, gaugeBar, gaugeCells, partsGaugeCells, rampBar } from './fleetChart'
-import type { Cell, Overlay, RingPart } from './fleetChart'
+import { BURN_RAMP, bigText, bigWidth, brailleLine, burnChart, cellsToSegs, rampBar, stackedBar } from './fleetChart'
+import type { Cell, StackPart } from './fleetChart'
 import { idlePerRow, planFleet } from './fleetLayout'
-import type { FleetPlan, GaugeForm } from './fleetLayout'
+import type { FleetMode, FleetPlan } from './fleetLayout'
 import { FAIL_WARN, planStats, roleBeats, successRate } from './statsView'
-import { SUIT_BLOCK_ROWS, SUIT_COLS, SUIT_ROWS, suitCells } from './suit'
+import {
+  SCAN_SIDE_MIN_COLS,
+  SUIT_BLOCK_ROWS,
+  SUIT_CANVAS_COLS,
+  SUIT_COLS,
+  SUIT_REST_TICK_MS,
+  SUIT_ROWS,
+  SUIT_TICK_MS,
+  SUIT_UNDER_ROWS,
+  crewDeployed,
+  readoutMeterW,
+  sideReadout,
+  standbyReadouts,
+  suitCells,
+  suitFrame,
+  suitResting,
+} from './suit'
+import type { Readout } from './suit'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
 import type { CardLines } from './fleetCards'
 import {
@@ -44,10 +62,12 @@ import {
   padCells,
   phaseOf,
   reactorOf,
+  roleModels,
   shareLabel,
   shortModel,
   tokenTotal,
   tokensOf,
+  topTools,
   WORKFLOW_TYPE,
 } from './jarvis'
 import type { BootStage, Cockpit, EventRow, Health, ListUnit, Lock, ModelShare, Outcome, Phase, Role, RoleStat } from './jarvis'
@@ -58,17 +78,22 @@ export const BEATS_MIN_INNER = 56
 // The braille line a role gets, and the room after its counts.
 const ROLE_BEAT_W = 10
 const ROLE_EXTRA_W = 12
-// The least the now page gives the finished subagents (a workflow run is one unit) and
-// the recent events; rows left over go to the finished ones first, then the events.
-export const MIN_FINISHED = 3
+// The dispatch card's model column at its widest: `Sonnet+`, a longer unknown name cut.
+const MODEL_COL_MAX = 8
+// The now page's rows, in this order: every running subagent; the standby suit over the
+// latest MIN_SUIT_FINISHED finished (a workflow run is one unit), or without it the latest
+// MIN_FINISHED; the in-flight card; the recent events, MIN_RECENT of them or the card left
+// out; then more finished, then more events.
+export const MIN_FINISHED = 8
+const MIN_SUIT_FINISHED = 3
 export const MIN_RECENT = 3
-// The standby suit is drawn only with this many cells beside it, and only while the
-// subagent card keeps this many rows of its own below it.
+// The suit is drawn only with this many cells beside its canvas (or, booting, its art).
 const SUIT_MARGIN = 4
-const SUIT_MIN_LIST = 3
 // The boot's rows below the title with the suit: a blank, the suit and a blank, ONLINE
 // and the loading two.
 const BOOT_SUIT_H = 1 + SUIT_ROWS + 1 + 3
+// The standby suit in its sights: a blank cell and a corner either side of the canvas.
+const SCAN_FRAME_W = SUIT_CANVAS_COLS + 4
 // From this many columns a model badge carries its version: `[Sonnet 5.5]`.
 export const BADGE_FULL_COLS = 90
 // Cells a plain Button's hotkey takes before its label: `1: `.
@@ -118,6 +143,17 @@ export type Ctx = {
   sessionId: string
   openFleet: (paneId: string) => void
   jump: (paneId: string) => void
+  // the standby suit's readouts: the usagebar cache, and when the session started
+  quota?: FleetQuota
+  startedAt?: number
+  // the standby suit's frame, and when a crew member was last deployed
+  suitTick?: number
+  deployedAt?: number
+  // the standby suit held still by a press, and the press that holds or plays it
+  suitPaused?: boolean
+  toggleSuit?: () => void
+  // told each drawing whether the standby suit was drawn, and drawn and playing, its frame time
+  onStandby?: (drawn: boolean, periodMs?: number) => void
 }
 
 const FRAME = THEME.frame
@@ -166,6 +202,7 @@ export const RECOVERED = '↻'
 const PHASE_TEXT: Record<Phase, { full: string; label: string; short: string }> = {
   init: { full: 'INITIALIZING…', label: 'INITIALIZING', short: 'INIT…' },
   active: { full: 'ACTIVE', label: 'ACTIVE', short: 'ACTIVE' },
+  waiting: { full: 'WAITING ON BACKGROUND', label: 'WAITING', short: 'WAIT' },
   complete: { full: 'MISSION COMPLETE', label: 'MISSION COMPLETE', short: 'COMPLETE' },
   failed: { full: 'MISSION FAILED', label: 'MISSION FAILED', short: 'FAILED' },
   lost: { full: 'SIGNAL LOST', label: 'SIGNAL LOST', short: 'LOST' },
@@ -536,7 +573,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const m = view.main
   const warn = m.chain >= CHAIN_WARN
   const rate = successRate(m.ok, m.fail)
-  const failHigh = rate !== undefined && 1 - rate >= FAIL_WARN
+  const failHigh = rate !== undefined && m.fail / (m.ok + m.fail) >= FAIL_WARN
   const pctText = rate === undefined ? '--' : `${Math.round(rate * 100)}%`
   const statsRoles = view.dispatch.filter(
     r => (r.role !== 'other' && r.role !== 'workflow') || r.running + r.done + r.failed > 0,
@@ -546,29 +583,15 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   const chartLine = (cells: readonly Cell[]): Seg[] => cellsToSegs(cells)
 
-  // The ring's rows with lines of text two cells to its right, as many rows as the taller.
-  const ringBlock = (cells: Cell[][], text: Seg[][], inner: number): Seg[][] => {
-    const ringW = cells[0]?.length ?? 0
-    return Array.from({ length: Math.max(cells.length, text.length) }, (_, i) => {
-      const row = cells[i]
-      return [...(row ? chartLine(row) : [sp(ringW)]), sp(2), ...clip(text[i] ?? [], Math.max(0, inner - ringW - 2))]
-    })
-  }
+  // `segs` padded with blanks to `width` cells
+  const padSegs = (segs: readonly Seg[], width: number): Seg[] => [...segs, sp(width - segsWidth(segs))]
 
-  const mainStatsSpec = (w: number, gauge: GaugeForm): CardSpec => {
+  const mainStatsSpec = (w: number, mode: FleetMode): CardSpec => {
     const inner = w - 4
     const family = nameFamilyOf(m.model)
     const head: Seg[] = [title('MAIN LINE', PRIMARY)]
     if (m.model !== '') head.push({ t: ` · ${shortModel(m.model)}`, color: family ? FAMILY_COLOR[family] : FRAME })
     const state: Seg = m.isRunning ? { t: '● 執行中', color: PRIMARY } : { t: '○ 閒置', color: FRAME }
-    const rateSeg: Seg = { t: pctText, color: failHigh ? ERROR : BRIGHT, bold: true }
-    const counts: Seg[] = [
-      { t: 'OK ', color: FRAME },
-      { t: String(m.ok), color: PRIMARY, bold: true },
-      { t: ' · ', color: MUTED },
-      { t: 'FAIL ', color: FRAME },
-      { t: String(m.fail), color: m.fail > 0 ? ERROR : FRAME, bold: m.fail > 0 },
-    ]
     const lit = Math.min(m.chain, CHAIN_WARN)
     const chain: Seg[] = [
       { t: 'CHAIN ', color: FRAME },
@@ -585,15 +608,63 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
             { t: m.lastDesc === '' ? '' : ` ${m.lastDesc}`, color: PRIMARY },
           ]
     const headLine = leftRight(head, [state], inner)
-    if (gauge === 'bar') {
-      const barW = Math.max(4, inner - cellWidth('SUCCESS ') - 1 - cellWidth(pctText))
-      const bar: Seg[] = [{ t: 'SUCCESS ', color: FRAME }, ...chartLine(gaugeBar(barW, rate ?? 0, failHigh)), sp(1), rateSeg]
-      return { w, color: FRAME, lines: [headLine, bar, counts, chain, last] }
+    const digits = bigText(pctText, failHigh ? ERROR : PRIMARY)
+    const dW = bigWidth(pctText)
+    const top = topTools(m.toolCounts, 2)
+    const col1: Seg[][] = [
+      [{ t: 'OK ', color: FRAME }, { t: String(m.ok), color: PRIMARY, bold: true }],
+      [{ t: 'FAIL ', color: FRAME }, { t: String(m.fail), color: m.fail > 0 ? ERROR : FRAME, bold: m.fail > 0 }],
+      [{ t: 'SUCCESS RATE', color: FRAME }],
+    ]
+    const col2: Seg[][] = [
+      chain,
+      top.length === 0
+        ? [{ t: 'TOP ', color: FRAME }, { t: '--', color: FRAME }]
+        : [
+            { t: 'TOP ', color: FRAME },
+            ...top.flatMap((x, i): Seg[] => [
+              ...(i > 0 ? [{ t: ' · ', color: MUTED }] : []),
+              { t: x.tool, color: TOOL_COLOR, bold: true },
+              { t: ` ${x.count}`, color: PRIMARY },
+            ]),
+          ],
+      last,
+    ]
+    const col1W = Math.max(...col1.map(segsWidth))
+    if (mode === 'wide') {
+      // half the pane leaves too little room beside the digits for both tools on one line
+      const tool = (x: { tool: string; count: number }): Seg[] => [
+        { t: x.tool, color: TOOL_COLOR, bold: true },
+        { t: ` ${x.count}`, color: PRIMARY },
+      ]
+      const [first, second] = top
+      const col2W: Seg[][] = [
+        chain,
+        [{ t: 'TOP ', color: FRAME }, ...(first ? tool(first) : [{ t: '--', color: FRAME }])],
+        second ? [sp(cellWidth('TOP ')), ...tool(second)] : [],
+        last,
+      ]
+      const rows = [0, 1, 2, 3].map(i => [
+        ...(digits[i] ? chartLine(digits[i]) : [sp(dW)]),
+        sp(2),
+        ...padSegs(col1[i] ?? [], col1W),
+        sp(2),
+        ...clip(col2W[i] ?? [], Math.max(0, inner - dW - 2 - col1W - 2)),
+      ])
+      return { w, color: FRAME, lines: [headLine, ...rows] }
     }
-    const success: Seg[] = [{ t: 'SUCCESS ', color: FRAME }, rateSeg]
-    const overlay: Overlay[] = gauge === 'big' ? [{ row: 3, text: pctText, color: failHigh ? ERROR : BRIGHT, bold: true }] : []
-    const cells = gaugeCells(gauge === 'big' ? RING_BIG : RING_SMALL, rate ?? 0, failHigh, overlay)
-    return { w, color: FRAME, lines: [headLine, ...ringBlock(cells, [success, counts, chain, last], inner)] }
+    if (mode === 'narrow') {
+      const under = [0, 1, 2].map(i => clip([...padSegs(col1[i] ?? [], col1W), sp(2), ...(col2[i] ?? [])], inner))
+      return { w, color: FRAME, lines: [headLine, ...digits.map(r => chartLine(r)), ...under] }
+    }
+    const rows = [0, 1, 2].map(i => [
+      ...chartLine(digits[i] ?? []),
+      sp(2),
+      ...padSegs(col1[i] ?? [], col1W),
+      sp(2),
+      ...clip(col2[i] ?? [], Math.max(0, inner - dW - 2 - col1W - 2)),
+    ])
+    return { w, color: FRAME, lines: [headLine, ...rows] }
   }
 
   // `cut`: rows for the roles, the last one saying how many more there are.
@@ -604,13 +675,26 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const nameW = Math.max(4, ...statsRoles.map(r => cellWidth(r.label)))
     const numW = Math.max(1, ...statsRoles.map(r => String(r.done).length))
     const maxDone = Math.max(1, ...statsRoles.map(r => r.done))
-    const barW = Math.max(3, inner - (2 + nameW + 1 + 1 + numW + 1 + ROLE_EXTRA_W + (showBeats ? 2 + ROLE_BEAT_W : 0)))
+    const models = roleModels([...view.running, ...view.stale, ...view.finished])
+    const modelText = (role: Role) => {
+      const x = models.get(role)
+      return x ? x.label + (x.mixed ? '+' : '') : ''
+    }
+    const modelW = Math.min(MODEL_COL_MAX, Math.max(0, ...statsRoles.map(r => cellWidth(modelText(r.role)))))
+    const barW = Math.max(
+      3,
+      inner - (2 + nameW + 1 + modelW + (modelW > 0 ? 1 : 0) + 1 + numW + 1 + ROLE_EXTRA_W + (showBeats ? 2 + ROLE_BEAT_W : 0)),
+    )
     const extras = (r: RoleStat): Seg[] => {
       const parts: Seg[] = []
       if (r.running > 0) parts.push({ t: `▶${r.running}`, color: ACCENT, bold: true })
       if (r.failed > 0) parts.push({ t: `${parts.length > 0 ? ' ' : ''}FAIL ${r.failed}`, color: ERROR })
       const shown = clip(parts, ROLE_EXTRA_W)
       return [...shown, sp(ROLE_EXTRA_W - segsWidth(shown))]
+    }
+    const modelSeg = (role: Role): Seg => {
+      const family = models.get(role)?.family
+      return { t: padCells(fitCells(modelText(role), modelW), modelW), color: family ? FAMILY_COLOR[family] : FRAME }
     }
     const row = (r: RoleStat): Seg[] => {
       const active = r.running > 0
@@ -619,6 +703,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         sp(1),
         { t: padCells(r.label, nameW), color: ROLE_COLOR[r.role], bold: true },
         sp(1),
+        ...(modelW > 0 ? [modelSeg(r.role), sp(1)] : []),
         ...chartLine(rampBar(barW, r.done / maxDone, BURN_RAMP)),
         sp(1),
         { t: padCells(String(r.done), numW, 'right'), color: r.done > 0 ? BRIGHT : FRAME, bold: r.done > 0 },
@@ -643,7 +728,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return { w, color: ACCENT, lines: [[title('DISPATCH', ACCENT)], ...shown.map(row), ...more] }
   }
 
-  const modelsStatsSpec = (w: number, gauge: GaugeForm): CardSpec => {
+  const modelsStatsSpec = (w: number): CardSpec => {
     const inner = w - 4
     const head: Seg[] = [title('MODELS', PRIMARY)]
     const verdict: Seg[] =
@@ -663,35 +748,15 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const shareText = (r: ModelShare) => (r.family ? shareLabel(r.share) : '未計價')
     const shareW = Math.max(4, ...view.models.map(r => cellWidth(shareText(r))))
     const share = (r: ModelShare): Seg => ({ t: padCells(shareText(r), shareW, 'right'), color: r.family ? PRIMARY : FRAME })
-    if (gauge === 'bar') {
-      const barW = Math.max(3, inner - labelW - 1 - 1 - shareW - 1 - countW)
-      const rows = view.models.map((r): Seg[] => [
-        { t: padCells(r.label, labelW), color: colorOf(r), bold: true },
-        sp(1),
-        ...(r.family
-          ? chartLine(rampBar(barW, Math.max(r.share, 1 / (barW * 8)), [colorOf(r)]))
-          : [{ t: ' '.repeat(barW) }]),
-        sp(1),
-        share(r),
-        sp(1),
-        { t: padCells(`×${r.count}`, countW), color: FRAME },
-      ])
-      return { w, color: FRAME, lines: [head, ...rows, verdict, figures] }
-    }
-    const parts: RingPart[] = view.models.filter(r => r.family).map(r => ({ share: r.share, color: colorOf(r) }))
-    const cells = partsGaugeCells(gauge === 'big' ? RING_BIG : RING_SMALL, parts, [])
-    const text: Seg[][] = [
-      ...view.models.map((r): Seg[] => [
-        { t: padCells(r.label, labelW), color: colorOf(r), bold: true },
-        sp(1),
-        share(r),
-        sp(1),
-        { t: `×${r.count}`, color: FRAME },
-      ]),
-      verdict,
-      figures,
-    ]
-    return { w, color: FRAME, lines: [head, ...ringBlock(cells, text, inner)] }
+    const parts: StackPart[] = view.models.filter(r => r.family).map(r => ({ share: r.share, color: colorOf(r) }))
+    const rows = view.models.map((r): Seg[] => [
+      { t: padCells(r.label, labelW), color: colorOf(r), bold: true },
+      sp(1),
+      share(r),
+      sp(1),
+      { t: padCells(`×${r.count}`, countW), color: FRAME },
+    ])
+    return { w, color: FRAME, lines: [head, chartLine(stackedBar(inner, parts)), ...rows, verdict, figures] }
   }
 
   // ---- 子代理清單 ---------------------------------------------------------
@@ -764,7 +829,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const icon = (a: JarvisAgent, compact: boolean): string => {
       const p = phase(a)
       if (p === 'init') return compact ? [...ctx.scan][0] ?? '' : ctx.scan
-      return p === 'active' ? ctx.frame : p === 'complete' ? '✓' : p === 'failed' ? '✗' : '?'
+      return p === 'active' || p === 'waiting' ? ctx.frame : p === 'complete' ? '✓' : p === 'failed' ? '✗' : '?'
     }
     const iconW = (compact: boolean) => Math.max(1, ...agentsShown.map(x => cellWidth(icon(x.a, compact))))
     const nameW = Math.min(15, Math.max(4, ...agentsShown.filter(x => !x.member).map(x => cellWidth(typeLabel(x.a.type)))))
@@ -812,7 +877,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const row = (a: JarvisAgent, member?: 'mid' | 'last'): Line => {
       const p = phase(a)
       const { n, color } = memberOf(a)
-      const live = p === 'init' || p === 'active'
+      const live = p === 'init' || p === 'active' || p === 'waiting'
       const lock = view.locks.get(a.id)
       // a finished, failed or lost card reads in the frame gold; its brackets and mark are
       // the dark brown
@@ -824,7 +889,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
             ? BRIGHT
             : p === 'init'
               ? PRIMARY
-              : p === 'active'
+              : p === 'active' || p === 'waiting'
                 ? ACCENT
                 : p === 'failed'
                   ? ERROR
@@ -926,7 +991,10 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   // ---- 進行中 -------------------------------------------------------------
 
-  const inflightBlock = (): Block => {
+  const idleFlight: Line[] = [[{ t: '目前沒有執行中的工具呼叫', color: FRAME }]]
+
+  // at most `cap` rows of calls, those that do not fit folded into `… 還有 N 個`
+  const inflightBlock = (cap = Infinity): Block => {
     const inner = cols - 4
     const list = view.inflight
     const color = list.length > 0 ? FLIGHT_COLOR : IDLE_COLOR
@@ -952,7 +1020,11 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       ]
     }
     const body: Line[] =
-      list.length === 0 ? [[{ t: '目前沒有執行中的工具呼叫', color: FRAME }]] : list.map(line)
+      list.length === 0
+        ? idleFlight
+        : list.length > cap
+          ? [...list.slice(0, cap - 1).map(line), [{ t: `… 還有 ${list.length - cap + 1} 個`, color: FRAME }]]
+          : list.map(line)
     return cardRow([{ w: cols, color, lines: [head, ...body] }])
   }
 
@@ -972,11 +1044,13 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         ? [{ t: `${ctx.scan} ${words}`, color: PRIMARY, bold: true }]
         : p === 'active'
           ? [{ t: `${ctx.frame} ${words}`, color: ACCENT, bold: true }, ...(a.tool !== '' ? [{ t: ` · ${a.tool}`, color: FRAME }] : [])]
-          : p === 'complete'
-            ? [{ t: `✓ ${words}`, color: FRAME }]
-            : p === 'failed'
-              ? [{ t: `✗ ${words}`, color: ERROR }]
-              : [{ t: `? ${words}`, color: FRAME }]
+          : p === 'waiting'
+            ? [{ t: `${ctx.frame} ${words}`, color: ACCENT, bold: true }]
+            : p === 'complete'
+              ? [{ t: `✓ ${words}`, color: FRAME }]
+              : p === 'failed'
+                ? [{ t: `✗ ${words}`, color: ERROR }]
+                : [{ t: `? ${words}`, color: FRAME }]
     const lines: Line[] = [
       [
         { t: `${a.status === 'running' ? `⌜ ${mkOf(a)} ⌝` : `⌞ ${mkOf(a)} ⌟`} `, color, bold: true },
@@ -1188,25 +1262,161 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   // ---- 待機戰甲 -----------------------------------------------------------
 
-  const suitFits = cols >= SUIT_COLS + SUIT_MARGIN
+  const suitFits = cols >= SUIT_CANVAS_COLS + SUIT_MARGIN
+  const artFits = cols >= SUIT_COLS + SUIT_MARGIN
 
   const suitArt = (): Seg[][] => suitCells().map(r => centered(cellsToSegs(r), cols))
 
-  // the suit at rest over its two lines: standing by, and whether any order ever came
-  const standbyBlock = (): Block => {
-    const lines: Seg[][] = [
-      ...suitArt(),
-      BLANK,
-      centered([{ t: 'MARK XLII · STANDBY', color: FRAME }], cols),
-      centered([{ t: view.sections.length === 0 ? 'AWAITING ORDERS, SIR.' : 'ALL CREW DOCKED, SIR.', color: PRIMARY }], cols),
+  // the readouts beside the suit from this width; below it, under the suit
+  const scanSide = cols >= SCAN_SIDE_MIN_COLS
+  // the rows the standby suit takes, its readouts under it when they do not fit beside
+  const suitH = SUIT_BLOCK_ROWS + (scanSide ? 0 : SUIT_UNDER_ROWS)
+
+  // a main-loop call out, or a squad member running (not waiting), quickens the suit's breath
+  // and keeps it awake
+  const suitBusy = view.inflight.some(f => f.actor === MAIN_ACTOR) || view.running.some(a => a.waiting !== true)
+  const suitPaused = ctx.suitPaused === true
+  const suitRests = suitResting({
+    now: view.now,
+    busy: suitBusy,
+    ...(view.events.length > 0 ? { lastEventAt: Math.max(...view.events.map(ev => ev.ts + ev.ms)) } : {}),
+    ...(ctx.deployedAt === undefined ? {} : { deployedAt: ctx.deployedAt }),
+    ...(ctx.startedAt === undefined ? {} : { startedAt: ctx.startedAt }),
+  })
+
+  const READOUT_COLOR: Record<Readout['tone'], string> = { primary: PRIMARY, bright: BRIGHT, error: ERROR, frame: FRAME }
+
+  // `LABEL ▰▱▱▱▱ value` in the form given: the label in frame, a meter when it keeps one, the
+  // value in its tone
+  const readoutSegs = (r: Readout | undefined, form: (r: Readout) => { label: string; meterW: number }): Seg[] => {
+    if (r === undefined) return []
+    const color = READOUT_COLOR[r.tone]
+    const { label, meterW } = form(r)
+    const lit = r.meter ? Math.min(meterW, Math.max(0, Math.ceil(r.meter.pct * meterW))) : 0
+    return [
+      ...(label === '' ? [] : [{ t: label, color: FRAME }, sp(1)]),
+      ...(meterW > 0 ? [{ t: '▰'.repeat(lit), color }, { t: '▱'.repeat(meterW - lit), color: MUTED }, sp(1)] : []),
+      { t: r.value, color },
     ]
-    return { h: lines.length, node: <Box flexDirection="column">{lines.map(lineNode)}</Box> }
+  }
+
+  // the frame in its sights: corners on its first and last rows, a blank cell between
+  const sightedArt = (frame: readonly Cell[][]): Seg[][] =>
+    frame.map((r, i) => {
+      const [open, close] = i === 0 ? ['⌜', '⌝'] : i === frame.length - 1 ? ['⌞', '⌟'] : [' ', ' ']
+      return [{ t: open, color: FRAME }, sp(1), ...cellsToSegs(r), sp(1), { t: close, color: FRAME }]
+    })
+
+  // the suit at rest over its two lines: standing by, and whether any order ever came; its
+  // readouts either side when wide, under the two lines when narrow
+  const standbyBlock = (): Block => {
+    const now = view.now
+    const lastEv = view.events.at(-1)
+    const r = standbyReadouts({
+      ...(ctx.quota ? { quota: ctx.quota } : {}),
+      crewCost: view.summary.cost,
+      ...(ctx.startedAt === undefined ? {} : { uptimeMs: now - ctx.startedAt }),
+      done: view.finished.filter(a => a.status === 'done').length,
+      active: view.running.length,
+      failed: view.finished.filter(a => a.status === 'failed').length,
+      ...(lastEv ? { lastAgoMs: now - (lastEv.ts + lastEv.ms) } : {}),
+    })
+    const frame = suitFrame(ctx.suitTick ?? 0, {
+      busy: suitBusy,
+      now,
+      resting: suitRests,
+      still: suitPaused,
+      ...(ctx.deployedAt === undefined ? {} : { deployedAt: ctx.deployedAt }),
+    })
+    const sighted = sightedArt(frame.cells)
+    // each row of the suit, corners and all, a press that holds or plays it; beside it what
+    // the row holds either side
+    let art: { pre: Seg[]; suit: Seg[]; post: Seg[] }[]
+    let under: Seg[][] = []
+    if (scanSide) {
+      const side = Math.floor((cols - SCAN_FRAME_W) / 2)
+      const rest = cols - SCAN_FRAME_W - side
+      // the readouts from the art's second row, each in the first form that fits its side
+      art = sighted.map((row, i) => {
+        const l = clip(readoutSegs(r.left[i - 1], x => sideReadout(x, side)), side)
+        const rt = clip(readoutSegs(r.right[i - 1], x => sideReadout(x, rest)), rest)
+        return { pre: [sp(side - segsWidth(l)), ...l], suit: row, post: [...rt, sp(rest - segsWidth(rt))] }
+      })
+    } else {
+      const side = Math.floor((cols - SCAN_FRAME_W) / 2)
+      art = sighted.map(row => ({ pre: [sp(side)], suit: row, post: [sp(cols - SCAN_FRAME_W - side)] }))
+      // under the suit the full labels, the meter giving way a cell at a time
+      const full = (width: number) => (x: Readout) => ({ label: x.label, meterW: readoutMeterW(x, width) })
+      under = Array.from({ length: SUIT_UNDER_ROWS }, (_, i) => {
+        const rt = readoutSegs(r.right[i], full(cols))
+        return leftRight(readoutSegs(r.left[i], full(cols - segsWidth(rt) - 1)), rt, cols)
+      })
+    }
+    const toggle = () => ctx.toggleSuit?.()
+    const artNodes = art.map(({ pre, suit, post }, i) => (
+      <Box flexDirection="row">
+        {texts(pre)}
+        <Button key={`suit-row-${i}`} plain onPress={toggle}>
+          {texts(suit)}
+        </Button>
+        {texts(post)}
+      </Box>
+    ))
+    // the line under the suit, its p drawn before it, centered as one
+    const mark = clip(
+      [
+        suitPaused
+          ? { t: 'MARK XLII · PAUSED', color: FRAME }
+          : crewDeployed(now, ctx.deployedAt)
+            ? { t: '◆ CREW DEPLOYED', color: ACCENT }
+            : { t: `MARK XLII · ${frame.pose}`, color: FRAME },
+      ],
+      cols - HOTKEY_W,
+    )
+    const markGap = cols - HOTKEY_W - segsWidth(mark)
+    const markNode = (
+      <Box flexDirection="row">
+        {texts([sp(Math.floor(markGap / 2))])}
+        <Button key="suit-mark" plain hotkey="p" onPress={toggle}>
+          {texts(mark)}
+        </Button>
+        {texts([sp(markGap - Math.floor(markGap / 2))])}
+      </Box>
+    )
+    const lines: Seg[][] = [
+      centered(
+        [
+          {
+            t:
+              view.running.length > 0
+                ? 'CREW DEPLOYED, SIR.'
+                : view.sections.length === 0
+                  ? 'AWAITING ORDERS, SIR.'
+                  : 'ALL CREW DOCKED, SIR.',
+            color: PRIMARY,
+          },
+        ],
+        cols,
+      ),
+      ...under,
+    ]
+    return {
+      h: artNodes.length + 2 + lines.length,
+      node: (
+        <Box flexDirection="column">
+          {artNodes}
+          {lineNode(BLANK)}
+          {markNode}
+          {lines.map(lineNode)}
+        </Box>
+      ),
+    }
   }
 
   // ---- 開機 ---------------------------------------------------------------
 
   const bootBlock = (stage: BootStage): Block => {
-    const art = suitFits && rows >= 1 + BOOT_SUIT_H ? [...suitArt(), BLANK] : []
+    const art = artFits && rows >= 1 + BOOT_SUIT_H ? [...suitArt(), BLANK] : []
     const lines: Seg[][] = [BLANK, ...art, centered([{ t: 'J.A.R.V.I.S. ONLINE', color: BRIGHT, bold: true }], cols)]
     if (stage.phase === 'loading') {
       const barW = Math.max(4, Math.min(24, cols - 8))
@@ -1220,6 +1430,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   }
 
   if (ctx.boot) {
+    ctx.onStandby?.(false)
     return (
       <Box flexDirection="column">
         {titleBar().node}
@@ -1234,28 +1445,31 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const left = () => rows - blocks.reduce((n, b) => n + b.h, 0)
   let footer: RenderElement | undefined
 
+  let standby = false
   if (page === 'now') {
-    // the least each card needs, then the rows left over: finished subagents first, then events
-    const flight = inflightBlock()
+    // in MIN_FINISHED's order: every running subagent and the least finished, whatever the
+    // room; the suit when it fits over its least finished; the in-flight card; the recent
+    // events' least or no card; then the rows left over, finished subagents first, then events
+    // the suit makes room for the in-flight card at its idle height and caps it there while
+    // drawn: calls coming and going neither take the suit away nor stop its tick
+    const capped = inflightBlock(idleFlight.length)
     // event rows: a dated rule takes a row like an event
     const total = eventRows(view.events).length
     const recentH = (n: number) => Math.max(1, n) + 3
-    // the suit at rest over the subagent card, when nothing runs and the card keeps its rows:
-    // its least list whole, `… 還有` line too, and never under SUIT_MIN_LIST rows inside
-    const leastList = Math.max(listHeight(Math.min(finishedUnits.length, MIN_FINISHED)), SUIT_MIN_LIST + 3)
-    const suit =
-      view.running.length === 0 &&
-      suitFits &&
-      left() - flight.h - SUIT_BLOCK_ROWS - recentH(Math.min(total, MIN_RECENT)) >= leastList
-        ? standbyBlock()
-        : undefined
+    const suitLeast = Math.min(finishedUnits.length, MIN_SUIT_FINISHED)
+    const suit = suitFits && left() - listHeight(suitLeast) - suitH - capped.h >= 0 ? standbyBlock() : undefined
+    standby = suit !== undefined
+    const least = suit ? suitLeast : Math.min(finishedUnits.length, MIN_FINISHED)
+    const flight = suit ? capped : inflightBlock()
     const room = left() - flight.h - (suit?.h ?? 0)
-    let shown = Math.min(finishedUnits.length, MIN_FINISHED)
     let recent = Math.min(total, MIN_RECENT)
-    while (shown < finishedUnits.length && listHeight(shown + 1) + recentH(recent) <= room) shown += 1
-    recent = Math.max(recent, Math.min(total, room - listHeight(shown) - 3))
-    blocks.push(...(suit ? [suit] : []), agentBlock(shown, room - recentH(recent)), flight)
-    blocks.push(eventCard([title('最近事件', PRIMARY)], view.events, recentH(recent), '還沒有工具呼叫', false))
+    const withRecent = room - listHeight(least) >= recentH(recent)
+    const recentRoom = () => (withRecent ? recentH(recent) : 0)
+    let shown = least
+    while (shown < finishedUnits.length && listHeight(shown + 1) + recentRoom() <= room) shown += 1
+    if (withRecent) recent = Math.max(recent, Math.min(total, room - listHeight(shown) - 3))
+    blocks.push(...(suit ? [suit] : []), agentBlock(shown, listHeight(shown)), flight)
+    if (withRecent) blocks.push(eventCard([title('最近事件', PRIMARY)], view.events, recentH(recent), '還沒有工具呼叫', false))
   } else if (page === 'log') {
     const total = view.events.length
     const list = ctx.paused ? view.events.slice(0, Math.max(0, total - ctx.fresh)) : view.events
@@ -1287,18 +1501,21 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const dispatchCard = dispatchStatsSpec(cols, plan.roleCut)
     if (plan.mode === 'wide') {
       const [lw = cols, rw = cols] = splitCols(cols, 2)
-      blocks.push(cardRow([mainStatsSpec(lw, plan.gauge), modelsStatsSpec(rw, plan.gauge)]), cardRow([dispatchCard]))
+      blocks.push(cardRow([mainStatsSpec(lw, plan.mode), modelsStatsSpec(rw)]), cardRow([dispatchCard]))
     } else {
       blocks.push(
-        cardRow([mainStatsSpec(cols, plan.gauge)]),
+        cardRow([mainStatsSpec(cols, plan.mode)]),
         cardRow([dispatchCard]),
-        cardRow([modelsStatsSpec(cols, plan.gauge)]),
+        cardRow([modelsStatsSpec(cols)]),
       )
     }
     if (hint) {
       footer = <Text color={FRAME}>{fitCells('還沒有派工。派出 subagent 後這裡會即時顯示。', cols)}</Text>
     }
   }
+
+  // held still, the suit asks for no frames
+  ctx.onStandby?.(standby, suitPaused ? undefined : suitRests ? SUIT_REST_TICK_MS : SUIT_TICK_MS)
 
   return (
     <Box flexDirection="column">

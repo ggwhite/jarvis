@@ -20,6 +20,13 @@ export type JarvisAgent = {
   // set when a workflow script's agent() started it: the run and its place in the run
   runId?: string
   agentIndex?: number
+  // the engine says it is waiting on background work it owns: running, shown as WAITING
+  waiting?: boolean
+  // brought back to running by the engine's view after its turn ended: the engine's view
+  // also ends it
+  revived?: boolean
+  // the engine has said it ended: its view is not asked for again
+  confirmed?: boolean
 }
 
 // One finished tool call, main loop or subagent. `ts` is when it started.
@@ -56,9 +63,14 @@ export type JarvisMain = {
   lastDesc: string
   isRunning: boolean
   runSince: number
+  toolCounts?: Record<string, number>
 }
 
 export type JarvisTick = { n: number; now: number }
+
+// The standby suit's frame count, when a crew member was last deployed, and whether a press
+// holds it still.
+export type JarvisSuit = { n: number; deployedAt?: number; paused?: boolean }
 
 // ---- 艦隊 ----
 
@@ -167,6 +179,9 @@ declare module 'claude-code' {
       eventTotal: number
       fleet: FleetView
       fleetCursor: FleetCursor
+      // the usagebar cache as the standby suit last read it; null when it was not there
+      standbyQuota: FleetQuota | null
+      suit: JarvisSuit
     }
   }
 }

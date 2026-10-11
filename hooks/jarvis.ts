@@ -274,9 +274,10 @@ export function noteTool(
 ): JarvisAgent[] {
   return list.map(a => {
     if (a.id !== id) return a
-    if (a.status === 'running') return { ...a, tool, lastSeenAt: now }
-    if (a.status === 'stale') return { ...a, tool, status: 'running', lastSeenAt: now }
-    return { ...a, tool, status: 'running', runStartedAt: now, lastSeenAt: now, endedAt: 0 }
+    const { waiting: _w, confirmed: _c, ...rest } = a
+    if (a.status === 'running') return { ...rest, tool, lastSeenAt: now }
+    if (a.status === 'stale') return { ...rest, tool, status: 'running', lastSeenAt: now }
+    return { ...rest, tool, status: 'running', runStartedAt: now, lastSeenAt: now, endedAt: 0 }
   })
 }
 
@@ -290,8 +291,9 @@ export function finishTurn(
   return list.map(a => {
     if (a.id !== id) return a
     const u = c.usage
+    const { revived: _r, confirmed: _c, ...rest } = a
     return {
-      ...a,
+      ...rest,
       status: c.reason === 'answer' ? 'done' : 'failed',
       tool: '',
       lastSeenAt: now,
@@ -306,14 +308,99 @@ export function finishTurn(
   })
 }
 
-// A running subagent with no tool call or finished turn for STALE_MS is lost.
-// Returns the same array when nothing changed.
-export function markStale(list: readonly JarvisAgent[], now: number): readonly JarvisAgent[] {
-  if (!list.some(a => a.status === 'running' && now - a.lastSeenAt > STALE_MS)) return list
-  return list.map(a =>
-    a.status === 'running' && now - a.lastSeenAt > STALE_MS
-      ? { ...a, status: 'stale' as const, tool: '' }
-      : a,
+// A running subagent with no tool call or finished turn for STALE_MS is lost, unless the
+// engine says it waits on background work and the engine can still be asked
+// (`exemptWaiting`). Returns the same array when nothing changed.
+export function markStale(list: readonly JarvisAgent[], now: number, exemptWaiting = true): readonly JarvisAgent[] {
+  const lost = (a: JarvisAgent) =>
+    a.status === 'running' && (a.waiting !== true || !exemptWaiting) && now - a.lastSeenAt > STALE_MS
+  if (!list.some(lost)) return list
+  return list.map(a => {
+    if (!lost(a)) return a
+    const { waiting: _w, revived: _r, ...rest } = a
+    return { ...rest, status: 'stale' as const, tool: '' }
+  })
+}
+
+// How often the engine's own view of the agents is checked: while one waits, and for a
+// minute after one finished (it may be waiting on work of its own).
+export const RECONCILE_RECENT_MS = 60_000
+// After this many listings in a row that say nothing, a waiting agent loses its exemption
+// from going lost.
+export const LIST_FAILS_MAX = 30
+
+// An agent as `$.agent.list()` gives it, as much as the cockpit reads.
+export type EngineAgent = { id: string; status: string; type?: string; description?: string }
+
+const ENGINE_LIVE = new Set(['pending', 'running', 'waiting'])
+const ENGINE_FAILED = new Set(['failed', 'killed'])
+
+// Brings each agent in line with what the engine says of it: one the engine still runs or
+// holds on its background work runs again (waiting marked; revived when it had ended); a
+// waiting or revived one the engine has ended, or no longer lists, is done or failed; an
+// ended one the engine confirms ended is marked confirmed. One running in its own turn is
+// left to its turn.complete. `engine` is a listing that said something: never empty.
+// `waitingOnly`: an ended one the engine still runs is left ended, only one it waits on runs
+// again. Returns the same array when nothing changed.
+export function reconcileAgents(
+  list: readonly JarvisAgent[],
+  engine: readonly EngineAgent[],
+  now: number,
+  waitingOnly = false,
+): readonly JarvisAgent[] {
+  const byId = new Map(engine.map(e => [e.id, e.status] as const))
+  let changed = false
+  const out = list.map(a => {
+    const s = byId.get(a.id)
+    const waiting = s === 'waiting'
+    if (s !== undefined && ENGINE_LIVE.has(s)) {
+      if (a.status === 'running' || a.status === 'stale') {
+        if ((a.waiting === true) === waiting && a.status === 'running') return a
+        changed = true
+        const { waiting: _w, ...rest } = a
+        return { ...rest, status: 'running' as const, lastSeenAt: now, ...(waiting ? { waiting: true } : {}) }
+      }
+      if (waitingOnly && !waiting) return a
+      changed = true
+      const { waiting: _w, confirmed: _c, ...rest } = a
+      return {
+        ...rest,
+        status: 'running' as const,
+        runStartedAt: now,
+        lastSeenAt: now,
+        endedAt: 0,
+        revived: true,
+        ...(waiting ? { waiting: true } : {}),
+      }
+    }
+    if (a.waiting !== true && a.revived !== true) {
+      if (s === undefined || a.confirmed === true || (a.status !== 'done' && a.status !== 'failed')) return a
+      changed = true
+      return { ...a, confirmed: true }
+    }
+    changed = true
+    const { waiting: _w, revived: _r, ...rest } = a
+    return {
+      ...rest,
+      ...(s === undefined ? {} : { confirmed: true }),
+      status: s !== undefined && ENGINE_FAILED.has(s) ? ('failed' as const) : ('done' as const),
+      tool: '',
+      lastSeenAt: now,
+      endedAt: now,
+      doneMs: a.doneMs + Math.max(0, now - a.runStartedAt),
+    }
+  })
+  return changed ? out : list
+}
+
+// Whether the engine's view is worth asking for: an agent waits or runs revived, or one
+// finished within RECONCILE_RECENT_MS and the engine has not confirmed it ended.
+export function needsReconcile(list: readonly JarvisAgent[], now: number): boolean {
+  return list.some(
+    a =>
+      a.waiting === true ||
+      (a.status === 'running' && a.revived === true) ||
+      (a.status !== 'running' && a.confirmed !== true && a.endedAt > 0 && now - a.endedAt <= RECONCILE_RECENT_MS),
   )
 }
 
@@ -516,6 +603,37 @@ export function dispatchRoleOf(a: JarvisAgent): Role {
   return a.runId !== undefined ? 'workflow' : roleOf(a.type)
 }
 
+// The main loop's most called tools, most first, ties by name.
+export function topTools(counts: Record<string, number> | undefined, n: number): { tool: string; count: number }[] {
+  return Object.entries(counts ?? {})
+    .map(([tool, count]) => ({ tool, count }))
+    .sort((a, b) => b.count - a.count || a.tool.localeCompare(b.tool))
+    .slice(0, Math.max(0, n))
+}
+
+export type RoleModel = { label: string; family?: Family; mixed: boolean }
+
+// Each role's most used model, by family where it has one; mixed when the role ran more
+// than one.
+export function roleModels(agents: readonly JarvisAgent[]): Map<Role, RoleModel> {
+  const counts = new Map<Role, Map<string, number>>()
+  for (const a of agents) {
+    if (a.model === '') continue
+    const role = dispatchRoleOf(a)
+    const byModel = counts.get(role) ?? new Map<string, number>()
+    const key = familyOf(a.model) ?? shortModel(a.model)
+    byModel.set(key, (byModel.get(key) ?? 0) + 1)
+    counts.set(role, byModel)
+  }
+  const out = new Map<Role, RoleModel>()
+  for (const [role, byModel] of counts) {
+    const [key] = [...byModel.entries()].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))[0] ?? ['']
+    const family = FAMILIES.find(f => f === key)
+    out.set(role, { label: family ? FAMILY_NAME[family] : key, ...(family ? { family } : {}), mixed: byModel.size > 1 })
+  }
+  return out
+}
+
 export type RoleStat = { role: Role; label: string; running: number; done: number; failed: number }
 
 export function dispatchStats(agents: readonly JarvisAgent[]): RoleStat[] {
@@ -648,10 +766,12 @@ export function rosterOf(agents: readonly JarvisAgent[], sections: readonly List
   return out
 }
 
-export type Phase = 'init' | 'active' | 'complete' | 'failed' | 'lost'
+export type Phase = 'init' | 'active' | 'waiting' | 'complete' | 'failed' | 'lost'
 
-// init: running and dispatched (or resumed) under INIT_MS ago.
+// init: running and dispatched (or resumed) under INIT_MS ago; waiting: running on
+// background work the engine holds.
 export function phaseOf(a: JarvisAgent, now: number): Phase {
+  if (a.status === 'running' && a.waiting === true) return 'waiting'
   if (a.status === 'running') return now - a.runStartedAt < INIT_MS ? 'init' : 'active'
   if (a.status === 'done') return 'complete'
   if (a.status === 'failed') return 'failed'
@@ -692,10 +812,10 @@ export function lockOf(events: readonly JarvisEvent[], actor: string, now: numbe
   return undefined
 }
 
-// The tick period: ANIM_MS while any squad member runs (initializing ones included) or
-// the boot plays, and the pane was drawn within SEEN_MS of `now`, else IDLE_MS.
+// The tick period: ANIM_MS while any squad member runs (initializing ones included, waiting
+// ones not) or the boot plays, and the pane was drawn within SEEN_MS of `now`, else IDLE_MS.
 export function tickMs(agents: readonly JarvisAgent[], now: number, drawnAt: number, booting = false): number {
-  return (runningOf(agents).length > 0 || booting) && now - drawnAt <= SEEN_MS ? ANIM_MS : IDLE_MS
+  return (runningOf(agents).some(a => a.waiting !== true) || booting) && now - drawnAt <= SEEN_MS ? ANIM_MS : IDLE_MS
 }
 
 export type JarvisState = {
@@ -705,9 +825,12 @@ export type JarvisState = {
   inflight?: readonly JarvisInflight[]
 }
 
-// When the latest running thing began: the main turn, or a running subagent.
+// When the latest running thing began: the main turn, or a running subagent not waiting
+// on its own background work.
 export function activeSinceOf(state: JarvisState): number | undefined {
-  const starts = runningOf(state.agents).map(a => a.runStartedAt)
+  const starts = runningOf(state.agents)
+    .filter(a => a.waiting !== true)
+    .map(a => a.runStartedAt)
   if (state.main.isRunning) starts.push(state.main.runSince)
   return starts.length === 0 ? undefined : Math.max(...starts)
 }
@@ -731,6 +854,7 @@ export type Cockpit = {
     lastTool: string
     lastDesc: string
     isRunning: boolean
+    toolCounts: Record<string, number>
   }
   // the latest MAX_EVENTS tool calls, oldest first
   events: JarvisEvent[]
@@ -766,6 +890,7 @@ export function buildCockpit(state: JarvisState, now: number): Cockpit {
       lastTool: m.lastTool,
       lastDesc: m.lastDesc,
       isRunning: m.isRunning,
+      toolCounts: { ...(m.toolCounts ?? {}) },
     },
     events: [...state.events],
     dispatch: dispatchStats(state.agents),
