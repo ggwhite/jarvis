@@ -184,6 +184,71 @@ export function gaugeBar(width: number, pct: number, depleted: boolean): Cell[] 
   return rampBar(width, pct, depleted ? [THEME.error] : GAUGE_RAMP)
 }
 
+// A 3×5 pixel font, row by row, `#` lit: the digits, % and -. Drawn as half blocks it is
+// BIG_ROWS cells tall (the sixth pixel row blank).
+const FONT: Record<string, string[]> = {
+  '0': ['###', '#.#', '#.#', '#.#', '###'],
+  '1': ['.#.', '##.', '.#.', '.#.', '###'],
+  '2': ['###', '..#', '###', '#..', '###'],
+  '3': ['###', '..#', '.##', '..#', '###'],
+  '4': ['#.#', '#.#', '###', '..#', '..#'],
+  '5': ['###', '#..', '###', '..#', '###'],
+  '6': ['###', '#..', '###', '#.#', '###'],
+  '7': ['###', '..#', '.#.', '.#.', '.#.'],
+  '8': ['###', '#.#', '###', '#.#', '###'],
+  '9': ['###', '#.#', '###', '..#', '###'],
+  '%': ['#.#', '..#', '.#.', '#..', '#.#'],
+  '-': ['...', '...', '###', '...', '...'],
+}
+const GLYPH_W = 3
+const GLYPH_GAP = 1
+export const BIG_ROWS = 3
+
+export function bigWidth(text: string): number {
+  const n = [...text].length
+  return n === 0 ? 0 : n * GLYPH_W + (n - 1) * GLYPH_GAP
+}
+
+// `text` in the pixel font, one color; a character the font lacks is a blank glyph.
+export function bigText(text: string, color: string): Cell[][] {
+  const glyphs = [...text].map(ch => FONT[ch] ?? ['...', '...', '...', '...', '...'])
+  const px: Pixels = Array.from({ length: BIG_ROWS * 2 }, (_, y) =>
+    glyphs.flatMap((g, i) => [
+      ...(i > 0 ? Array<string | undefined>(GLYPH_GAP).fill(undefined) : []),
+      ...[...(g[y] ?? '...')].map(c => (c === '#' ? color : undefined)),
+    ]),
+  )
+  return pixelsToCells(px)
+}
+
+export type StackPart = { share: number; color: string }
+
+// One bar the width, its parts side by side by share (largest remainder), each part with
+// any share at least a cell; nothing to show is a muted track.
+export function stackedBar(width: number, parts: readonly StackPart[]): Cell[] {
+  const w = Math.max(0, Math.floor(width))
+  const live = parts.filter(p => p.share > 0)
+  const total = live.reduce((s, p) => s + p.share, 0)
+  if (w === 0) return []
+  if (total <= 0) return Array.from({ length: w }, () => ({ ch: '░', fg: THEME.muted }))
+  const raw = live.map(p => (p.share / total) * w)
+  const cells = raw.map(r => Math.floor(r))
+  let left = w - cells.reduce((s, n) => s + n, 0)
+  const order = raw.map((r, i) => ({ i, frac: r - Math.floor(r) })).sort((a, b) => b.frac - a.frac)
+  for (let k = 0; left > 0; k = (k + 1) % order.length, left--) {
+    const i = order[k]?.i ?? 0
+    cells[i] = (cells[i] ?? 0) + 1
+  }
+  for (let i = 0; i < cells.length; i += 1) {
+    if ((cells[i] ?? 0) > 0) continue
+    const most = Math.max(...cells)
+    if (most <= 1) break
+    cells[cells.indexOf(most)] = most - 1
+    cells[i] = 1
+  }
+  return live.flatMap((p, i) => Array.from({ length: cells[i] ?? 0 }, () => ({ ch: '█', fg: p.color })))
+}
+
 // Today's tokens by hour as an area chart `rows` cells tall and `width` wide, heat by
 // height, the hour now bright, an hour of nothing a muted floor; then the axis with its
 // ticks and the hour now marked ▲, then the tick hours.

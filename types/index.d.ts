@@ -63,6 +63,7 @@ export type JarvisMain = {
   lastDesc: string
   isRunning: boolean
   runSince: number
+  toolCounts?: Record<string, number>
 }
 
 export type JarvisTick = { n: number; now: number }

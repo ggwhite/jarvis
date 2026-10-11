@@ -66,6 +66,8 @@ import {
   fmtReadout,
   lockOf,
   reactorOf,
+  roleModels,
+  topTools,
 } from '../hooks/jarvis'
 import { HEALTH_TEXT, MIN_EVENT_ROWS, RECOVERED, ROLE_COLOR, TITLE } from '../hooks/cockpit'
 import {
@@ -4052,5 +4054,34 @@ describe('background wait, wired', () => {
     await start($)
     await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'nobody' } as never)
     expect(calls).toBe(2)
+  })
+})
+
+describe('main tools and role models', () => {
+  test('top tools by count, ties by name', () => {
+    expect(topTools({ Read: 42, Bash: 120, Edit: 42 }, 2)).toEqual([{ tool: 'Bash', count: 120 }, { tool: 'Edit', count: 42 }])
+    expect(topTools(undefined, 2)).toEqual([])
+  })
+  test('each role its most used model, marked mixed past one', () => {
+    const a = (id: string, type: string, model: string): JarvisAgent => ({
+      id, type, description: '', model, status: 'done', tool: '', runStartedAt: 0, lastSeenAt: 0, doneMs: 0, endedAt: 1,
+      input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+    })
+    const m = roleModels([a('1', 'verifier', 'claude-sonnet-5-5'), a('2', 'verifier', 'claude-sonnet-5-5'), a('3', 'verifier', 'claude-opus-5-5'), a('4', 'worker', 'claude-opus-5-5')])
+    expect(m.get('verifier')).toEqual({ label: 'Sonnet', family: 'sonnet', mixed: true })
+    expect(m.get('worker')).toEqual({ label: 'Opus', family: 'opus', mixed: false })
+    expect(m.has('fork')).toBe(false)
+  })
+  test('a main tool call counts toward the main loop only', async ($, on) => {
+    const w = watch(on)
+    engine(on, 'agent-1')
+    await start($)
+    await $.tool.call({ tool: 'Bash', command: 'ls' } as never)
+    await $.tool.call({ tool: 'Bash', command: 'pwd' } as never)
+    await $.agent.spawn(spawnInput({ description: 'x', subagentType: 'worker' }))
+    await $.tool.call({ tool: 'Read', file_path: '/a', agentId: 'agent-1' } as never)
+    expect(w.main?.toolCounts).toEqual({ Bash: 2 })
+    const view = buildCockpit({ agents: [], main: w.main as JarvisMain, events: [] }, 0)
+    expect(view.main.toolCounts).toEqual({ Bash: 2 })
   })
 })

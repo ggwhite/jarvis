@@ -49,6 +49,7 @@ const main = atom({ plugin: 'jarvis', key: 'main' } as const, {
   lastDesc: '',
   isRunning: false,
   runSince: 0,
+  toolCounts: {},
 })
 const events = atom({ plugin: 'jarvis', key: 'events' } as const, [])
 const inflight = atom({ plugin: 'jarvis', key: 'inflight' } as const, [])
@@ -389,6 +390,7 @@ export const register: Register = on => {
           chain: isAgent ? 0 : m.chain + 1,
           lastTool: tool,
           lastDesc: desc,
+          toolCounts: { ...(m.toolCounts ?? {}), [tool]: ((m.toolCounts ?? {})[tool] ?? 0) + 1 },
         }))
       } else {
         const known = (await read($, agents)).some(a => a.id === id)

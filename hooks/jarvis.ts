@@ -600,6 +600,37 @@ export function dispatchRoleOf(a: JarvisAgent): Role {
   return a.runId !== undefined ? 'workflow' : roleOf(a.type)
 }
 
+// The main loop's most called tools, most first, ties by name.
+export function topTools(counts: Record<string, number> | undefined, n: number): { tool: string; count: number }[] {
+  return Object.entries(counts ?? {})
+    .map(([tool, count]) => ({ tool, count }))
+    .sort((a, b) => b.count - a.count || a.tool.localeCompare(b.tool))
+    .slice(0, Math.max(0, n))
+}
+
+export type RoleModel = { label: string; family?: Family; mixed: boolean }
+
+// Each role's most used model, by family where it has one; mixed when the role ran more
+// than one.
+export function roleModels(agents: readonly JarvisAgent[]): Map<Role, RoleModel> {
+  const counts = new Map<Role, Map<string, number>>()
+  for (const a of agents) {
+    if (a.model === '') continue
+    const role = dispatchRoleOf(a)
+    const byModel = counts.get(role) ?? new Map<string, number>()
+    const key = familyOf(a.model) ?? shortModel(a.model)
+    byModel.set(key, (byModel.get(key) ?? 0) + 1)
+    counts.set(role, byModel)
+  }
+  const out = new Map<Role, RoleModel>()
+  for (const [role, byModel] of counts) {
+    const [key] = [...byModel.entries()].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))[0] ?? ['']
+    const family = FAMILIES.find(f => f === key)
+    out.set(role, { label: family ? FAMILY_NAME[family] : key, ...(family ? { family } : {}), mixed: byModel.size > 1 })
+  }
+  return out
+}
+
 export type RoleStat = { role: Role; label: string; running: number; done: number; failed: number }
 
 export function dispatchStats(agents: readonly JarvisAgent[]): RoleStat[] {
@@ -817,6 +848,7 @@ export type Cockpit = {
     lastTool: string
     lastDesc: string
     isRunning: boolean
+    toolCounts: Record<string, number>
   }
   // the latest MAX_EVENTS tool calls, oldest first
   events: JarvisEvent[]
@@ -852,6 +884,7 @@ export function buildCockpit(state: JarvisState, now: number): Cockpit {
       lastTool: m.lastTool,
       lastDesc: m.lastDesc,
       isRunning: m.isRunning,
+      toolCounts: { ...(m.toolCounts ?? {}) },
     },
     events: [...state.events],
     dispatch: dispatchStats(state.agents),
