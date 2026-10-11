@@ -52,7 +52,6 @@ const ui = atom({ plugin: 'jarvis', key: 'ui' } as const, {
   pausedTotal: 0,
 })
 const eventTotal = atom({ plugin: 'jarvis', key: 'eventTotal' } as const, 0)
-const focus = atom({ plugin: 'jarvis', key: 'focus' } as const, '')
 
 // Tool calls that last as long as the agents they start, whose own calls are tracked:
 // counting them in flight would hide a stuck subagent.
@@ -362,20 +361,6 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // where the pane's focus ring lands, for the card it locks on
-  on('ui.focus', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
-    const out = await next(e)
-    if (out.deny === undefined) {
-      try {
-        const key = e.plugin === PANE ? (e.element ?? '') : ''
-        await update($, focus, () => key)
-      } catch {
-        // the card just draws unlocked
-      }
-    }
-    return out
-  })
-
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const elements = $.ui.resolve(e)
     const t = await read($, tick)
@@ -421,7 +406,6 @@ export const register: Register = on => {
       scan: scanFrame(t.n),
       beat: t.n,
       ...(boot ? { boot } : {}),
-      focus: e.props.isFocused ? await read($, focus) : '',
       page: shown.page,
       agentId: shown.agentId,
       paused: shown.paused,

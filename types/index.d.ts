@@ -82,8 +82,6 @@ declare module 'claude-code' {
       ui: JarvisUi
       // every event ever recorded this session, past the MAX_EVENTS kept
       eventTotal: number
-      // the key of the pane's Button the focus ring is on, '' for none
-      focus: string
     }
   }
 }
