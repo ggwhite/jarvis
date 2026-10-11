@@ -63,8 +63,8 @@ describe('stats figures', () => {
 })
 
 describe('stats plan', () => {
-  test('main card: border, head and the big digits; narrow puts the readouts under', () => {
-    expect(mainRows('wide')).toBe(2 + 1 + BIG_ROWS)
+  test('main card: border, head and the big digits; wide adds TOP\'s second line, narrow puts the readouts under', () => {
+    expect(mainRows('wide')).toBe(2 + 1 + BIG_ROWS + 1)
     expect(mainRows('mid')).toBe(2 + 1 + BIG_ROWS)
     expect(mainRows('narrow')).toBe(2 + 1 + BIG_ROWS + 3)
   })

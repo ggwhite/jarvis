@@ -40,10 +40,10 @@ export type StatsShape = { cols: number; room: number; roles: number; models: nu
 // summary line of every role instead.
 export type StatsPlan = { mode: FleetMode; height: number; roleCut?: number }
 
-// The main card: its border, the head, then the big digits with the readouts beside them,
-// or under them when narrow.
+// The main card: its border, the head, then the big digits with the readouts beside them
+// (wide: a line more, TOP's second tool under its first), or under them when narrow.
 export function mainRows(mode: FleetMode): number {
-  return 2 + 1 + (mode === 'narrow' ? BIG_ROWS + 3 : BIG_ROWS)
+  return 2 + 1 + (mode === 'narrow' ? BIG_ROWS + 3 : mode === 'wide' ? BIG_ROWS + 1 : BIG_ROWS)
 }
 
 // The model card: its border, the head, the stacked bar, a line a model and the two savings

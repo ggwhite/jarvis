@@ -2499,7 +2499,7 @@ describe('beauty pass 2', () => {
     expect(describeCall('Bash', { command: 'cd x && ls', description: 'List' })).toBe('List')
   })
 
-  test('the main card is six rows beside the readouts, nine with them under the digits when narrow', async ($, on) => {
+  test('the main card is seven rows wide (TOP on two lines), six at mid, nine with the readouts under the digits when narrow', async ($, on) => {
     engineAll(on)
     await press($, 'tab-stats')
     const mainHeight = (tree: Node) => {
@@ -2514,7 +2514,7 @@ describe('beauty pass 2', () => {
       }
       return Number(find(tree)?.props?.['height'])
     }
-    expect(mainHeight(await draw($, 60, 120))).toBe(6)
+    expect(mainHeight(await draw($, 60, 120))).toBe(7)
     expect(mainHeight(await draw($, 60, 80))).toBe(6)
     expect(mainHeight(await draw($, 60, 50))).toBe(9)
   })
@@ -3708,6 +3708,22 @@ describe('stats HUD', () => {
     expect(rows.find(r => r.includes('SUCCESS RATE'))).toMatch(/^[▀▄█ ]+ {2}SUCCESS RATE/)
   })
 
+  test('main line, wide: TOP keeps both tools on two lines beside 100%', async ($, on) => {
+    engine(on)
+    await start($)
+    for (let i = 0; i < 3; i++) await $.tool.call({ tool: 'Bash', command: 'ls' } as never)
+    await $.tool.call({ tool: 'Read', file_path: '/a' } as never)
+    await press($, 'tab-stats', 40, 100)
+    const main = mainCard(await draw($, 40, 100))
+    const inner = Number(main.props?.width ?? 0) - 4
+    const rows = (main.children ?? []).map(textOf)
+    expect(rows.some(r => /OK 4 +CHAIN/.test(r))).toBe(true)
+    expect(rows.some(r => /FAIL 0 +TOP Bash 3$/.test(r.trimEnd()))).toBe(true)
+    expect(rows.some(r => /SUCCESS RATE +Read 1$/.test(r.trimEnd()))).toBe(true)
+    expect(rows.some(r => /^ +LAST Read/.test(r))).toBe(true)
+    for (const r of rows) expect([r, cellWidth(r) <= inner]).toEqual([r, true])
+  })
+
   test('main line, narrow: the readouts under the digits', async ($, on) => {
     engine(on)
     await start($)
@@ -3765,9 +3781,24 @@ describe('stats HUD', () => {
       expect(findText(dispatch, /^Opus\s*$/)?.props?.color).toBe(FAMILY_COLOR.opus)
       // a role nobody ran keeps the column blank, the bars still aligned
       const explore = rows.find(r => /^◇ Explore/.test(r)) ?? ''
-      expect([cols, explore.indexOf('█') === -1 || explore.search(/[█▏▎▍▌▋▊▉░]/) === worker.search(/[█▏▎▍▌▋▊▉░]/)]).toEqual([cols, true])
+      expect([cols, explore.search(/[█▏▎▍▌▋▊▉░]/)]).toEqual([cols, worker.search(/[█▏▎▍▌▋▊▉░]/)])
       for (const r of rows) expect([cols, r, cellWidth(r) <= cols - 4]).toEqual([cols, r, true])
     }
+  })
+
+  test('an unknown long model name is cut to the column, ▶N still shown at 40 columns', async ($, on) => {
+    mock.clock(on, { now: 0 })
+    on('agent.spawn', async () => ({ model: 'mystery-model-with-a-very-long-name', agentId: 'agent-1' }))
+    on('turn.complete', async (_$, e) => ({ text: e.answer }))
+    await $.agent.spawn(spawnIn('long', 'worker'))
+    await press($, 'tab-stats', 40, 40)
+    const dispatch = cardOf(await draw($, 40, 40), /^DISPATCH$/)
+    const worker = (dispatch.children ?? []).map(textOf).find(r => /^◆ worker/.test(r)) ?? ''
+    expect(worker).toMatch(/▶1/)
+    expect(cellWidth(worker)).toBeLessThanOrEqual(36)
+    const model = findText(dispatch, /^myst/)
+    expect(cellWidth(textOf(model ?? ''))).toBe(8)
+    expect(textOf(model ?? '')).toMatch(/…$/)
   })
 
   test('dispatch without any subagent leaves the model column out', async ($, on) => {

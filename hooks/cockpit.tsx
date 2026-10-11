@@ -60,6 +60,8 @@ export const BEATS_MIN_INNER = 56
 // The braille line a role gets, and the room after its counts.
 const ROLE_BEAT_W = 10
 const ROLE_EXTRA_W = 12
+// The dispatch card's model column at its widest: `Sonnet+`, a longer unknown name cut.
+const MODEL_COL_MAX = 8
 // The least the now page gives the finished subagents (a workflow run is one unit) and
 // the recent events; rows left over go to the finished ones first, then the events.
 export const MIN_FINISHED = 3
@@ -597,6 +599,28 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       last,
     ]
     const col1W = Math.max(...col1.map(segsWidth))
+    if (mode === 'wide') {
+      // half the pane leaves too little room beside the digits for both tools on one line
+      const tool = (x: { tool: string; count: number }): Seg[] => [
+        { t: x.tool, color: TOOL_COLOR, bold: true },
+        { t: ` ${x.count}`, color: PRIMARY },
+      ]
+      const [first, second] = top
+      const col2W: Seg[][] = [
+        chain,
+        [{ t: 'TOP ', color: FRAME }, ...(first ? tool(first) : [{ t: '--', color: FRAME }])],
+        second ? [sp(cellWidth('TOP ')), ...tool(second)] : [],
+        last,
+      ]
+      const rows = [0, 1, 2, 3].map(i => [
+        ...(digits[i] ? chartLine(digits[i]) : [sp(dW)]),
+        sp(2),
+        ...padSegs(col1[i] ?? [], col1W),
+        sp(2),
+        ...clip(col2W[i] ?? [], Math.max(0, inner - dW - 2 - col1W - 2)),
+      ])
+      return { w, color: FRAME, lines: [headLine, ...rows] }
+    }
     if (mode === 'narrow') {
       const under = [0, 1, 2].map(i => clip([...padSegs(col1[i] ?? [], col1W), sp(2), ...(col2[i] ?? [])], inner))
       return { w, color: FRAME, lines: [headLine, ...digits.map(r => chartLine(r)), ...under] }
@@ -624,7 +648,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       const x = models.get(role)
       return x ? x.label + (x.mixed ? '+' : '') : ''
     }
-    const modelW = Math.max(0, ...statsRoles.map(r => cellWidth(modelText(r.role))))
+    const modelW = Math.min(MODEL_COL_MAX, Math.max(0, ...statsRoles.map(r => cellWidth(modelText(r.role)))))
     const barW = Math.max(
       3,
       inner - (2 + nameW + 1 + modelW + (modelW > 0 ? 1 : 0) + 1 + numW + 1 + ROLE_EXTRA_W + (showBeats ? 2 + ROLE_BEAT_W : 0)),
@@ -638,7 +662,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     }
     const modelSeg = (role: Role): Seg => {
       const family = models.get(role)?.family
-      return { t: padCells(modelText(role), modelW), color: family ? FAMILY_COLOR[family] : FRAME }
+      return { t: padCells(fitCells(modelText(role), modelW), modelW), color: family ? FAMILY_COLOR[family] : FRAME }
     }
     const row = (r: RoleStat): Seg[] => {
       const active = r.running > 0
