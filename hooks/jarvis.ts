@@ -24,17 +24,38 @@ export const SEEN_MS = 5000
 // Two events further apart than this are drawn with a dated rule between them.
 export const BREAK_MS = 60 * 60 * 1000
 
-// The HUD palette: primary cyan, accent gold, error red, and the dark teal of what is
-// finished or old.
+// The HUD palette, Mark 42: the deep teal of frames and rules, ice blue text, amber for
+// what runs and what is locked on, near white for the figures that matter, the alarm red
+// of errors and warnings, the dark blue of what is finished or old; the suit's red and
+// gold for the title.
 export const THEME = {
-  primary: '#00E5FF',
-  accent: '#FFC940',
-  error: '#FF4D4D',
-  muted: '#3A6B7A',
+  frame: '#2B9FC0',
+  primary: '#5CE1FF',
+  accent: '#F2B84B',
+  bright: '#E6FBFF',
+  error: '#FF3B30',
+  muted: '#1F4E5F',
+  suitRed: '#C8102E',
+  suitGold: '#E8B04B',
 } as const
 
-// One color per squad member, by dispatch order; none is the accent, error or muted tone.
-export const JARVIS_PALETTE = ['#00E5FF', '#FF6EC7', '#7CFF6B', '#B388FF', '#FF9F43', '#4D9FFF']
+// One color per squad member, by dispatch order; none is a theme tone or near the alarm red.
+export const JARVIS_PALETTE = ['#3EC6FF', '#5EE6A8', '#9B8CFF', '#FF8FB1', '#D4E157', '#E6A7FF']
+
+// The arc reactor beside the title: braille cells brightening and dimming while a squad
+// member runs, amber at the dim end and near white at the bright; one dark cell at rest.
+export const REACTOR = ['⣀', '⣤', '⣶', '⣿', '⣶', '⣤']
+const REACTOR_COLOR = [THEME.accent, THEME.accent, THEME.bright, THEME.bright, THEME.bright, THEME.accent]
+const REACTOR_IDLE = '⣿'
+
+// The boot sequence /jarvis plays as the pane opens: ONLINE, then the manifest loading,
+// full at BOOT_LOADED_MS and held there until BOOT_MS.
+export const BOOT_MS = 1000
+const BOOT_ONLINE_MS = 300
+const BOOT_LOADED_MS = 850
+
+// How long a squad member's retried call reads RELOCKED before it goes back to ACTIVE.
+export const RELOCK_MS = 3000
 
 export type Family = 'fable' | 'opus' | 'sonnet' | 'haiku'
 
@@ -194,6 +215,15 @@ export function fmtDur(ms: number): string {
   if (s < 60) return `${s}s`
   const m = Math.floor(s / 60)
   return `${m}m${String(s % 60).padStart(2, '0')}s`
+}
+
+// An elapsed time as a readout: 0:05, 9:47, 1:02:05.
+export function fmtReadout(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const ss = String(s % 60).padStart(2, '0')
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`
 }
 
 export function elapsedMs(a: JarvisAgent, now: number): number {
@@ -631,10 +661,40 @@ export function scanFrame(n: number): string {
   return SCAN[((Math.floor(n) % SCAN.length) + SCAN.length) % SCAN.length] ?? SCAN[0] ?? ''
 }
 
-// The tick period: ANIM_MS while any squad member runs (initializing ones included) and
-// the pane was drawn within SEEN_MS of `now`, else IDLE_MS.
-export function tickMs(agents: readonly JarvisAgent[], now: number, drawnAt: number): number {
-  return runningOf(agents).length > 0 && now - drawnAt <= SEEN_MS ? ANIM_MS : IDLE_MS
+export function reactorOf(n: number, live: boolean): { glyph: string; color: string } {
+  if (!live) return { glyph: REACTOR_IDLE, color: THEME.muted }
+  const i = ((Math.floor(n) % REACTOR.length) + REACTOR.length) % REACTOR.length
+  return { glyph: REACTOR[i] ?? REACTOR_IDLE, color: REACTOR_COLOR[i] ?? THEME.accent }
+}
+
+export type BootStage = { phase: 'online' } | { phase: 'loading'; pct: number }
+
+// The boot screen `ms` after the pane opened; undefined once it is over.
+export function bootStage(ms: number): BootStage | undefined {
+  if (ms >= BOOT_MS) return undefined
+  if (ms < BOOT_ONLINE_MS) return { phase: 'online' }
+  const pct = Math.round(((ms - BOOT_ONLINE_MS) / (BOOT_LOADED_MS - BOOT_ONLINE_MS)) * 100)
+  return { phase: 'loading', pct: Math.max(0, Math.min(100, pct)) }
+}
+
+// lost: the actor's latest call failed. relocked: it worked on the very tool that failed
+// just before it, under RELOCK_MS ago.
+export type Lock = 'lost' | 'relocked'
+
+export function lockOf(events: readonly JarvisEvent[], actor: string, now: number): Lock | undefined {
+  const own = events.filter(ev => ev.actor === actor)
+  const last = own[own.length - 1]
+  if (!last) return undefined
+  if (!last.ok) return 'lost'
+  const prev = own[own.length - 2]
+  if (prev && !prev.ok && prev.tool === last.tool && now - (last.ts + last.ms) < RELOCK_MS) return 'relocked'
+  return undefined
+}
+
+// The tick period: ANIM_MS while any squad member runs (initializing ones included) or
+// the boot plays, and the pane was drawn within SEEN_MS of `now`, else IDLE_MS.
+export function tickMs(agents: readonly JarvisAgent[], now: number, drawnAt: number, booting = false): number {
+  return (runningOf(agents).length > 0 || booting) && now - drawnAt <= SEEN_MS ? ANIM_MS : IDLE_MS
 }
 
 export type JarvisState = {
@@ -686,6 +746,8 @@ export type Cockpit = {
   roster: Map<string, Member>
   // tool calls not yet returned, oldest first
   inflight: JarvisInflight[]
+  // the running subagents whose target is lost or just relocked
+  locks: Map<string, Lock>
   summary: Summary
 }
 
@@ -713,6 +775,12 @@ export function buildCockpit(state: JarvisState, now: number): Cockpit {
     sections,
     roster: rosterOf(state.agents, sections),
     inflight: [...(state.inflight ?? [])].sort((x, y) => x.startedAt - y.startedAt),
+    locks: new Map(
+      runningOf(state.agents).flatMap(a => {
+        const lock = lockOf(state.events, a.id, now)
+        return lock ? [[a.id, lock] as const] : []
+      }),
+    ),
     summary: summarize(state.agents),
   }
 }

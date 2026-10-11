@@ -6,8 +6,10 @@ import type { JarvisAgent, JarvisPage, JarvisUi } from '../types'
 import {
   ANIM_MS,
   IDLE_MS,
+  SEEN_MS,
   SPINNER,
   addAgent,
+  bootStage,
   addEvent,
   buildCockpit,
   describeCall,
@@ -50,6 +52,7 @@ const ui = atom({ plugin: 'jarvis', key: 'ui' } as const, {
   pausedTotal: 0,
 })
 const eventTotal = atom({ plugin: 'jarvis', key: 'eventTotal' } as const, 0)
+const focus = atom({ plugin: 'jarvis', key: 'focus' } as const, '')
 
 // Tool calls that last as long as the agents they start, whose own calls are tracked:
 // counting them in flight would hide a stuck subagent.
@@ -58,25 +61,24 @@ const UNTRACKED = new Set(['Agent', 'Workflow'])
 // The session's one tick, started at session.start: it counts the clock of running
 // rows and turns the spinners; at most once per IDLE_MS it also marks lost subagents
 // and feeds the Herdr row (`slow.at` is when it last did). It runs every ANIM_MS while
-// a subagent runs and the pane is in view, every IDLE_MS otherwise (`pace` picks); with
-// nothing running it only reads state, so nothing redraws.
+// a subagent runs or the boot plays and the pane is in view, every IDLE_MS otherwise
+// (`pace` picks); with nothing running and no boot it only reads state, so nothing redraws.
 async function tickOnce(
   $: Pick<EngineInterface, 'clock' | 'state'>,
   reporter: Reporter | undefined,
   pace: (list: readonly JarvisAgent[], now: number) => void,
   slow: { at: number },
+  booting: (now: number) => boolean,
 ): Promise<void> {
   try {
     const now = await $.clock.now()
     const due = now - slow.at >= IDLE_MS
     let list = await read($, agents)
-    if (runningOf(list).length > 0) {
-      if (due && markStale(list, now) !== list) {
-        await update($, agents, l => [...markStale(l, now)])
-        list = await read($, agents)
-      }
-      if (runningOf(list).length > 0) await update($, tick, t => ({ n: t.n + 1, now }))
+    if (runningOf(list).length > 0 && due && markStale(list, now) !== list) {
+      await update($, agents, l => [...markStale(l, now)])
+      list = await read($, agents)
     }
+    if (runningOf(list).length > 0 || booting(now)) await update($, tick, t => ({ n: t.n + 1, now }))
     pace(list, now)
     if (!due) return
     slow.at = now
@@ -104,6 +106,10 @@ export const register: Register = on => {
   let drawnAt = -Infinity
   // restarts the tick at `ms` when it runs at another period; set at session.start
   let pace: ((ms: number) => void) | undefined
+  // when /jarvis opened the pane: its boot plays until a drawing finds it over
+  let bootAt: number | undefined
+  // the boot animates only while the pane is in view
+  const booting = (now: number) => bootAt !== undefined && now - drawnAt <= SEEN_MS
 
   on('session.start', async ($, e, next) => {
     try {
@@ -140,7 +146,7 @@ export const register: Register = on => {
         timer?.cancel()
         period = ms
         timer = $.clock.every(ms, () =>
-          tickOnce($, reporter, (list, now) => setPace(tickMs(list, now, drawnAt)), slow),
+          tickOnce($, reporter, (list, now) => setPace(tickMs(list, now, drawnAt, booting(now))), slow, booting),
         )
       } catch {
         // no live clock; the pane still shows what happened
@@ -163,8 +169,15 @@ export const register: Register = on => {
 
   on('command.run', { command: 'jarvis' }, async $ => {
     try {
+      bootAt = await $.clock.now()
+    } catch {
+      // no clock: no boot screen
+      bootAt = undefined
+    }
+    try {
       await $.ui.open({ id: PANE, title: 'Jarvis' })
     } catch {
+      bootAt = undefined
       return { text: 'Jarvis 面板開啟失敗' }
     }
 
@@ -349,6 +362,20 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // where the pane's focus ring lands, for the card it locks on
+  on('ui.focus', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    const out = await next(e)
+    if (out.deny === undefined) {
+      try {
+        const key = e.plugin === PANE ? (e.element ?? '') : ''
+        await update($, focus, () => key)
+      } catch {
+        // the card just draws unlocked
+      }
+    }
+    return out
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const elements = $.ui.resolve(e)
     const t = await read($, tick)
@@ -367,9 +394,13 @@ export const register: Register = on => {
       },
       now,
     )
-    // a pane in view with a squad member running animates at once, not at the next idle tick
+    // played once: the first drawing that finds the boot over ends it
+    const boot = bootAt === undefined ? undefined : bootStage(now - bootAt)
+    if (boot === undefined) bootAt = undefined
+    // a pane in view with a squad member running, or booting, animates at once, not at
+    // the next idle tick
     drawnAt = now
-    if (view.running.length > 0) pace?.(ANIM_MS)
+    if (view.running.length > 0 || boot !== undefined) pace?.(ANIM_MS)
     const shown = await read($, ui)
     const total = await read($, eventTotal)
     // what a press changes, written from its onPress (state is not written while drawing)
@@ -388,6 +419,9 @@ export const register: Register = on => {
       rows: e.props.scroll.bodyRows,
       frame: SPINNER[t.n % SPINNER.length] ?? '⠋',
       scan: scanFrame(t.n),
+      beat: t.n,
+      ...(boot ? { boot } : {}),
+      focus: e.props.isFocused ? await read($, focus) : '',
       page: shown.page,
       agentId: shown.agentId,
       paused: shown.paused,

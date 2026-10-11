@@ -55,6 +55,14 @@ import {
   rosterOf,
   scanFrame,
   tickMs,
+  BOOT_MS,
+  FAMILY_COLOR,
+  REACTOR,
+  RELOCK_MS,
+  bootStage,
+  fmtReadout,
+  lockOf,
+  reactorOf,
 } from '../hooks/jarvis'
 import { HEALTH_TEXT, MIN_EVENT_ROWS, RECOVERED, ROLE_COLOR, TINY_COLS, TITLE, WIDE_COLS } from '../hooks/cockpit'
 import {
@@ -523,7 +531,7 @@ describe('hooks', () => {
     lines = linesOf(await draw($))
     const row = lines.find(l => l.includes('find files'))
     expect(row).toContain('✓')
-    expect(row).toContain('5s')
+    expect(row).toContain('0:05')
     expect(row).toContain('165') // input + output only: 110 + 55
     expect(lines.some(l => l.includes('✓1 完成'))).toBe(true)
     await press($, 'tab-stats')
@@ -555,7 +563,7 @@ describe('hooks', () => {
     expect(lines.some(l => l.includes('主 session · Opus 5.5'))).toBe(true)
   })
 
-  test('main chain counts main tool calls, turns gold at 4, resets', async ($, on) => {
+  test('main chain counts main tool calls, turns red at 4, resets', async ($, on) => {
     engine(on)
     await press($, 'tab-stats')
     const chain = async () => {
@@ -569,7 +577,7 @@ describe('hooks', () => {
     expect((await chain()).color).toBeUndefined()
 
     await $.tool.call({ tool: 'Read', file_path: '/x' })
-    expect(await chain()).toMatchObject({ text: '4/4', color: THEME.accent })
+    expect(await chain()).toMatchObject({ text: '4/4', color: THEME.error })
 
     await $.tool.call({ tool: 'Agent', prompt: 'p', description: 'd', subagent_type: 'worker' })
     expect((await chain()).text).toBe('0/4')
@@ -641,15 +649,15 @@ describe('hooks', () => {
     await $.agent.spawn(spawnInput({ description: 'long job', subagentType: 'worker' }))
     const rowOf = async () => linesOf(await draw($)).find(l => l.includes('long job')) ?? ''
 
-    expect(await rowOf()).toContain('0s')
+    expect(await rowOf()).toContain('0:00')
     await clock.advance(1000)
     await clock.advance(1000)
     await clock.advance(1000)
-    expect(await rowOf()).toContain('3s')
+    expect(await rowOf()).toContain('0:03')
 
     await $.turn.complete(complete('agent-4', { durationMs: 3200 }))
     await clock.advance(5000)
-    expect(await rowOf()).toContain('3s') // finished: fixed at the turn's own duration
+    expect(await rowOf()).toContain('0:03') // finished: fixed at the turn's own duration
   })
 
   test('the model card: cost, all-Opus cost and savings', async ($, on) => {
@@ -662,7 +670,7 @@ describe('hooks', () => {
       }),
     )
 
-    expect(linesOf(await draw($)).find(l => l.includes('index the repo'))).toContain('1m05s')
+    expect(linesOf(await draw($)).find(l => l.includes('index the repo'))).toContain('1:05')
     await press($, 'tab-stats')
     const tree = await draw($)
     // haiku 0.42 vs opus 16.8 by hand: 1 - 0.42 / 16.8 = 97.5% saved
@@ -1644,7 +1652,7 @@ describe('cockpit layout', () => {
     await $.turn.start({ text: 'go', turnId: 't1' })
     await clock.advance(STUCK_MS + 1000)
     tree = await draw($, 40, 140)
-    expect(findText(tree, /^WARNING: STALL DETECTED$/)?.props?.color).toBe(THEME.accent)
+    expect(findText(tree, /^WARNING: STALL DETECTED$/)?.props?.color).toBe(THEME.error)
   })
 
   test('events: a failure shows a red [✗], a call over 30 seconds a gold duration', async ($, on) => {
@@ -1806,7 +1814,7 @@ describe('pages', () => {
     expect(blockTitles(await draw($)).slice(2, 5)).toEqual([['子代理'], ['進行中'], ['最近事件']])
   })
 
-  test('the title bar carries the health: nominal primary, loop red, stall gold', async ($, on) => {
+  test('the title bar carries the health: nominal primary, loop and stall red', async ($, on) => {
     const clock = mock.clock(on, { now: 1_000_000 })
     let answer: unknown = { result: {} }
     on('tool.call', async () => answer as never)
@@ -1825,36 +1833,21 @@ describe('pages', () => {
     await $.tool.call({ tool: 'Bash', command: 'go test' })
     await $.turn.start({ text: 'go', turnId: 't1' })
     await clock.advance(STUCK_MS + 1000)
-    expect(await health()).toEqual({ text: 'WARNING: STALL DETECTED', color: THEME.accent })
+    expect(await health()).toEqual({ text: 'WARNING: STALL DETECTED', color: THEME.error })
     // on every page
     await press($, 'tab-stats')
-    expect(await health()).toEqual({ text: 'WARNING: STALL DETECTED', color: THEME.accent })
+    expect(await health()).toEqual({ text: 'WARNING: STALL DETECTED', color: THEME.error })
   })
 
-  test('the title reads J.A.R.V.I.S., its spinner turning only while a squad member runs', async ($, on) => {
-    const clock = engineAll(on)
+  test('the title reads J.A.R.V.I.S.; the arc reactor stands beside it, not the spinner', async ($, on) => {
+    engineAll(on)
     await start($)
-    const bar = async () => (((await draw($)).children ?? [])[0] ?? {}) as Node
-    const spinner = new RegExp(`^[${SPINNER.join('')}]$`)
-    const frame = async () => {
-      const node = findText(await bar(), spinner)
-      return node ? textOf(node) : undefined
-    }
     expect(TITLE).toBe('⌜ J.A.R.V.I.S. ⌝')
-    expect(findText(await bar(), /^⌜ J\.A\.R\.V\.I\.S\. ⌝$/)?.props?.color).toBe(THEME.primary)
-    expect(await frame()).toBeUndefined()
-
     await $.agent.spawn(spawnIn('job', 'worker'))
-    const first = await frame()
-    expect(first).toBeDefined()
-    await clock.advance(ANIM_MS)
-    const second = await frame()
-    expect(second).toBeDefined()
-    expect(second).not.toBe(first)
-
-    await $.turn.complete(complete('agent-1'))
-    expect(await frame()).toBeUndefined()
-    expect(findText(await bar(), /^ALL SYSTEMS NOMINAL$/)).toBeDefined()
+    const bar = (((await draw($)).children ?? [])[0] ?? {}) as Node
+    expect(textOf(bar).startsWith(TITLE)).toBe(true)
+    expect(findText(bar, new RegExp(`^[${SPINNER.join('')}]$`))).toBeUndefined()
+    expect(findText(bar, new RegExp(`^[${REACTOR.join('')}]$`))).toBeDefined()
   })
 })
 
@@ -1895,7 +1888,7 @@ describe('subagent list and detail page', () => {
     expect(text).toContain('scan the repo')
     expect(text).toContain('Haiku 5.5')
     expect(text).toContain('✓ MISSION COMPLETE')
-    expect(findText(tree, /^⌞ 2 ⌟ $/)).toBeDefined()
+    expect(findText(tree, /^⌞ MK-2 ⌟ $/)).toBeDefined()
     expect(text).toContain('4s')
     expect(text).toContain('輸入 1.2k · 輸出 300')
     expect(text).not.toContain('build the pane')
@@ -1923,7 +1916,7 @@ describe('subagent list and detail page', () => {
     tree = await draw($)
     text = linesOf(tree).join('\n')
     expect(text).toContain('ACTIVE')
-    expect(findText(tree, /^⌜ 1 ⌝ $/)).toBeDefined()
+    expect(findText(tree, /^⌜ MK-1 ⌝ $/)).toBeDefined()
     await hotkey($, 's')
     expect(blockTitles(await draw($)).slice(2, 4)).toEqual([['主線'], ['派工流程']])
 
@@ -2151,7 +2144,7 @@ describe('in-flight card', () => {
     expect(findText(tree, /^目前沒有執行中的工具呼叫$/)?.props?.dimColor).toBe(true)
   })
 
-  test('each call shows who runs it (主線, or the squad member ●N), tool, description and how long it has run', async ($, on) => {
+  test('each call shows who runs it (主線, or the squad member ●MK-N), tool, description and how long it has run', async ($, on) => {
     const clock = mock.clock(on, { now: 0 })
     spawner(on)
     const gates: Array<() => void> = []
@@ -2172,7 +2165,7 @@ describe('in-flight card', () => {
     const head = lines.find(l => l.startsWith('進行中')) ?? ''
     expect(head).toContain('2 個')
     expect(head).toMatch(/主線\s+Bash\s+Run the tests\s+42\.0s/)
-    expect(head).toMatch(/●1\s+Grep\s+needle\s+42\.0s/)
+    expect(head).toMatch(/●MK-1\s+Grep\s+needle\s+42\.0s/)
     expect(findText(tree, /^目前沒有執行中的工具呼叫$/)).toBeUndefined()
 
     gates.splice(0).forEach(r => r())
@@ -2261,12 +2254,12 @@ describe('layout fixes', () => {
       const ui = await mountPane($, 40, cols)
       const rows = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('agent-'))
       expect(rows).toHaveLength(3)
-      // each row's texts: the bracketed number 1st, the badge the 7th, the description the
-      // 9th, the status words the 11th, the duration the 13th, the tokens the 15th
+      // each row's texts: the bracketed mark 1st, the badge the 7th, the description the
+      // 9th, the status words the 11th, the elapsed readout the 13th, the tokens the 15th
       const parts = rows.map(r => (r.children as { children: string[] }[]).map(c => c.children.join('')))
       const widthAt = (i: number) => parts.map(p => cellWidth(p[i] ?? ''))
       const startOf = (i: number) => parts.map(p => p.slice(0, i).reduce((n, x) => n + cellWidth(x), 0))
-      expect(parts.map(p => p[0])).toEqual(['⌜ 1 ⌝', '⌞ 2 ⌟', '⌞ 3 ⌟'])
+      expect(parts.map(p => p[0])).toEqual(['⌜ MK ⌝', '⌞ MK ⌟', '⌞ MK ⌟'])
       expect(new Set(widthAt(8)).size).toBe(1)
       expect(new Set(startOf(10)).size).toBe(1)
       expect(new Set(widthAt(10)).size).toBe(1)
@@ -2274,14 +2267,14 @@ describe('layout fixes', () => {
       expect(new Set(widthAt(12)).size).toBe(1)
       expect(new Set(startOf(14)).size).toBe(1)
       // running first, then the latest finished
-      expect(parts.map(p => (p[12] ?? '').trim())).toEqual(['0s', '17s', '10m31s'])
-      expect(parts[2]?.[12]).toBe('10m31s')
-      expect(parts[1]?.[12]).toMatch(/^ +17s$/)
+      expect(parts.map(p => (p[12] ?? '').trim())).toEqual(['0:00', '0:17', '10:31'])
+      expect(parts[2]?.[12]).toBe('10:31')
+      expect(parts[1]?.[12]).toMatch(/^ +0:17$/)
       expect(parts[2]?.[14]).toBe(' 80k')
       expect(parts[1]?.[14]).toBe('4.3k')
       // short status words when the full ones would squeeze the description
       expect(parts.map(p => (p[10] ?? '').trim())).toEqual(
-        cols < 90 ? ['INIT…', 'COMPLETE', 'COMPLETE'] : ['INITIALIZING…', 'MISSION COMPLETE', 'MISSION COMPLETE'],
+        cols < 90 ? ['INIT…', 'COMPLETE', 'COMPLETE'] : ['⎸INITIALIZING⎹', '⎸MISSION COMPLETE⎹', '⎸MISSION COMPLETE⎹'],
       )
       const badges = parts.map(p => (p[6] ?? '').trim())
       expect(badges).toEqual(cols < 90 ? ['Haiku', 'Haiku', 'Haiku'] : ['[Haiku 5.5]', '[Haiku 5.5]', '[Haiku 5.5]'])
@@ -2351,16 +2344,16 @@ describe('beauty pass 2', () => {
     await $.tool.call({ tool: 'Read', file_path: '/b.ts', agentId: 'agent-1' } as never)
     const member = jarvisColor(0)
     let tree = await draw($)
-    expect(frameOf(tree, /^子代理$/)).toBe(THEME.primary)
+    expect(frameOf(tree, /^子代理$/)).toBe(THEME.frame)
     expect(findText(tree, /^子代理$/)?.props?.color).toBe(THEME.primary)
     expect(frameOf(tree, /^進行中$/)).toBe(THEME.muted)
-    expect(frameOf(tree, /^最近事件$/)).toBe(THEME.primary)
-    // the card: its number and type in the member's color; the main loop in gold
-    expect(findText(tree, /^⌜ 1 ⌝$/)?.props?.color).toBe(member)
+    expect(frameOf(tree, /^最近事件$/)).toBe(THEME.frame)
+    // the card: its mark and type in the member's color; the main loop in gold
+    expect(findText(tree, /^⌜ MK ⌝$/)?.props?.color).toBe(member)
     expect(findText(tree, /^verifier\s*$/)?.props?.color).toBe(member)
     expect(findText(tree, /^主線\s+$/)?.props?.color).toBe(THEME.accent)
-    // its events carry its number in its color
-    expect(findText(tree, /^●1\s*$/)?.props?.color).toBe(member)
+    // its events carry its mark in its color
+    expect(findText(tree, /^●MK-1\s*$/)?.props?.color).toBe(member)
 
     // a call in flight turns the card gold, its actor the member's number and color
     hold = true
@@ -2368,7 +2361,7 @@ describe('beauty pass 2', () => {
     while (gates.length < 1) await clock.advance(0)
     tree = await draw($)
     expect(frameOf(tree, /^進行中$/)).toBe(THEME.accent)
-    const named = findAllText(tree, /^●1\s*$/)
+    const named = findAllText(tree, /^●MK-1\s*$/)
     expect(named).toHaveLength(2)
     expect(named.every(n => n.props?.color === member)).toBe(true)
     gates.splice(0).forEach(r => r())
@@ -2378,13 +2371,13 @@ describe('beauty pass 2', () => {
     await hotkey($, '1')
     tree = await draw($)
     expect(frameOf(tree, /^子代理$/)).toBe(member)
-    expect(frameOf(tree, /^事件流$/)).toBe(THEME.primary)
+    expect(frameOf(tree, /^事件流$/)).toBe(THEME.frame)
     await press($, 'tab-stats')
     expect(findText(await draw($, 40, 170), /^verifier$/)?.props?.color).toBe(ROLE_COLOR.verifier)
     await press($, 'tab-log')
     tree = await draw($)
-    expect(frameOf(tree, /^事件流$/)).toBe(THEME.primary)
-    expect(findText(tree, /^●1\s*$/)?.props?.color).toBe(member)
+    expect(frameOf(tree, /^事件流$/)).toBe(THEME.frame)
+    expect(findText(tree, /^●MK-1\s*$/)?.props?.color).toBe(member)
   })
 
   test('the list title counts running, done, failed and lost', async ($, on) => {
@@ -2507,11 +2500,11 @@ describe('beauty pass 4', () => {
     const row = findAllText(tree, /^needle\s*$/)
     expect(row).toHaveLength(1)
     // the type is named once, in the info card; no actor cell in the event row
-    expect(findAllText(tree, /^●1 +$/)).toHaveLength(0)
+    expect(findAllText(tree, /^●MK-1 +$/)).toHaveLength(0)
     expect(findText(tree, /^Explore$/)).toBeDefined()
     await press($, 'tab-log')
     tree = await draw($)
-    expect(findAllText(tree, /^●1 +$/)).toHaveLength(1)
+    expect(findAllText(tree, /^●MK-1 +$/)).toHaveLength(1)
   })
 
   test('one model card at every width: counts beside the names, a rule, then the savings', async ($, on) => {
@@ -2682,35 +2675,35 @@ describe('HUD pages', () => {
     const cardRow = async () => linesOf(await draw($, 30, 120)).find(l => l.includes('wire the hud')) ?? ''
 
     let tree = await draw($, 30, 120)
-    expect(await cardRow()).toContain('INITIALIZING…')
+    expect(await cardRow()).toContain('⎸INITIALIZING⎹')
     expect(findText(tree, new RegExp(`^(${SCAN.join('|')})$`))).toBeDefined()
-    expect(findText(tree, /^⌜ 1 ⌝$/)?.props?.color).toBe(jarvisColor(0))
-    expect(findText(tree, /^INITIALIZING…\s*$/)?.props?.color).toBe(THEME.accent)
+    expect(findText(tree, /^⌜ MK ⌝$/)?.props?.color).toBe(jarvisColor(0))
+    expect(findText(tree, /^\s*⎸INITIALIZING⎹$/)?.props?.color).toBe(THEME.primary)
 
     await clock.advance(INIT_MS)
     await $.tool.call({ tool: 'Bash', command: 'make', agentId: 'agent-1' } as never)
     tree = await draw($, 30, 120)
-    expect(await cardRow()).toMatch(/ACTIVE · Bash\s+2s/)
-    expect(findText(tree, /^ACTIVE · Bash\s*$/)?.props?.color).toBe(THEME.primary)
+    expect(await cardRow()).toMatch(/⎸ACTIVE⎹ Bash\s+0:02/)
+    expect(findText(tree, /^\s*⎸ACTIVE⎹ Bash$/)?.props?.color).toBe(THEME.accent)
     expect(findText(tree, new RegExp(`^[${SPINNER.join('')}]$`))).toBeDefined()
 
     await $.turn.complete(complete('agent-1', { durationMs: 7000 }))
     tree = await draw($, 30, 120)
-    expect(await cardRow()).toMatch(/MISSION COMPLETE\s+7s/)
-    expect(findText(tree, /^⌞ 1 ⌟$/)?.props?.color).toBe(THEME.muted)
-    expect(findText(tree, /^⌜ 1 ⌝$/)).toBeUndefined()
+    expect(await cardRow()).toMatch(/⎸MISSION COMPLETE⎹\s+0:07/)
+    expect(findText(tree, /^⌞ MK ⌟$/)?.props?.color).toBe(THEME.muted)
+    expect(findText(tree, /^⌜ MK ⌝$/)).toBeUndefined()
     expect(findText(tree, /^wire the hud\s*$/)?.props?.color).toBe(THEME.muted)
-    expect(findText(tree, /^MISSION COMPLETE\s*$/)?.props?.color).toBe(THEME.muted)
+    expect(findText(tree, /^\s*⎸MISSION COMPLETE⎹$/)?.props?.color).toBe(THEME.muted)
 
     // a failed turn reads MISSION FAILED in red
     await $.agent.spawn(spawnIn('break it', 'worker'))
     await $.turn.complete(complete('agent-2', { reason: 'aborted', isAborted: true }))
     tree = await draw($, 30, 120)
     expect(linesOf(tree).find(l => l.includes('break it'))).toContain('MISSION FAILED')
-    expect(findText(tree, /^MISSION FAILED\s*$/)?.props?.color).toBe(THEME.error)
+    expect(findText(tree, /^\s*⎸MISSION FAILED⎹$/)?.props?.color).toBe(THEME.error)
   })
 
-  test('a failure the same actor retries with success reads ↻ RECOVERED in gold; others stay a red [✗]', async ($, on) => {
+  test('a failure the same actor retries with success reads ↻ RECOVERED in near white; others stay a red [✗]', async ($, on) => {
     mock.clock(on, { now: 0 })
     spawner(on)
     let fail = false
@@ -2731,7 +2724,7 @@ describe('HUD pages', () => {
       expect(lines.find(l => l.includes('first try'))).toContain(RECOVERED)
       expect(lines.find(l => l.includes('missing.ts'))).toContain('[✗]')
       expect(lines.find(l => l.includes('missing.ts'))).not.toContain('RECOVERED')
-      expect(findText(tree, /^↻ RECOVERED\s*$/)?.props?.color).toBe(THEME.accent)
+      expect(findText(tree, /^↻ RECOVERED\s*$/)?.props?.color).toBe(THEME.bright)
       expect(findText(tree, /^\[✗\]\s*$/)?.props?.color).toBe(THEME.error)
       expect(findAllText(tree, /RECOVERED/)).toHaveLength(1)
     }
@@ -2771,7 +2764,7 @@ describe('HUD pages', () => {
     expect(findAllText(tree, /^[on]\d+\.ts\s*$/)).toHaveLength(40)
   })
 
-  test('at 50 columns no page runs past the width', async ($, on) => {
+  test('at 40 and 50 columns no page runs past the width', async ($, on) => {
     const day1 = new Date(2026, 9, 10, 22, 0, 0).getTime()
     const clock = mock.clock(on, { now: day1 })
     spawner(on)
@@ -2789,22 +2782,390 @@ describe('HUD pages', () => {
     await clock.advance(2 * 60 * MIN)
     await $.tool.call({ tool: 'Bash', command: 'x', description: 'again', agentId: 'agent-2' } as never)
 
-    const cols = 50
-    for (const page of ['tab-now', 'tab-log', 'tab-stats']) {
-      await press($, page, 40, cols)
-      const tree = await draw($, 40, cols)
-      expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
+    for (const cols of [40, 50]) {
+      for (const page of ['tab-now', 'tab-log', 'tab-stats']) {
+        await press($, page, 40, cols)
+        const tree = await draw($, 40, cols)
+        expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
+      }
+      await press($, 'tab-now', 40, cols)
+      const ui = await mountPane($, 40, cols)
+      const rows = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('agent-'))
+      expect(rows.length).toBeGreaterThan(0)
+      const descs = ['盤點 dotfiles agents 目錄的所有檔案與狀態', 'review a', '一個很長很長的中文任務描述']
+      for (const r of rows) {
+        const parts = (r.children as { children: string[] }[]).map(c => c.children.join(''))
+        expect(parts.reduce((n, t) => n + cellWidth(t), 0)).toBeLessThanOrEqual(cols - 4 - 3)
+        // the description stays readable; the type and the model badge give way to it
+        const desc = parts.map(t => t.trim()).find(t => t !== '' && descs.some(d => d.startsWith(t.replace(/…$/, ''))))
+        expect(cellWidth(desc ?? '')).toBeGreaterThanOrEqual(8)
+        for (const gone of ['Explore', 'verifier', 'general-purpose', 'Haiku', '├─', '└─']) {
+          expect(parts.some(t => t.trim() === gone)).toBe(false)
+        }
+      }
+      await ui.unmount()
+      await hotkey($, '1', 40, cols)
+      expect(Math.max(...rowWidths(await draw($, 40, cols)))).toBeLessThanOrEqual(cols)
     }
-    await press($, 'tab-now', 40, cols)
-    const ui = await mountPane($, 40, cols)
-    const rows = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('agent-'))
-    expect(rows.length).toBeGreaterThan(0)
-    for (const r of rows) {
-      const width = (r.children as { children: string[] }[]).reduce((n, c) => n + cellWidth(c.children.join('')), 0)
-      expect(width).toBeLessThanOrEqual(cols - 4 - 3)
-    }
+  })
+})
+
+describe('Mark 42', () => {
+  const rgb = (hex: string) => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)) as [number, number, number]
+
+  // the subagent rows the now page draws, as the Buttons the mounted pane holds
+  const agentRows = async ($: Engine, rows = 40, cols = 80) => {
+    const ui = await mountPane($, rows, cols)
+    const found = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('agent-'))
     await ui.unmount()
-    await hotkey($, '1', 40, cols)
-    expect(Math.max(...rowWidths(await draw($, 40, cols)))).toBeLessThanOrEqual(cols)
+    return found.map(b => ({
+      key: b.key ?? '',
+      parts: (b.children as { props: Record<string, unknown>; children: string[] }[]).map(c => ({
+        t: c.children.join(''),
+        props: c.props ?? {},
+      })),
+    }))
+  }
+
+  const rowText = (parts: { t: string }[]) => parts.map(p => p.t).join('')
+
+  test('the palette lives in THEME; no squad color is a theme tone or reads as the alarm red', () => {
+    expect(THEME).toMatchObject({
+      frame: '#2B9FC0',
+      primary: '#5CE1FF',
+      accent: '#F2B84B',
+      bright: '#E6FBFF',
+      error: '#FF3B30',
+      muted: '#1F4E5F',
+      suitRed: '#C8102E',
+      suitGold: '#E8B04B',
+    })
+    expect(JARVIS_PALETTE).toHaveLength(6)
+    for (const c of Object.values(THEME)) expect(JARVIS_PALETTE).not.toContain(c)
+    for (const c of JARVIS_PALETTE) {
+      const [r, g, b] = rgb(c)
+      expect(r > 200 && g < 140 && b < 140).toBe(false)
+    }
+  })
+
+  test('the title is suit red with gold corners; health warnings are red; RECOVERED is bright', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000_000 })
+    let answer: unknown = { result: {} }
+    on('tool.call', async () => answer as never)
+    on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
+    let tree = await draw($, 40, 120)
+    const bar = ((tree.children ?? [])[0] ?? {}) as Node
+    expect(findText(bar, /^J\.A\.R\.V\.I\.S\.$/)?.props?.color).toBe(THEME.suitRed)
+    expect(findText(bar, /^⌜ $/)?.props?.color).toBe(THEME.suitGold)
+    expect(findText(bar, /^ ⌝$/)?.props?.color).toBe(THEME.suitGold)
+
+    answer = { isError: true, result: 'x', text: 'x' }
+    await $.tool.call({ tool: 'Bash', command: 'go test', description: 'first' })
+    answer = { result: {} }
+    await $.tool.call({ tool: 'Bash', command: 'go test', description: 'second' })
+    tree = await draw($, 40, 120)
+    expect(findText(tree, /^↻ RECOVERED\s*$/)?.props?.color).toBe(THEME.bright)
+
+    await $.turn.start({ text: 'go', turnId: 't1' })
+    await clock.advance(STUCK_MS + 1000)
+    tree = await draw($, 40, 120)
+    expect(findText(tree, /^WARNING: STALL DETECTED$/)?.props?.color).toBe(THEME.error)
+  })
+
+  test('MK numbers: rows leave the digit to the hotkey, events and the detail title read MK-N', async ($, on) => {
+    engineAll(on)
+    for (let i = 1; i <= 10; i += 1) await $.agent.spawn(spawnIn(`job ${i}`, 'worker'))
+    await $.tool.call({ tool: 'Read', file_path: '/w/one.ts', agentId: 'agent-1' } as never)
+
+    const rows = await agentRows($, 40, 100)
+    expect(rows).toHaveLength(MAX_NUMBERED)
+    // the engine draws `N:` before a plain Button's label: the row draws no digit of its own
+    for (const r of rows) expect(r.parts[0]?.t).toBe('⌜ MK ⌝')
+    // the tenth has no hotkey: its number stands where the engine's would
+    const tree = await draw($, 40, 100)
+    expect(findText(tree, /^10:$/)).toBeDefined()
+
+    // events: ●MK-1 with room, ●1 when narrow
+    expect(findText(tree, /^●MK-1\s*$/)?.props?.color).toBe(jarvisColor(0))
+    expect(findText(await draw($, 40, 40), /^●1\s*$/)).toBeDefined()
+    expect(findText(await draw($, 40, 40), /MK-/)).toBeUndefined()
+
+    await hotkey($, '1')
+    expect(findText(await draw($), /^⌜ MK-1 ⌝ $/)).toBeDefined()
+  })
+
+  test('the arc reactor beside the title pulses while a squad member runs, and rests dark when idle', async ($, on) => {
+    // pure: a pulse of width-1 braille, amber to bright; idle one dark glyph
+    const live = REACTOR.map((_, i) => reactorOf(i, true))
+    expect(new Set(live.map(f => f.glyph)).size).toBeGreaterThan(1)
+    expect(new Set(live.map(f => f.color))).toEqual(new Set([THEME.accent, THEME.bright]))
+    for (const f of [...live, reactorOf(0, false)]) {
+      expect(cellWidth(f.glyph)).toBe(1)
+      const c = f.glyph.codePointAt(0) ?? 0
+      expect(c >= 0x2800 && c <= 0x28ff).toBe(true)
+    }
+    expect(reactorOf(3, false)).toEqual(reactorOf(0, false))
+    expect(reactorOf(0, false).color).toBe(THEME.muted)
+
+    const clock = engineAll(on)
+    await start($)
+    const glyphs = REACTOR.join('') + reactorOf(0, false).glyph
+    const reactor = async () => {
+      const bar = (((await draw($)).children ?? [])[0] ?? {}) as Node
+      const node = findText(bar, new RegExp(`^[${glyphs}]$`))
+      return { glyph: node ? textOf(node) : undefined, color: node?.props?.color }
+    }
+    const idle = await reactor()
+    expect(idle).toEqual({ glyph: reactorOf(0, false).glyph, color: THEME.muted })
+    await clock.advance(ANIM_MS * 3)
+    expect(await reactor()).toEqual(idle)
+
+    await $.agent.spawn(spawnIn('job', 'worker'))
+    const a = await reactor()
+    await clock.advance(ANIM_MS)
+    const b = await reactor()
+    expect(a.glyph).toBeDefined()
+    expect(b.glyph).not.toBe(a.glyph)
+    expect([THEME.accent, THEME.bright]).toContain(a.color)
+
+    await $.turn.complete(complete('agent-1'))
+    expect(await reactor()).toEqual(idle)
+  })
+
+  test('boot: /jarvis plays ONLINE, then the manifest loading to 100%, once, ticking as it goes', async ($, on) => {
+    // pure: stages by the time since the pane opened
+    expect(bootStage(0)).toEqual({ phase: 'online' })
+    expect(bootStage(BOOT_MS * 0.5)).toMatchObject({ phase: 'loading' })
+    const pcts = [0.35, 0.5, 0.7, 0.95].map(f => bootStage(BOOT_MS * f)).map(s => (s?.phase === 'loading' ? s.pct : -1))
+    expect(pcts).toEqual([...pcts].sort((x, y) => x - y))
+    expect(pcts.at(-1)).toBe(100)
+    expect(bootStage(BOOT_MS)).toBeUndefined()
+
+    const clock = engineAll(on)
+    const count = ticks(on)
+    on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+    on('command.run', async () => ({}))
+    await start($)
+    // a pane drawn before the command shows no boot
+    expect(linesOf(await draw($)).join('\n')).not.toContain('ONLINE')
+
+    await $.command.run({
+      command: 'jarvis',
+      args: '',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: true, columns: 100 },
+    })
+    let text = linesOf(await draw($)).join('\n')
+    expect(text).toContain('J.A.R.V.I.S. ONLINE')
+    expect(text).not.toContain('LOADING')
+    expect(text).not.toContain('子代理')
+
+    const before = count.n
+    await clock.advance(BOOT_MS * 0.6)
+    expect(count.n - before).toBeGreaterThanOrEqual(3) // the boot animates with nothing running
+    text = linesOf(await draw($)).join('\n')
+    expect(text).toMatch(/LOADING CREW MANIFEST… +\d+%/)
+    expect(text).toContain('█')
+    for (const cols of [40, 50]) expect(Math.max(...rowWidths(await draw($, 30, cols)))).toBeLessThanOrEqual(cols)
+
+    await clock.advance(BOOT_MS * 0.5)
+    text = linesOf(await draw($)).join('\n')
+    expect(text).not.toContain('ONLINE')
+    expect(text).toContain('子代理')
+    // played once: later draws stay on the page, and the idle tick stops
+    const done = count.n
+    await clock.advance(5000)
+    expect(count.n).toBe(done)
+    expect(linesOf(await draw($)).join('\n')).not.toContain('ONLINE')
+  })
+
+  test('target lost: a squad member whose latest call failed reads ⌖ TARGET LOST, then ↻ RELOCKED, then ACTIVE', async ($, on) => {
+    // pure
+    const e = (tool: string, ok: boolean, ts: number) => ev({ actor: 'w', isMain: false, tool, ok, ts, ms: 100 })
+    expect(lockOf([], 'w', 0)).toBeUndefined()
+    expect(lockOf([e('Bash', false, 0)], 'w', 0)).toBe('lost')
+    expect(lockOf([e('Bash', false, 0)], 'other', 0)).toBeUndefined()
+    expect(lockOf([e('Bash', false, 0), e('Bash', true, 1000)], 'w', 1100)).toBe('relocked')
+    expect(lockOf([e('Bash', false, 0), e('Bash', true, 1000)], 'w', 1100 + RELOCK_MS)).toBeUndefined()
+    // another tool working is no relock; the lost target is simply gone
+    expect(lockOf([e('Bash', false, 0), e('Read', true, 1000)], 'w', 1100)).toBeUndefined()
+
+    const clock = mock.clock(on, { now: 0 })
+    spawner(on)
+    let fail = false
+    on('tool.call', async () => (fail ? { isError: true, result: 'x', text: 'x' } : { result: {} }) as never)
+    await $.agent.spawn(spawnIn('hunt the bug', 'worker'))
+    await clock.advance(INIT_MS)
+    const row = async () => (await agentRows($, 40, 120))[0]?.parts ?? []
+
+    fail = true
+    await $.tool.call({ tool: 'Bash', command: 'go test', agentId: 'agent-1' } as never)
+    let parts = await row()
+    expect(rowText(parts)).toContain('⌖ TARGET LOST')
+    expect(cellWidth('⌖')).toBe(1)
+    expect(parts.find(p => /TARGET LOST/.test(p.t))?.props['color']).toBe(THEME.error)
+    expect(parts[0]?.props['color']).toBe(THEME.error)
+
+    fail = false
+    await $.tool.call({ tool: 'Bash', command: 'go test', agentId: 'agent-1' } as never)
+    parts = await row()
+    expect(rowText(parts)).toContain('↻ RELOCKED')
+    expect(rowText(parts)).not.toContain('TARGET LOST')
+    expect(parts.find(p => /RELOCKED/.test(p.t))?.props['color']).toBe(THEME.bright)
+    expect(parts[0]?.props['color']).toBe(jarvisColor(0))
+
+    await clock.advance(RELOCK_MS)
+    parts = await row()
+    expect(rowText(parts)).toContain('⎸ACTIVE⎹')
+    expect(rowText(parts)).not.toContain('RELOCKED')
+  })
+
+  test('elapsed reads like an altimeter: a bright readout with a dark ELAPSED label, the label dropped when narrow', async ($, on) => {
+    expect(fmtReadout(0)).toBe('0:00')
+    expect(fmtReadout(587_000)).toBe('9:47')
+    expect(fmtReadout(3_725_000)).toBe('1:02:05')
+
+    engineAll(on)
+    await $.agent.spawn(spawnIn('long haul', 'worker'))
+    await $.turn.complete(complete('agent-1', { durationMs: 587_000, usage: usage(HAIKU, 4000, 300, 0, 0) }))
+    await $.agent.spawn(spawnIn('now', 'worker'))
+
+    let rows = await agentRows($, 40, 120)
+    const done = rows.find(r => rowText(r.parts).includes('long haul'))?.parts ?? []
+    const at = done.findIndex(p => p.t.trim() === '9:47')
+    expect(at).toBeGreaterThan(-1)
+    expect(done[at + 1]?.t).toBe(' ELAPSED')
+    const live = rows.find(r => rowText(r.parts).includes('now'))?.parts ?? []
+    expect(live.find(p => p.t.trim() === '0:00')?.props['color']).toBe(THEME.bright)
+    expect(live.find(p => p.t === ' ELAPSED')?.props['color']).toBe(THEME.muted)
+
+    rows = await agentRows($, 40, 50)
+    for (const r of rows) expect(rowText(r.parts)).not.toContain('ELAPSED')
+    expect(rows.some(r => r.parts.some(p => p.t.trim() === '9:47'))).toBe(true)
+  })
+
+  test('the status, elapsed and tokens sit in one column flush right; the description stays left', async ($, on) => {
+    const clock = engineAll(on)
+    await $.agent.spawn(spawnIn('盤點 dotfiles agents 目錄的所有檔案', 'Explore'))
+    await $.agent.spawn(spawnIn('short', 'clerk'))
+    await $.agent.spawn(spawnIn('third', 'verifier'))
+    await $.turn.complete(complete('agent-1', { durationMs: 631_000, usage: usage(HAIKU, 70_000, 10_000, 0, 0) }))
+    await clock.advance(INIT_MS)
+    for (const cols of [50, 64, 90, 120]) {
+      const width = cols - 4 - 3
+      const rows = (await agentRows($, 40, cols)).map(r => r.parts)
+      expect(rows).toHaveLength(3)
+      for (const parts of rows) expect(cellWidth(rowText(parts))).toBe(width)
+      // the tokens close the row
+      expect(rowText(rows[2] ?? []).endsWith(' 80k')).toBe(true)
+      // the status words end at one column, whatever their length
+      const statusEnd = rows.map(parts => {
+        const i = parts.findIndex(p => /ACTIVE|COMPLETE|INIT/.test(p.t))
+        return parts.slice(0, i).reduce((n, p) => n + cellWidth(p.t), 0) + cellWidth((parts[i]?.t ?? '').trimEnd())
+      })
+      expect(new Set(statusEnd).size).toBe(1)
+      // the full labels wear a thin frame when there is room; short words when not
+      const status = rows.map(parts => parts.find(p => /ACTIVE|COMPLETE|INIT/.test(p.t))?.t.trim())
+      if (cols >= 120) expect(status).toEqual(['⎸ACTIVE⎹', '⎸ACTIVE⎹', '⎸MISSION COMPLETE⎹'])
+      if (cols <= 50) expect(status).toEqual(['ACTIVE', 'ACTIVE', 'COMPLETE'])
+    }
+    for (const ch of ['⎸', '⎹']) expect(cellWidth(ch)).toBe(1)
+  })
+
+  test('narrow cards drop the badge, then the type, then tighten, then the tokens: the description keeps 8 cells', async ($, on) => {
+    engineAll(on)
+    await $.agent.spawn(spawnIn('summarize the release notes', 'Explore'))
+    await $.turn.complete(complete('agent-1', { durationMs: 631_000, usage: usage(HAIKU, 4000, 300, 0, 0) }))
+    await $.agent.spawn(spawnIn('index the whole repo', 'worker'))
+    const shown = (parts: { t: string }[]) =>
+      parts.map(p => p.t.trim()).find(t => /^(summarize|index)/.test(t)) ?? ''
+    // wide: type and badge stay
+    let rows = await agentRows($, 40, 120)
+    expect(rows.every(r => r.parts.some(p => p.t.trim() === '[Haiku 5.5]'))).toBe(true)
+    // 40 columns, a card still initializing: one cell of its sweep, tight brackets
+    rows = await agentRows($, 40, 40)
+    expect(rows).toHaveLength(2)
+    for (const r of rows) {
+      expect(cellWidth(rowText(r.parts))).toBe(40 - 4 - 3)
+      expect(cellWidth(shown(r.parts))).toBeGreaterThanOrEqual(8)
+      expect(r.parts.some(p => /^(worker|Explore|Haiku)\s*$/.test(p.t))).toBe(false)
+    }
+    expect(rows.map(r => r.parts[0]?.t)).toEqual(['⌜MK⌝', '⌞MK⌟'])
+    const sweep = rows[0]?.parts[2]?.t ?? ''
+    expect(cellWidth(sweep)).toBe(1)
+    expect(SCAN.some(f => f.startsWith(sweep))).toBe(true)
+  })
+
+  test('at 40 columns a recovered mark stays whole as ↻ and no other row gains an ellipsis', async ($, on) => {
+    mock.clock(on, { now: 0 })
+    let fail = false
+    on('tool.call', async () => (fail ? { isError: true, result: 'x', text: 'x' } : { result: {} }) as never)
+    fail = true
+    await $.tool.call({ tool: 'Bash', command: 'go test', description: 'try' })
+    fail = false
+    await $.tool.call({ tool: 'Bash', command: 'go test', description: 'again' })
+    await $.tool.call({ tool: 'Read', file_path: '/a/ok.ts' })
+    for (const tab of ['tab-now', 'tab-log']) {
+      await press($, tab, 40, 40)
+      const tree = await draw($, 40, 40)
+      const marks = findAllText(tree, /^(↻|\[✓\]|\[✗\])\s*$/).map(n => textOf(n))
+      expect(marks).toEqual(['↻  ', '[✓]', '[✓]'])
+      expect(findAllText(tree, /RECOVERED/)).toHaveLength(0)
+      const rows = linesOf(tree).filter(l => /ok\.ts|try|again/.test(l))
+      expect(rows).toHaveLength(3)
+      for (const r of rows) expect(r).not.toContain('…')
+      expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(40)
+    }
+  })
+
+  test('a pane idle past SEEN_MS animates at once when it is drawn with a squad member running', async ($, on) => {
+    const clock = engineAll(on)
+    const count = ticks(on)
+    await start($)
+    await draw($)
+    await clock.advance(SEEN_MS + 1000)
+    await $.agent.spawn(spawnIn('late job', 'worker'))
+    await draw($)
+    const base = count.n
+    await clock.advance(ANIM_MS * 3)
+    expect(count.n - base).toBe(3)
+  })
+
+  test('the focused row is locked on: one dark bar under the engine inverse, the MK in gold, nothing else recolored', async ($, on) => {
+    engineAll(on)
+    on('ui.focus', async () => ({}))
+    await $.agent.spawn(spawnIn('first', 'worker'))
+    await $.agent.spawn(spawnIn('second', 'worker'))
+    const plain = await agentRows($, 40, 80)
+
+    await $.ui.focus({ component: 'Pane', requestId: 'jarvis', plugin: 'jarvis', element: 'agent-2', origin: { kind: 'person' } })
+    const rows = await agentRows($, 40, 80)
+    const locked = rows.find(r => r.key === 'agent-2')?.parts ?? []
+    const other = rows.find(r => r.key === 'agent-1')?.parts ?? []
+    // the engine inverts a focused Button: every text, the spaces too, takes the dark blue
+    // as its color so the bar is one piece; what it shows goes in the background
+    expect(locked.every(p => p.props['color'] === THEME.muted && typeof p.props['backgroundColor'] === 'string')).toBe(true)
+    expect(locked[0]?.t).toBe('► MK ◄')
+    expect(locked[0]?.props['backgroundColor']).toBe(THEME.accent)
+    const plainLocked = plain.find(r => r.key === 'agent-2')?.parts ?? []
+    expect(locked.slice(1).map(p => p.props['backgroundColor'])).toEqual(
+      plainLocked.slice(1).map(p => (p.props['color'] as string | undefined) ?? THEME.primary),
+    )
+    expect(cellWidth(rowText(locked))).toBe(cellWidth(rowText(plainLocked)))
+    expect(other.some(p => 'backgroundColor' in p.props)).toBe(false)
+    expect(other[0]?.t).toBe('⌜ MK ⌝')
+    // the ring leaves the rows: no lock
+    await $.ui.focus({ component: 'Pane', requestId: 'jarvis', origin: { kind: 'person' } })
+    expect((await agentRows($, 40, 80)).some(r => r.parts.some(p => 'backgroundColor' in p.props))).toBe(false)
+    // a finished card's dark blue would vanish into the bar: it shows ice blue
+    await $.turn.complete(complete('agent-1'))
+    await $.ui.focus({ component: 'Pane', requestId: 'jarvis', plugin: 'jarvis', element: 'agent-2', origin: { kind: 'person' } })
+    const finished = (await agentRows($, 40, 80)).find(r => r.key === 'agent-2')?.parts ?? []
+    expect(rowText(finished)).toContain('first')
+    expect(finished.some(p => p.props['backgroundColor'] === THEME.muted)).toBe(false)
+    expect(finished.find(p => p.t.trim() === 'first')?.props['backgroundColor']).toBe(THEME.primary)
+    // an unfocused pane draws no lock either
+    await $.ui.focus({ component: 'Pane', requestId: 'jarvis', plugin: 'jarvis', element: 'agent-2', origin: { kind: 'person' } })
+    expect(findText(await draw($), /► MK ◄/)).toBeUndefined()
   })
 })

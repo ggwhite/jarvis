@@ -20,17 +20,19 @@ import {
   fmtDur,
   fmtK,
   fmtMs,
+  fmtReadout,
   fmtUsd,
   nameFamilyOf,
   padCells,
   phaseOf,
+  reactorOf,
   shareLabel,
   shortModel,
   tokenTotal,
   tokensOf,
   WORKFLOW_TYPE,
 } from './jarvis'
-import type { Cockpit, EventRow, Health, ListUnit, ModelShare, Outcome, Phase, Role, RoleStat } from './jarvis'
+import type { BootStage, Cockpit, EventRow, Health, ListUnit, Lock, ModelShare, Outcome, Phase, Role, RoleStat } from './jarvis'
 
 // At this many columns the stats page sets the main and dispatch cards side by side.
 export const WIDE_COLS = 120
@@ -51,10 +53,12 @@ const HOTKEY_W = 3
 const MAX_ROWS = 500
 // Cells a chrome Button adds around its label: `[ ` and ` ]`.
 const BUTTON_CHROME = 4
+// From this many columns an event's actor reads `●MK-1`; below, `●1`.
+const MK_ACTOR_COLS = 64
 
 type Ui = Pick<ReturnType<EngineInterface['ui']['resolve']>, 'Box' | 'Text' | 'Button'>
 
-export type Seg = { t: string; color?: string; dim?: boolean; bold?: boolean; inverse?: boolean }
+export type Seg = { t: string; color?: string; bg?: string; dim?: boolean; bold?: boolean; inverse?: boolean }
 
 type Block = { node: RenderElement; h: number }
 
@@ -69,6 +73,12 @@ export type Ctx = {
   // the spinner's frame, and the scan sweep's, at this tick
   frame: string
   scan: string
+  // the tick count: the arc reactor's pulse
+  beat: number
+  // the boot screen while it plays
+  boot?: BootStage
+  // the key of the Button the pane's focus ring is on, '' for none
+  focus: string
   page: JarvisPage
   // the subagent the detail page is about
   agentId: string
@@ -80,14 +90,16 @@ export type Ctx = {
   pause: () => void
 }
 
+const FRAME = THEME.frame
 const PRIMARY = THEME.primary
 const ACCENT = THEME.accent
+const BRIGHT = THEME.bright
 const ERROR = THEME.error
 const MUTED = THEME.muted
 
 export const TITLE = '⌜ J.A.R.V.I.S. ⌝'
 
-const HEALTH_COLOR: Record<Health, string> = { ok: PRIMARY, loop: ERROR, stuck: ACCENT }
+const HEALTH_COLOR: Record<Health, string> = { ok: PRIMARY, loop: ERROR, stuck: ERROR }
 
 export const HEALTH_TEXT: Record<Health, string> = {
   ok: 'ALL SYSTEMS NOMINAL',
@@ -97,35 +109,76 @@ export const HEALTH_TEXT: Record<Health, string> = {
 
 // One color per role in the dispatch flow; the main loop is the accent gold everywhere.
 export const ROLE_COLOR: Record<Role, string> = {
-  Explore: '#00E5FF',
-  clerk: '#7CFF6B',
-  worker: '#4D9FFF',
-  verifier: '#FF6EC7',
-  fork: '#B388FF',
-  workflow: '#FF9F43',
+  Explore: '#3EC6FF',
+  clerk: '#5EE6A8',
+  worker: '#9B8CFF',
+  verifier: '#FF8FB1',
+  fork: '#E6A7FF',
+  workflow: '#D4E157',
   other: MUTED,
 }
 export const MAIN_COLOR = ACCENT
 
 // The frame colors of the now, log and detail pages' cards.
-const LIST_COLOR = PRIMARY
-const EVENT_COLOR = PRIMARY
+const LIST_COLOR = FRAME
+const EVENT_COLOR = FRAME
 const FLIGHT_COLOR = ACCENT
 const IDLE_COLOR = MUTED
 
 export const RECOVERED = '↻ RECOVERED'
+// The recovered mark an event row too narrow for the word draws.
+const RECOVERED_SHORT = '↻'
 
-// A squad member's status words: full, and the short form a narrow card falls back to.
-const PHASE_TEXT: Record<Phase, { full: string; short: string }> = {
-  init: { full: 'INITIALIZING…', short: 'INIT…' },
-  active: { full: 'ACTIVE', short: 'ACTIVE' },
-  complete: { full: 'MISSION COMPLETE', short: 'COMPLETE' },
-  failed: { full: 'MISSION FAILED', short: 'FAILED' },
-  lost: { full: 'SIGNAL LOST', short: 'LOST' },
+// A squad member's status words: full (the detail page), the label a card frames thinly
+// when it has room, and the short form a narrow card falls back to.
+const PHASE_TEXT: Record<Phase, { full: string; label: string; short: string }> = {
+  init: { full: 'INITIALIZING…', label: 'INITIALIZING', short: 'INIT…' },
+  active: { full: 'ACTIVE', label: 'ACTIVE', short: 'ACTIVE' },
+  complete: { full: 'MISSION COMPLETE', label: 'MISSION COMPLETE', short: 'COMPLETE' },
+  failed: { full: 'MISSION FAILED', label: 'MISSION FAILED', short: 'FAILED' },
+  lost: { full: 'SIGNAL LOST', label: 'SIGNAL LOST', short: 'LOST' },
 }
 
-// The least a squad card's description keeps before its status words go short.
+// A running squad member's target: lost while its latest call failed, relocked a moment
+// after the retry worked; these words stand in for its status.
+const LOCK_TEXT: Record<Lock, { full: string; short: string }> = {
+  lost: { full: '⌖ TARGET LOST', short: '⌖ LOST' },
+  relocked: { full: '↻ RELOCKED', short: '↻ LOCKED' },
+}
+
+// The thin frame round a card's full status label.
+const frameLabel = (text: string) => `⎸${text}⎹`
+
+// The tag after a card's elapsed readout, left out when narrow.
+const ELAPSED = ' ELAPSED'
+
+// A card's corner brackets round its mark: the number is the hotkey's, which the engine
+// draws before a plain Button's label; the focused card's are the lock-on arrows. A
+// compact card draws them tight.
+const BRACKET = {
+  live: { wide: '⌜ MK ⌝', compact: '⌜MK⌝' },
+  done: { wide: '⌞ MK ⌟', compact: '⌞MK⌟' },
+  locked: { wide: '► MK ◄', compact: '►MK◄' },
+} as const
+
+// How a squad card fits its width, roomiest first: the ELAPSED tag, the full status words,
+// the model badge, the type, the spaced brackets and full scan icon, the tokens. The first
+// whose description keeps its least is drawn, else NARROWEST.
+type RowFit = { tag: boolean; full: boolean; badge: boolean; name: boolean; compact: boolean; tokens: boolean }
+const ROW_FITS: RowFit[] = [
+  { tag: true, full: true, badge: true, name: true, compact: false, tokens: true },
+  { tag: false, full: true, badge: true, name: true, compact: false, tokens: true },
+  { tag: false, full: false, badge: true, name: true, compact: false, tokens: true },
+  { tag: false, full: false, badge: false, name: true, compact: false, tokens: true },
+  { tag: false, full: false, badge: false, name: false, compact: false, tokens: true },
+  { tag: false, full: false, badge: false, name: false, compact: true, tokens: true },
+]
+const NARROWEST: RowFit = { tag: false, full: false, badge: false, name: false, compact: true, tokens: false }
+
+// The least a squad card's description keeps before its status words go short, and
+// beside the ELAPSED tag.
 const DESC_MIN = 8
+const TAG_DESC_MIN = 20
 
 const TABS: { page: JarvisPage; hotkey: string; label: string }[] = [
   { page: 'now', hotkey: 'n', label: '現況' },
@@ -141,7 +194,8 @@ const sp = (n: number): Seg => ({ t: ' '.repeat(Math.max(0, n)) })
 
 const segsWidth = (segs: readonly Seg[]): number => segs.reduce((n, s) => n + cellWidth(s.t), 0)
 
-// Cuts a line to `width` cells; the segment that overruns ends in an ellipsis.
+// Cuts a line to `width` cells; the segment that overruns ends in an ellipsis, unless
+// only its trailing padding was cut.
 function clip(segs: readonly Seg[], width: number): Seg[] {
   const out: Seg[] = []
   let left = width
@@ -152,7 +206,8 @@ function clip(segs: readonly Seg[], width: number): Seg[] {
       out.push(s)
       left -= w
     } else {
-      out.push({ ...s, t: fitCells(s.t, left) })
+      const bare = s.t.trimEnd()
+      out.push({ ...s, t: cellWidth(bare) <= left ? padCells(bare, left) : fitCells(s.t, left) })
       break
     }
   }
@@ -237,6 +292,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   const style = (s: Seg) => ({
     ...(s.color ? { color: s.color } : {}),
+    ...(s.bg ? { backgroundColor: s.bg } : {}),
     ...(s.dim ? { dimColor: true } : {}),
     ...(s.bold ? { bold: true } : {}),
     ...(s.inverse ? { inverse: true } : {}),
@@ -318,13 +374,15 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return family ? { t: badgeText(model), color: FAMILY_COLOR[family] } : { t: badgeText(model), dim: true }
   }
 
-  // who ran a call: the main loop by name, a listed squad member as `●N` in its color
-  const ACTOR_W = 5
+  // who ran a call: the main loop by name, a listed squad member as `●MK-N` (narrow, `●N`)
+  // in its color
+  const mkActor = cols >= MK_ACTOR_COLS
+  const ACTOR_W = mkActor ? 6 : 5
   const actorSeg = (actor: string): Seg => {
     if (actor === MAIN_ACTOR) return { t: padCells('主線', ACTOR_W), color: MAIN_COLOR, bold: true }
     const member = view.roster.get(actor)
     return member
-      ? { t: padCells(`●${member.n}`, ACTOR_W), color: member.color }
+      ? { t: padCells(mkActor ? `●MK-${member.n}` : `●${member.n}`, ACTOR_W), color: member.color }
       : { t: padCells('●?', ACTOR_W), color: MUTED }
   }
 
@@ -335,11 +393,16 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   // ---- 標題列 -------------------------------------------------------------
 
-  // the title, its spinner turning while a squad member runs, and the health on the right
+  // the title in the suit's red and gold, the arc reactor pulsing while a squad member
+  // runs, and the health on the right
   const titleBar = (): Block => {
+    const reactor = reactorOf(ctx.beat, view.running.length > 0)
     const left: Seg[] = [
-      { t: TITLE, color: PRIMARY, bold: true },
-      ...(view.running.length > 0 ? [sp(1), { t: ctx.frame, color: PRIMARY }] : []),
+      { t: '⌜ ', color: THEME.suitGold, bold: true },
+      { t: 'J.A.R.V.I.S.', color: THEME.suitRed, bold: true },
+      { t: ' ⌝', color: THEME.suitGold, bold: true },
+      sp(1),
+      { t: reactor.glyph, color: reactor.color },
     ]
     const health: Seg = { t: HEALTH_TEXT[view.health], color: HEALTH_COLOR[view.health], bold: true }
     return { h: 1, node: lineNode(leftRight(left, [health], cols)) }
@@ -398,16 +461,19 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     outcome === 'ok'
       ? { t: padCells('[✓]', markW), color: PRIMARY }
       : outcome === 'recovered'
-        ? { t: padCells(RECOVERED, markW), color: ACCENT, bold: true }
+        ? { t: padCells(markW < cellWidth(RECOVERED) ? RECOVERED_SHORT : RECOVERED, markW), color: BRIGHT, bold: true }
         : { t: padCells('[✗]', markW), color: ERROR, bold: true }
+
+  // the description's cells in an event row `inner` wide, its mark `markW`
+  const eventDescW = (inner: number, toolW: number, markW: number, withActor: boolean) =>
+    inner - (8 + 1 + (withActor ? ACTOR_W + 1 : 0) + toolW + 1) - (1 + 6 + 1 + markW)
 
   // `withActor` false leaves out who ran the call: the detail page's events are all one agent's
   const eventLine = (ev: JarvisEvent, outcome: Outcome, inner: number, toolW: number, markW: number, withActor: boolean): Seg[] => {
-    const timeW = 8
     const durW = 6
-    const descW = Math.max(4, inner - (timeW + 1 + (withActor ? ACTOR_W + 1 : 0) + toolW + 1) - (1 + durW + 1 + markW))
+    const descW = Math.max(4, eventDescW(inner, toolW, markW, withActor))
     const dur = eventDuration(ev.ms)
-    const tone: Partial<Seg> = outcome === 'failed' ? { color: ERROR } : outcome === 'recovered' ? { color: ACCENT } : {}
+    const tone: Partial<Seg> = outcome === 'failed' ? { color: ERROR } : outcome === 'recovered' ? { color: BRIGHT } : {}
     return [
       { t: fmtClock(ev.ts), dim: true },
       sp(1),
@@ -442,7 +508,10 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const shown = eventRows(list).slice(-Math.max(1, room - 3))
     const evs = shown.flatMap(r => (r.kind === 'event' ? [r] : []))
     const toolW = toolWidth(evs.map(r => r.ev.tool))
-    const markW = evs.some(r => r.outcome === 'recovered') ? cellWidth(RECOVERED) : 3
+    // the recovered word when the description keeps its least beside it, else the short mark
+    const wordW = cellWidth(RECOVERED)
+    const markW =
+      evs.some(r => r.outcome === 'recovered') && eventDescW(inner, toolW, wordW, withActor) >= DESC_MIN ? wordW : 3
     const line = (r: EventRow): Seg[] =>
       r.kind === 'break' ? breakLine(r.ts, inner) : eventLine(r.ev, r.outcome, inner, toolW, markW, withActor)
     const body: Line[] = shown.length === 0 ? [[{ t: empty, dim: true }]] : shown.map(line)
@@ -466,7 +535,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const labelW = 8
     const barW = Math.max(4, Math.min(CHAIN_BAR, inner - labelW - 1 - 1 - 5))
     const fill = Math.min(barW, Math.round((Math.min(m.chain, CHAIN_WARN) / CHAIN_WARN) * barW))
-    const barColor = warn ? ACCENT : PRIMARY
+    const barColor = warn ? ERROR : PRIMARY
     const chain: Seg[] = [
       { t: padCells('連續呼叫', labelW), dim: true },
       sp(1),
@@ -474,7 +543,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       { t: '░'.repeat(barW - fill), dim: true },
       sp(1),
       warn
-        ? { t: `${m.chain}/${CHAIN_WARN}`, color: ACCENT, bold: true }
+        ? { t: `${m.chain}/${CHAIN_WARN}`, color: ERROR, bold: true }
         : { t: `${m.chain}/${CHAIN_WARN}` },
     ]
 
@@ -500,7 +569,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
     return {
       w,
-      color: PRIMARY,
+      color: FRAME,
       // the wide card sits beside the taller dispatch flow and spaces its parts out
       lines: wide
         ? [leftRight(head, [state], inner), BLANK, chain, BLANK, outcome('成功', m.ok, PRIMARY), outcome('失敗', m.fail, ERROR), BLANK, last]
@@ -593,7 +662,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     savedPct === undefined
       ? { t: '未計價', dim: true, bold: true }
       : savedPct >= 0
-        ? { t: `省${savedPct}%`, color: PRIMARY, bold: true }
+        ? { t: `省${savedPct}%`, color: BRIGHT, bold: true }
         : { t: `多花${-savedPct}%`, color: ERROR, bold: true }
   const savedSub: Seg =
     savedPct === undefined
@@ -631,8 +700,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         : [verdict, leftRight([], figures, inner)]
     return {
       w,
-      color: PRIMARY,
-      lines: [[title('模型', PRIMARY)], ...body, [{ t: '─'.repeat(inner), dim: true }], ...savings],
+      color: FRAME,
+      lines: [[title('模型', PRIMARY)], ...body, [{ t: '─'.repeat(inner), color: FRAME }], ...savings],
     }
   }
 
@@ -680,11 +749,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   const memberOf = (a: JarvisAgent) => view.roster.get(a.id) ?? { n: 0, color: PRIMARY }
 
-  // the corner-bracketed number a squad card opens with: ⌜ N ⌝ while it runs, ⌞ N ⌟ after
-  const bracket = (a: JarvisAgent, numW: number): string => {
-    const n = padCells(String(memberOf(a).n), numW, 'right')
-    return a.status === 'running' ? `⌜ ${n} ⌝` : `⌞ ${n} ⌟`
-  }
+  // a squad member's mark: MK-1, MK-2, ...
+  const mkOf = (a: JarvisAgent) => `MK-${memberOf(a).n}`
 
   const agentBlock = (shownFinished: number, room: number): Block => {
     const inner = cols - 4
@@ -697,81 +763,130 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       ...(view.stale.length > 0 ? [{ t: `?${view.stale.length} 失聯`, color: MUTED }] : []),
     ]
     const right = counts.flatMap((x, i): Seg[] => (i === 0 ? [x] : [{ t: ' · ', dim: true }, x]))
-    const head: Line = leftRight([title('子代理', LIST_COLOR)], right, inner)
+    const head: Line = leftRight([title('子代理', PRIMARY)], right, inner)
     if (view.sections.length === 0) {
       return cardRow([{ w: cols, color: LIST_COLOR, lines: [head, [{ t: '還沒有派工。派出 subagent 後這裡會即時顯示。', dim: true }]] }])
     }
 
     const items = listItems(shownFinished)
     const agentsShown = items.flatMap(x => (x.kind === 'agent' ? [x] : []))
-    const numW = Math.max(1, ...agentsShown.map(x => String(memberOf(x.a).n).length))
-    const bracketW = 4 + numW
     const phase = (a: JarvisAgent) => phaseOf(a, view.now)
-    const icon = (a: JarvisAgent): string => {
+    // a compact card's scan sweep is one cell of it
+    const icon = (a: JarvisAgent, compact: boolean): string => {
       const p = phase(a)
-      return p === 'init' ? ctx.scan : p === 'active' ? ctx.frame : p === 'complete' ? '✓' : p === 'failed' ? '✗' : '?'
+      if (p === 'init') return compact ? [...ctx.scan][0] ?? '' : ctx.scan
+      return p === 'active' ? ctx.frame : p === 'complete' ? '✓' : p === 'failed' ? '✗' : '?'
     }
-    const iconW = Math.max(1, ...agentsShown.map(x => cellWidth(icon(x.a))))
+    const iconW = (compact: boolean) => Math.max(1, ...agentsShown.map(x => cellWidth(icon(x.a, compact))))
     const nameW = Math.min(15, Math.max(4, ...agentsShown.filter(x => !x.member).map(x => cellWidth(typeLabel(x.a.type)))))
     const badgeW = Math.max(...agentsShown.map(x => cellWidth(badgeText(x.a.model))))
-    const durOf = (a: JarvisAgent) => fmtDur(elapsedMs(a, view.now))
+    const readoutOf = (a: JarvisAgent) => fmtReadout(elapsedMs(a, view.now))
     const metaOf = (a: JarvisAgent) => {
       const n = tokenTotal(tokensOf(a))
       return a.status === 'running' && n === 0 ? '' : fmtK(n)
     }
     const statusOf = (a: JarvisAgent, full: boolean): string => {
+      const lock = view.locks.get(a.id)
+      if (lock) return full ? LOCK_TEXT[lock].full : LOCK_TEXT[lock].short
       const p = phase(a)
-      const words = full ? PHASE_TEXT[p].full : PHASE_TEXT[p].short
-      return p === 'active' && full && a.tool !== '' ? `${words} · ${fitCells(a.tool, 10)}` : words
+      if (!full) return PHASE_TEXT[p].short
+      const label = frameLabel(PHASE_TEXT[p].label)
+      return p === 'active' && a.tool !== '' ? `${label} ${fitCells(a.tool, 10)}` : label
     }
-    const durW = Math.max(...agentsShown.map(x => cellWidth(durOf(x.a))))
+    const readW = Math.max(...agentsShown.map(x => cellWidth(readoutOf(x.a))))
     const metaW = Math.max(...agentsShown.map(x => cellWidth(metaOf(x.a))))
-    const width = inner - HOTKEY_W
-    const fixedW = bracketW + 1 + iconW + 1 + nameW + 1 + badgeW + 1 + (1 + durW + 2 + metaW) + 1
     const statusW = (full: boolean) => Math.max(...agentsShown.map(x => cellWidth(statusOf(x.a, full))))
-    // the status words go short when the full ones would squeeze the description
-    const full = width - fixedW - statusW(true) >= DESC_MIN
+    const width = inner - HOTKEY_W
+    // the left part before the description, and the right column: status, elapsed, tokens
+    const leftW = (f: RowFit) =>
+      cellWidth(f.compact ? BRACKET.live.compact : BRACKET.live.wide) +
+      1 +
+      iconW(f.compact) +
+      1 +
+      (f.name ? nameW + 1 : 0) +
+      (f.badge ? badgeW + 1 : 0)
+    const rightW = (f: RowFit) =>
+      1 +
+      statusW(f.full) +
+      1 +
+      readW +
+      (f.tag ? cellWidth(ELAPSED) : 0) +
+      (f.tokens ? (f.compact ? 1 : 2) + metaW : 0)
+    const descOf = (f: RowFit) => width - leftW(f) - rightW(f)
+    const rowFit = ROW_FITS.find(f => descOf(f) >= (f.tag ? TAG_DESC_MIN : DESC_MIN)) ?? NARROWEST
+    const { full, tag, compact } = rowFit
     const stW = statusW(full)
-    const descW = Math.max(4, width - fixedW - stW)
+    const descW = Math.max(0, descOf(rowFit))
+    const icW = iconW(compact)
+    const bracketOf = (kind: keyof typeof BRACKET) => (compact ? BRACKET[kind].compact : BRACKET[kind].wide)
+
+    // the focused card, locked on: under the engine's inverse every text's color becomes
+    // the bar's background, so each takes the dark blue and puts what it shows behind it;
+    // what is dark blue already shows ice blue, or it would vanish into the bar
+    const lockOn = (segs: readonly Seg[]): Seg[] =>
+      segs.map((s, i) => ({
+        t: i === 0 ? bracketOf('locked') : s.t,
+        color: MUTED,
+        bg: i === 0 ? ACCENT : s.color === undefined || s.color === MUTED ? PRIMARY : s.color,
+        ...(s.bold || i === 0 ? { bold: true } : {}),
+      }))
 
     const row = (a: JarvisAgent, member?: 'mid' | 'last'): Line => {
       const p = phase(a)
       const { n, color } = memberOf(a)
       const live = p === 'init' || p === 'active'
+      const lock = view.locks.get(a.id)
       // a finished, failed or lost card is all in the muted tone
       const tone: Partial<Seg> = live ? {} : { color: MUTED }
-      const statusColor = p === 'init' ? ACCENT : p === 'active' ? PRIMARY : p === 'failed' ? ERROR : MUTED
+      const statusColor =
+        lock === 'lost'
+          ? ERROR
+          : lock === 'relocked'
+            ? BRIGHT
+            : p === 'init'
+              ? PRIMARY
+              : p === 'active'
+                ? ACCENT
+                : p === 'failed'
+                  ? ERROR
+                  : MUTED
       const name: Seg = member
         ? { t: padCells(member === 'last' ? '└─' : '├─', nameW), color: live ? ROLE_COLOR.workflow : MUTED }
         : { t: padCells(typeLabel(a.type), nameW), bold: true, color: live ? color : MUTED }
       const b = badge(a.model)
-      const segs = clip(
-        [
-          { t: bracket(a, numW), color: live ? color : MUTED, bold: live },
-          sp(1),
-          { t: padCells(icon(a), iconW), color: live ? color : p === 'failed' ? ERROR : MUTED },
-          sp(1),
-          name,
-          sp(1),
-          { ...b, t: padCells(b.t, badgeW), ...tone },
-          sp(1),
-          { t: padCells(a.description, descW), ...tone },
-          sp(1),
-          { t: padCells(statusOf(a, full), stW), color: statusColor, bold: live },
-          sp(1),
-          { t: padCells(durOf(a), durW, 'right'), ...tone },
-          sp(2),
-          { t: padCells(metaOf(a), metaW, 'right'), ...(live ? { dim: true } : tone) },
-        ],
-        width,
-      )
-      if (n < 1 || n > MAX_NUMBERED) return [sp(HOTKEY_W), ...segs]
+      const left: Seg[] = [
+        {
+          t: bracketOf(a.status === 'running' ? 'live' : 'done'),
+          color: lock === 'lost' ? ERROR : live ? color : MUTED,
+          bold: live,
+        },
+        sp(1),
+        { t: padCells(icon(a, compact), icW), color: live ? color : p === 'failed' ? ERROR : MUTED },
+        sp(1),
+        ...(rowFit.name ? [name, sp(1)] : []),
+        ...(rowFit.badge ? [{ ...b, t: padCells(b.t, badgeW), ...tone }, sp(1)] : []),
+        { t: padCells(a.description, descW), ...tone },
+      ]
+      const rightCol: Seg[] = [
+        sp(1),
+        { t: padCells(statusOf(a, full), stW, 'right'), color: statusColor, bold: live },
+        sp(1),
+        { t: padCells(readoutOf(a), readW, 'right'), ...(live ? { color: BRIGHT, bold: true } : tone) },
+        ...(tag ? [{ t: ELAPSED, color: MUTED }] : []),
+        ...(rowFit.tokens
+          ? [sp(compact ? 1 : 2), { t: padCells(metaOf(a), metaW, 'right'), ...(live ? { dim: true } : tone) }]
+          : []),
+      ]
+      // too narrow for the left part whole: it gives way, the right column stays
+      const segs = [...clip(left, Math.max(0, width - segsWidth(rightCol))), ...clip(rightCol, width)]
+      if (n < 1 || n > MAX_NUMBERED) return [{ t: padCells(n < 1 ? '' : `${n}:`, HOTKEY_W), dim: true }, ...segs]
+      const key = `agent-${n}`
       return {
         h: 1,
         node: (
           <Box flexDirection="row">
-            <Button key={`agent-${n}`} hotkey={String(n)} plain onPress={() => ctx.open(a.id)}>
-              {texts(segs)}
+            <Button key={key} hotkey={String(n)} plain onPress={() => ctx.open(a.id)}>
+              {texts(ctx.focus === key ? lockOn(segs) : segs)}
             </Button>
           </Box>
         ),
@@ -862,22 +977,26 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const words = PHASE_TEXT[p].full
     const status: Seg[] =
       p === 'init'
-        ? [{ t: `${ctx.scan} ${words}`, color: ACCENT, bold: true }]
+        ? [{ t: `${ctx.scan} ${words}`, color: PRIMARY, bold: true }]
         : p === 'active'
-          ? [{ t: `${ctx.frame} ${words}`, color: PRIMARY, bold: true }, ...(a.tool !== '' ? [{ t: ` · ${a.tool}`, dim: true }] : [])]
+          ? [{ t: `${ctx.frame} ${words}`, color: ACCENT, bold: true }, ...(a.tool !== '' ? [{ t: ` · ${a.tool}`, dim: true }] : [])]
           : p === 'complete'
             ? [{ t: `✓ ${words}`, color: MUTED }]
             : p === 'failed'
               ? [{ t: `✗ ${words}`, color: ERROR }]
               : [{ t: `? ${words}`, color: MUTED }]
     const lines: Line[] = [
-      [{ t: `${bracket(a, String(memberOf(a).n).length)} `, color, bold: true }, title('子代理', color), { t: ` · ${typeLabel(a.type)}`, bold: true, color }],
+      [
+        { t: `${a.status === 'running' ? `⌜ ${mkOf(a)} ⌝` : `⌞ ${mkOf(a)} ⌟`} `, color, bold: true },
+        title('子代理', color),
+        { t: ` · ${typeLabel(a.type)}`, bold: true, color },
+      ],
       field('類型', [{ t: a.type, bold: true, color }]),
       field('模型', [{ ...badge(a.model), t: shortModel(a.model) }]),
       field('狀態', status),
       field('任務', [{ t: a.description }]),
       field('開始', [{ t: fmtClock(a.runStartedAt) }]),
-      field('耗時', [{ t: fmtDur(elapsedMs(a, view.now)) }]),
+      field('耗時', [{ t: fmtDur(elapsedMs(a, view.now)), color: BRIGHT, bold: true }]),
       field('Token', [{ t: `輸入 ${tokens(a.input)} · 輸出 ${tokens(a.output)}` }]),
       // cache traffic is most of a subagent's input: shown so the counts match the cost
       ...(a.cacheRead + a.cacheWrite > 0
@@ -905,6 +1024,30 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return cardRow([{ w: cols, color, lines }])
   }
 
+  // ---- 開機 ---------------------------------------------------------------
+
+  const bootBlock = (stage: BootStage): Block => {
+    const lines: Seg[][] = [BLANK, centered([{ t: 'J.A.R.V.I.S. ONLINE', color: BRIGHT, bold: true }], cols)]
+    if (stage.phase === 'loading') {
+      const barW = Math.max(4, Math.min(24, cols - 8))
+      const fill = Math.round((stage.pct / 100) * barW)
+      lines.push(
+        centered([{ t: 'LOADING CREW MANIFEST… ', color: PRIMARY }, { t: `${stage.pct}%`, color: ACCENT, bold: true }], cols),
+        centered([{ t: '█'.repeat(fill), color: ACCENT }, { t: '░'.repeat(barW - fill), color: MUTED }], cols),
+      )
+    }
+    return { h: lines.length, node: <Box flexDirection="column">{lines.map(lineNode)}</Box> }
+  }
+
+  if (ctx.boot) {
+    return (
+      <Box flexDirection="column">
+        {titleBar().node}
+        {bootBlock(ctx.boot).node}
+      </Box>
+    )
+  }
+
   // ---- 組版 ---------------------------------------------------------------
 
   const blocks: Block[] = [titleBar(), tabBar()]
@@ -923,13 +1066,13 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     while (shown < finishedUnits.length && listHeight(shown + 1) + recentH(recent) <= room) shown += 1
     recent = Math.max(recent, Math.min(total, room - listHeight(shown) - 3))
     blocks.push(agentBlock(shown, room - recentH(recent)), flight)
-    blocks.push(eventCard([title('最近事件', EVENT_COLOR)], view.events, recentH(recent), '還沒有工具呼叫', false))
+    blocks.push(eventCard([title('最近事件', PRIMARY)], view.events, recentH(recent), '還沒有工具呼叫', false))
   } else if (page === 'log') {
     const total = view.events.length
     const list = ctx.paused ? view.events.slice(0, Math.max(0, total - ctx.fresh)) : view.events
     const head = leftRight(
       [
-        title('事件流', EVENT_COLOR),
+        title('事件流', PRIMARY),
         ...(ctx.paused ? [sp(1), { t: `⏸ 已暫停 · 新增 ${ctx.fresh} 則`, color: ACCENT, bold: true }] : []),
       ],
       [{ t: `${total}/${MAX_EVENTS} 則`, dim: true }],
@@ -940,7 +1083,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     blocks.push(detailBlock(selected))
     const own = view.events.filter(ev => ev.actor === selected.id)
     const head = leftRight(
-      [title('事件流', EVENT_COLOR), { t: ' · 這個 subagent', dim: true }],
+      [title('事件流', PRIMARY), { t: ' · 這個 subagent', dim: true }],
       [{ t: `${own.length} 則`, dim: true }],
       cols - 4,
     )
