@@ -63,7 +63,8 @@ export function statsHeight(mode: FleetMode, g: GaugeForm, s: StatsShape, roles 
   return top + dispatchRows(roles)
 }
 
-// The biggest ring that fits; at the smallest, the dispatch roles cut to the rows left.
+// The biggest ring that fits; at the smallest, the dispatch roles cut to the rows left,
+// unless there is just one: its own row says more than `… 還有 1 種`.
 export function planStats(s: StatsShape): StatsPlan {
   const mode = modeOf(s.cols)
   const forms = GAUGES[mode]
@@ -72,6 +73,7 @@ export function planStats(s: StatsShape): StatsPlan {
     if (height <= s.room) return { mode, gauge, height }
   }
   const gauge = forms[forms.length - 1] ?? 'bar'
+  if (s.roles <= 1) return { mode, gauge, height: statsHeight(mode, gauge, s) }
   const fixed = statsHeight(mode, gauge, s, 0)
   const roleCut = Math.min(s.roles - 1, Math.max(1, s.room - fixed))
   return { mode, gauge, height: fixed + roleCut, roleCut }

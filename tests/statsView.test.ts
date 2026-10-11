@@ -84,6 +84,11 @@ describe('stats plan', () => {
     })
   })
 
+  test('a single role is never cut: short of rows it keeps its own row, counted in the height', () => {
+    expect(planStats({ cols: 80, room: 10, roles: 1, models: 3 })).toEqual({ mode: 'mid', gauge: 'bar', height: 19 })
+    expect(planStats({ cols: 80, room: 10, roles: 0, models: 3 })).toEqual({ mode: 'mid', gauge: 'bar', height: 18 })
+  })
+
   test('whatever the size, a plan that fits stays inside the room', () => {
     for (const cols of [40, 63, 64, 80, 99, 100, 140]) {
       for (let room = 8; room <= 60; room += 1) {
