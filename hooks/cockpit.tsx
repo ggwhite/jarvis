@@ -80,10 +80,12 @@ const ROLE_BEAT_W = 10
 const ROLE_EXTRA_W = 12
 // The dispatch card's model column at its widest: `Sonnet+`, a longer unknown name cut.
 const MODEL_COL_MAX = 8
-// The now page's rows, in this order: every running subagent; the latest MIN_FINISHED
-// finished (a workflow run is one unit); the standby suit; the in-flight card; the recent
-// events, MIN_RECENT of them or the card left out; then more finished, then more events.
+// The now page's rows, in this order: every running subagent; the standby suit over the
+// latest MIN_SUIT_FINISHED finished (a workflow run is one unit), or without it the latest
+// MIN_FINISHED; the in-flight card; the recent events, MIN_RECENT of them or the card left
+// out; then more finished, then more events.
 export const MIN_FINISHED = 8
+const MIN_SUIT_FINISHED = 3
 export const MIN_RECENT = 3
 // The suit is drawn only with this many cells beside its canvas (or, booting, its art).
 const SUIT_MARGIN = 4
@@ -1270,8 +1272,9 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // the rows the standby suit takes, its readouts under it when they do not fit beside
   const suitH = SUIT_BLOCK_ROWS + (scanSide ? 0 : SUIT_UNDER_ROWS)
 
-  // a main-loop call out quickens the suit's breath and keeps it awake
-  const suitBusy = view.inflight.some(f => f.actor === MAIN_ACTOR)
+  // a main-loop call out, or a squad member running (not waiting), quickens the suit's breath
+  // and keeps it awake
+  const suitBusy = view.inflight.some(f => f.actor === MAIN_ACTOR) || view.running.some(a => a.waiting !== true)
   const suitPaused = ctx.suitPaused === true
   const suitRests = suitResting({
     now: view.now,
@@ -1445,19 +1448,18 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   let standby = false
   if (page === 'now') {
     // in MIN_FINISHED's order: every running subagent and the least finished, whatever the
-    // room; the suit when nothing runs and it fits; the in-flight card; the recent events'
-    // least or no card; then the rows left over, finished subagents first, then events
+    // room; the suit when it fits over its least finished; the in-flight card; the recent
+    // events' least or no card; then the rows left over, finished subagents first, then events
     // the suit makes room for the in-flight card at its idle height and caps it there while
     // drawn: calls coming and going neither take the suit away nor stop its tick
     const capped = inflightBlock(idleFlight.length)
     // event rows: a dated rule takes a row like an event
     const total = eventRows(view.events).length
     const recentH = (n: number) => Math.max(1, n) + 3
-    const least = Math.min(finishedUnits.length, MIN_FINISHED)
-    // a suit on show when a crew member deploys stays CREW_SHOW_MS more, if the running fit
-    const stays = view.running.length === 0 || crewDeployed(view.now, ctx.deployedAt)
-    const suit = stays && suitFits && left() - listHeight(least) - suitH - capped.h >= 0 ? standbyBlock() : undefined
+    const suitLeast = Math.min(finishedUnits.length, MIN_SUIT_FINISHED)
+    const suit = suitFits && left() - listHeight(suitLeast) - suitH - capped.h >= 0 ? standbyBlock() : undefined
     standby = suit !== undefined
+    const least = suit ? suitLeast : Math.min(finishedUnits.length, MIN_FINISHED)
     const flight = suit ? capped : inflightBlock()
     const room = left() - flight.h - (suit?.h ?? 0)
     let recent = Math.min(total, MIN_RECENT)

@@ -1946,13 +1946,13 @@ describe('subagent list and detail page', () => {
     // jobs 1-8 finish; 9-11 still run
     for (let i = 1; i <= 8; i += 1) await $.turn.complete(complete(`agent-${i}`))
 
-    const ui = await mountPane($, 40, 100)
+    const ui = await mountPane($, 60, 100)
     const buttons = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('agent-'))
     expect(buttons).toHaveLength(11)
     expect(buttons.every(b => b.props['plain'] === true)).toBe(true)
     await ui.unmount()
     // the running jobs first, in spawn order, then the finished ones; each keeps its number
-    const rows = await agentRows($, 40, 100)
+    const rows = await agentRows($, 60, 100)
     expect(rows.slice(0, 4).map(r => [r.key, r.hotkey, /job \d+/.exec(r.text)?.[0]])).toEqual([
       ['agent-9', '9', 'job 9'],
       ['agent-10', undefined, 'job 10'],
@@ -1962,12 +1962,12 @@ describe('subagent list and detail page', () => {
     expect(rows.filter(r => r.hotkey !== undefined).map(r => r.hotkey)).toEqual(['9', '8', '7', '6', '5', '4', '3', '2', '1'])
     // past the digits the number stands in the Button, where the engine draws a hotkey
     expect(rows[1]?.parts.slice(0, 2).map(x => x.t)).toEqual(['10:', '⌜ MK ⌝'])
-    await press($, 'agent-10', 40, 100)
-    expect(linesOf(await draw($, 40, 100)).join('\n')).toContain('job 10')
-    await press($, 'tab-now', 40, 100)
+    await press($, 'agent-10', 60, 100)
+    expect(linesOf(await draw($, 60, 100)).join('\n')).toContain('job 10')
+    await press($, 'tab-now', 60, 100)
 
-    // a pane tall enough lists them all
-    const tree = await draw($, 40, 100)
+    // a pane tall enough lists them all under the suit
+    const tree = await draw($, 60, 100)
     const order = findAllText(tree, /^job \d+\s*$/).map(n => textOf(n).trim())
     expect(order).toEqual(['job 9', 'job 10', 'job 11', 'job 8', 'job 7', 'job 6', 'job 5', 'job 4', 'job 3', 'job 2', 'job 1'])
     expect(findText(tree, /^… 還有/)).toBeUndefined()
@@ -2161,8 +2161,8 @@ describe('workflow grouping', () => {
     for (const id of ['agent-2', 'agent-3', 'agent-4']) await $.turn.complete(complete(id))
 
     const tree = await draw($, 40, 100)
-    // the card's rows in order, each as its texts joined
-    const card = (((tree.children ?? [])[2] as Node).children ?? [])[0] as Node
+    // the card's rows in order, each as its texts joined; the suit over it
+    const card = (tree.children ?? []).map(b => ((b as Node).children ?? [])[0] as Node).find(c => textOf(c).includes('wf_aa7b…')) as Node
     const rows = (card.children ?? []).map(textOf)
     const head = rows.findIndex(l => l.includes('workflow') && l.includes('wf_aa7b…'))
     expect(head).toBeGreaterThan(-1)
@@ -2260,7 +2260,8 @@ describe('in-flight card', () => {
     while (gates.length < 2) await clock.advance(0)
     await clock.advance(42_000)
 
-    const tree = await draw($, 30, 100)
+    // too short for the suit: the card whole, not capped under it
+    const tree = await draw($, 24, 100)
     const lines = linesOf(tree)
     const head = lines.find(l => l.startsWith('進行中')) ?? ''
     expect(head).toContain('2 個')
@@ -2271,7 +2272,7 @@ describe('in-flight card', () => {
 
     gates.splice(0).forEach(r => r())
     await Promise.all(calls)
-    expect(findText(await draw($, 30, 100), /^目前沒有執行中的工具呼叫$/)).toBeDefined()
+    expect(findText(await draw($, 24, 100), /^目前沒有執行中的工具呼叫$/)).toBeDefined()
   })
 })
 
@@ -2442,7 +2443,8 @@ describe('beauty pass 2', () => {
     await $.tool.call({ tool: 'Read', file_path: '/a.ts' })
     await $.tool.call({ tool: 'Read', file_path: '/b.ts', agentId: 'agent-1' } as never)
     const member = jarvisColor(0)
-    let tree = await draw($)
+    // tall enough for the suit over every card
+    let tree = await draw($, 50)
     expect(frameOf(tree, /^子代理$/)).toBe(THEME.frame)
     expect(findText(tree, /^子代理$/)?.props?.color).toBe(THEME.primary)
     expect(frameOf(tree, /^進行中$/)).toBe(THEME.muted)
@@ -2458,7 +2460,7 @@ describe('beauty pass 2', () => {
     hold = true
     const call = $.tool.call({ tool: 'Grep', pattern: 'x', agentId: 'agent-1' } as never)
     while (gates.length < 1) await clock.advance(0)
-    tree = await draw($)
+    tree = await draw($, 50)
     expect(frameOf(tree, /^進行中$/)).toBe(THEME.accent)
     const named = findAllText(tree, /^MK-1\s*$/)
     expect(named).toHaveLength(2)
@@ -2992,7 +2994,8 @@ describe('Mark 42', () => {
     for (let i = 1; i <= 10; i += 1) await $.agent.spawn(spawnIn(`job ${i}`, 'worker'))
     await $.tool.call({ tool: 'Read', file_path: '/w/one.ts', agentId: 'agent-1' } as never)
 
-    const rows = await agentRows($, 40, 100)
+    // tall enough for the suit and the recent events
+    const rows = await agentRows($, 60, 100)
     expect(rows).toHaveLength(10)
     const digits = rows.filter(r => r.hotkey !== undefined)
     expect(digits).toHaveLength(MAX_NUMBERED)
@@ -3000,13 +3003,13 @@ describe('Mark 42', () => {
     for (const r of digits) expect(r.parts[0]?.t).toBe('⌜ MK ⌝')
     // the tenth has no hotkey: its number stands where the engine's would
     expect(rows.find(r => r.key === 'agent-10')?.parts.map(x => x.t).slice(0, 2)).toEqual(['10:', '⌜ MK ⌝'])
-    const tree = await draw($, 40, 100)
+    const tree = await draw($, 60, 100)
     expect(findText(tree, /^10:$/)?.props?.color).toBe(THEME.frame)
 
     // events: MK-1 with room, 1 when narrow; no ● before it (a fallback font gaps after it)
     expect(findText(tree, /^MK-1\s*$/)?.props?.color).toBe(jarvisColor(0))
-    expect(findText(await draw($, 40, 40), /^1\s*$/)?.props?.color).toBe(jarvisColor(0))
-    expect(findText(await draw($, 40, 40), /MK-/)).toBeUndefined()
+    expect(findText(await draw($, 60, 40), /^1\s*$/)?.props?.color).toBe(jarvisColor(0))
+    expect(findText(await draw($, 60, 40), /MK-/)).toBeUndefined()
     expect(findText(tree, /●/)).toBeUndefined()
 
     await hotkey($, '1')
@@ -3266,8 +3269,9 @@ describe('Mark 42', () => {
       ['agent-2', '2', true, '⌜ MK ⌝'],
       ['agent-1', '1', true, '⌞ MK ⌟'],
     ])
-    // nothing is recolored for the focus any more: no backgrounds, no lock-on arrows
-    const texts = await ui.findAll({ type: 'Text' })
+    // nothing is recolored for the focus any more: no backgrounds, no lock-on arrows (the
+    // suit's half blocks paint their own)
+    const texts = (await ui.findAll({ type: 'Text' })).filter(t => !/[▀▄]/.test(t.text ?? ''))
     expect(texts.some(t => 'backgroundColor' in (t.props ?? {}))).toBe(false)
     expect(texts.some(t => /[►◄]/.test(t.text ?? ''))).toBe(false)
     await ui.unmount()
@@ -3917,11 +3921,11 @@ describe('standby suit', () => {
     expect(findText(tree, /^AWAITING ORDERS, SIR\.$/)?.props?.['color']).toBe(THEME.primary)
   })
 
-  test('crew docked after a dispatch; none while a subagent runs', async ($, on) => {
+  test('crew deployed while a subagent runs; crew docked after it', async ($, on) => {
     const clock = engine(on, 'agent-1')
     await $.agent.spawn(spawnInput({ description: 'find files', subagentType: 'Explore' }))
     let text = linesOf(await draw($, 50)).join('\n')
-    expect(text).not.toContain(SUIT)
+    expect(text).toContain('CREW DEPLOYED, SIR.')
     expect(text).toContain('find files')
 
     await $.turn.complete(complete('agent-1'))
@@ -3969,7 +3973,7 @@ describe('standby suit', () => {
     expect(findText(tree, /^MARK XLII · /)?.props?.['color']).toBe(THEME.frame)
   })
 
-  test('a spawn while the suit is on show: it stays 2 s over the running list, ◆ CREW DEPLOYED, then gives way', async ($, on) => {
+  test('a spawn: the suit over the running list, ◆ CREW DEPLOYED 2 s, then its pose over CREW DEPLOYED, SIR.', async ($, on) => {
     const clock = engine(on, 'agent-1')
     await start($)
     expect(linesOf(await draw($, 50)).join('\n')).toContain(STANDBY)
@@ -3985,8 +3989,10 @@ describe('standby suit', () => {
     expect(text).toContain('find files')
     expect(text).toContain('▶1 執行中')
     await clock.advance(CREW_SHOW_MS - 1000)
-    text = linesOf(await draw($, 50)).join('\n')
-    expect(text).not.toContain(SUIT)
+    const after = linesOf(await draw($, 50))
+    text = after.join('\n')
+    expect(text).not.toContain('◆ CREW DEPLOYED')
+    expect(lineOf(after, 'CREW DEPLOYED, SIR.')).toBe(lineOf(after, 'MARK XLII · ') + 1)
     expect(text).toContain('find files')
   })
 
@@ -4004,23 +4010,25 @@ describe('standby suit', () => {
     expect(lineOf(lines, 'MARK XLII · ')).toBeGreaterThan(0)
   })
 
-  test('a spawn while the suit is not on show plays nothing; short of rows the running list wins', async ($, on) => {
-    engineAll(on)
+  test('a spawn off the now page still deploys: back on it within 2 s ◆ CREW DEPLOYED, then MARK XLII · <POSE>', async ($, on) => {
+    const clock = engineAll(on)
     await start($)
-    // another page: back on the now page the running one stands alone
     await press($, 'tab-log', 50)
     await draw($, 50)
     await $.agent.spawn(spawnIn('job 1', 'worker'))
     await press($, 'tab-now', 50)
-    expect(linesOf(await draw($, 50)).join('\n')).not.toContain(SUIT)
-    // on show, but 20 running leave it no room: hidden at once, every one listed
-    for (let i = 2; i <= 20; i += 1) await $.agent.spawn(spawnIn(`job ${i}`, 'worker'))
-    for (let i = 1; i <= 20; i += 1) await $.turn.complete(complete(`agent-${i}`))
-    await draw($, 50)
-    for (let i = 21; i <= 40; i += 1) await $.agent.spawn(spawnIn(`job ${i}`, 'worker'))
-    const tree = await draw($, 50)
-    expect(linesOf(tree).join('\n')).not.toContain(SUIT)
-    for (let i = 21; i <= 40; i += 1) expect(findText(tree, new RegExp(`^job ${i}\\s*$`))).toBeDefined()
+    let lines = linesOf(await draw($, 50))
+    expect(lineOf(lines, 'CREW DEPLOYED, SIR.')).toBe(lineOf(lines, '◆ CREW DEPLOYED') + 1)
+    await clock.advance(CREW_SHOW_MS - 1)
+    expect(linesOf(await draw($, 50)).join('\n')).toContain('◆ CREW DEPLOYED')
+    await clock.advance(1)
+    lines = linesOf(await draw($, 50))
+    expect(lines.join('\n')).not.toContain('◆ CREW DEPLOYED')
+    expect(lineOf(lines, 'CREW DEPLOYED, SIR.')).toBe(lineOf(lines, 'MARK XLII · ') + 1)
+    // too short for the suit when it deployed: drawn later, it still plays
+    await draw($, 10)
+    await $.agent.spawn(spawnIn('job 2', 'worker'))
+    expect(linesOf(await draw($, 50)).join('\n')).toContain('◆ CREW DEPLOYED')
   })
 
   test('the poses in turn under the suit: standby, wave, hover, repulsor, charge, one frame every 250 ms while drawn', async ($, on) => {
@@ -4043,7 +4051,7 @@ describe('standby suit', () => {
     ])
   })
 
-  test('the suit tick: every 250 ms while the now page shows the suit; none on another page or while a subagent runs', async ($, on) => {
+  test('the suit tick: every 250 ms while the now page shows the suit, a subagent running or not; none on another page', async ($, on) => {
     const clock = engine(on, 'agent-1')
     const frames = { n: 0 }
     on('state.set', { plugin: 'jarvis', key: 'suit' }, async (_$, e, next) => {
@@ -4073,7 +4081,7 @@ describe('standby suit', () => {
     base = frames.n
     await clock.advance(SUIT_TICK_MS * 8)
     expect(frames.n).toBe(base)
-    // a subagent running: no suit past its deployment, no tick
+    // a subagent running: the suit and its tick past the deployment
     await draw($, 50)
     await $.agent.spawn(spawnInput({ description: 'find files', subagentType: 'Explore' }))
     await draw($, 50)
@@ -4081,7 +4089,7 @@ describe('standby suit', () => {
     await draw($, 50)
     base = frames.n
     await clock.advance(SUIT_TICK_MS * 8)
-    expect(frames.n).toBe(base)
+    expect(frames.n - base).toBe(8)
     // nor where the suit does not fit
     await $.turn.complete(complete('agent-1'))
     await draw($, 10)
@@ -4418,6 +4426,7 @@ describe('standby suit', () => {
     // the quota read on the first draw, shown from the next
     await draw($, 60, 80)
     await clock.advance(10)
+    return clock
   }
   // the suit's rows as drawn: the canvas, a blank, its two lines
   const suitRows = (rows: string[]) => {
@@ -4565,22 +4574,24 @@ describe('standby suit', () => {
     await draw($, 45, 80)
     await clock.advance(10)
     expect(reads.n).toBe(2)
-    // nor while a subagent runs
+    // a subagent running: the suit drawn, the file read on the way back and 30 s on
     await $.agent.spawn(spawnInput({ description: 'find files', subagentType: 'Explore' }))
     await press($, 'tab-now', 45, 80)
+    await clock.advance(10)
+    expect(reads.n).toBe(3)
     await clock.advance(31_000)
     await draw($, 45, 80)
     await clock.advance(10)
-    expect(reads.n).toBe(2)
-    // nor on the now page with nothing running when the suit does not fit
+    expect(reads.n).toBe(4)
+    // not on the now page when the suit does not fit
     await $.turn.complete(complete('agent-1'))
     await clock.advance(31_000)
     await draw($, 20, 80)
     await clock.advance(10)
-    expect(reads.n).toBe(2)
+    expect(reads.n).toBe(4)
     await draw($, 45, 80)
     await clock.advance(10)
-    expect(reads.n).toBe(3)
+    expect(reads.n).toBe(5)
   })
 
   test('a session started again shows no power until it reads its own', async ($, on) => {
@@ -4857,6 +4868,12 @@ describe('standby suit', () => {
     const after = await draw($, 50)
     expect(linesOf(after).join('\n')).not.toContain('CREW DEPLOYED')
     expect(artOf(after)).toBe(still)
+    // played within 2 s of it: no deployment to show
+    await hotkey($, 'p', 50)
+    const played = linesOf(await draw($, 50)).join('\n')
+    expect(played).not.toContain('◆ CREW DEPLOYED')
+    expect(played).not.toContain('PAUSED')
+    expect(played).toContain('MARK XLII · ')
   })
 
   test('the hold kept with the pane closed and opened again; a session started again plays', async ($, on) => {
@@ -4914,6 +4931,94 @@ describe('standby suit', () => {
       for (const c of rowNodesOf(tree).slice(top, top + block.length).flatMap(colorsOf)) expect([c, onTheme(c)]).toEqual([c, true])
     })
   }
+  // ---- always on, subagents running or not ---------------------------------
+
+  test('a subagent running: its tick alive through and past the deployment and its end; another page or a hold stops it', async ($, on) => {
+    const clock = engineAll(on)
+    const frames = suitWrites(on)
+    await start($)
+    await draw($, 50)
+    await $.agent.spawn(spawnIn('job 1', 'worker'))
+    expect(linesOf(await draw($, 50)).join('\n')).toContain('CREW DEPLOYED, SIR.')
+    const second = async () => {
+      const base = frames.n
+      await clock.advance(1000)
+      return frames.n - base
+    }
+    expect(await second()).toBe(4)
+    await clock.advance(CREW_SHOW_MS)
+    await draw($, 50)
+    expect(await second()).toBe(4)
+    // another deployed, the first done
+    await $.agent.spawn(spawnIn('job 2', 'worker'))
+    await $.turn.complete(complete('agent-1'))
+    await draw($, 50)
+    expect(await second()).toBe(4)
+    await $.turn.complete(complete('agent-2'))
+    await draw($, 50)
+    expect(await second()).toBe(4)
+    // the log page: none
+    await $.agent.spawn(spawnIn('job 3', 'worker'))
+    await press($, 'tab-log', 50)
+    await draw($, 50)
+    expect(await second()).toBe(0)
+    await press($, 'tab-now', 50)
+    await draw($, 50)
+    expect(await second()).toBe(4)
+    // held still: none
+    await press($, 'suit-row-3', 50)
+    expect(await second()).toBe(0)
+    expect(linesOf(await draw($, 50)).join('\n')).toContain(PAUSED)
+    expect(await second()).toBe(0)
+  })
+
+  test('subagents running quicken the breath to 1 s; one only waiting does not', async ($, on) => {
+    const clock = engineAll(on)
+    on('agent.list', async () => ({ value: [{ id: 'agent-1', status: 'waiting', type: 'worker', description: 'wait' }] as never }))
+    await start($)
+    const half = mix(THEME.accent, THEME.bright, 0.5)
+    const halfLit = (tree: Node) =>
+      findAllText(tree, /[▀▄]/).some(t => t.props?.color === half || t.props?.['backgroundColor'] === half)
+    await draw($, 50)
+    await clock.advance(2 * SUIT_TICK_MS)
+    expect(halfLit(await draw($, 50))).toBe(true)
+    await $.agent.spawn(spawnIn('wait', 'worker'))
+    await $.turn.complete(complete('agent-1'))
+    const waiting = await draw($, 50)
+    expect(linesOf(waiting).join('\n')).toContain('WAITING')
+    expect(linesOf(waiting).join('\n')).toContain(SUIT)
+    expect(halfLit(waiting)).toBe(true)
+    await $.agent.spawn(spawnIn('job 2', 'worker'))
+    const running = await draw($, 50)
+    expect(linesOf(running).join('\n')).toContain(SUIT)
+    expect(halfLit(running)).toBe(false)
+  })
+
+  for (const cols of [40, 60, 64, 74, 100]) {
+    for (const running of [0, 1, 5]) {
+      test(`${cols} columns, ${running} running, 30 to 60 rows: no row too wide or the pane too tall, no number cut, the suit on theme`, async ($, on) => {
+        const clock = await twoDocked($, on)
+        for (let i = 1; i <= running; i += 1) await $.agent.spawn(spawnIn(`run ${i}`, 'worker'))
+        // past the deployment's 2 s
+        await clock.advance(CREW_SHOW_MS)
+        for (const h of [30, 49, 60]) {
+          const tree = await draw($, h, cols)
+          const rows = rowsOf(tree)
+          expect([h, Math.max(...rowWidths(tree)) <= cols, paneRows(tree) <= h]).toEqual([h, true, true])
+          expect([h, rows.filter(l => /[\d$%]…|…[\d$%]/.test(l))]).toEqual([h, []])
+          expect([h, findAllText(tree, /^run \d+\s*$/).length]).toEqual([h, running])
+          const block = suitRows(rows)
+          // 60 rows hold the suit over every one running
+          if (h === 60) expect(block.length).toBe(SUIT_CANVAS_ROWS + 3)
+          if (block.length === 0) continue
+          expect(rows.join('\n')).toContain(`${running} ACTIVE`)
+          expect(block.join('\n')).not.toContain('…')
+          const top = rows.indexOf(block[0] ?? '')
+          for (const c of rowNodesOf(tree).slice(top, top + block.length).flatMap(colorsOf)) expect([h, c, onTheme(c)]).toEqual([h, c, true])
+        }
+      })
+    }
+  }
 })
 
 describe('now page height order', () => {
@@ -4921,15 +5026,58 @@ describe('now page height order', () => {
   const jobs = (tree: Node) => findAllText(tree, /^job \d+\s*$/).length
   const suitShown = (tree: Node) => linesOf(tree).join('\n').includes(', SIR.')
 
-  test('20 subagents running: every one listed, whatever the rows; no suit', async ($, on) => {
+  test('20 subagents running: every one listed, whatever the rows; the suit once it fits over them', async ($, on) => {
     engineAll(on)
     for (let i = 1; i <= 20; i += 1) await $.agent.spawn(spawnIn(`job ${i}`, 'worker'))
     for (const rows of [12, 30, 60]) {
       const tree = await draw($, rows, 80)
       expect([rows, jobs(tree)]).toEqual([rows, 20])
       expect(findText(tree, /還有/)).toBeUndefined()
-      expect(suitShown(tree)).toBe(false)
+      expect([rows, suitShown(tree)]).toEqual([rows, rows === 60])
     }
+  })
+
+  const runs = (tree: Node) => findAllText(tree, /^run \d+\s*$/).length
+  for (const n of [1, 3, 20]) {
+    test(`${n} running beside 10 finished: the suit once every one running, 3 finished and the capped card fit; a row short, none`, async ($, on) => {
+      engineAll(on)
+      for (let i = 1; i <= 10; i += 1) await $.agent.spawn(spawnIn(`job ${i}`, 'worker'))
+      for (let i = 1; i <= 10; i += 1) await $.turn.complete(complete(`agent-${i}`))
+      for (let i = 1; i <= n; i += 1) await $.agent.spawn(spawnIn(`run ${i}`, 'worker'))
+      for (const cols of [40, 100]) {
+        // title, tabs; the list's frame 3, two section heads, the running, 3 finished and
+        // `… 還有 7 個`; the suit (readouts under it when narrow); in flight 4
+        const suitH = SUIT_BLOCK_ROWS + (cols < SCAN_SIDE_MIN_COLS ? SUIT_UNDER_ROWS : 0)
+        const least = 2 + 3 + 2 + n + 3 + 1 + suitH + 4
+        let tree = await draw($, least, cols)
+        expect([cols, suitShown(tree), runs(tree), jobs(tree)]).toEqual([cols, true, n, 3])
+        expect(findText(tree, /^… 還有 7 個$/)).toBeDefined()
+        expect(linesOf(tree).join('\n')).toContain('CREW DEPLOYED, SIR.')
+        expect(paneH(tree)).toBeLessThanOrEqual(least)
+        tree = await draw($, least - 1, cols)
+        expect([cols, suitShown(tree), runs(tree)]).toEqual([cols, false, n])
+        expect(jobs(tree)).toBeGreaterThanOrEqual(MIN_FINISHED)
+        expect(paneH(tree)).toBeLessThanOrEqual(least - 1)
+        // taller: the suit, every one running, the finished growing past 3
+        tree = await draw($, least + 10, cols)
+        expect([cols, suitShown(tree), runs(tree)]).toEqual([cols, true, n])
+        expect(jobs(tree)).toBeGreaterThan(3)
+        expect(paneH(tree)).toBeLessThanOrEqual(least + 10)
+      }
+    })
+  }
+
+  test('with the suit fewer than 3 finished are all shown, none folded', async ($, on) => {
+    engineAll(on)
+    for (let i = 1; i <= 2; i += 1) await $.agent.spawn(spawnIn(`job ${i}`, 'worker'))
+    for (let i = 1; i <= 2; i += 1) await $.turn.complete(complete(`agent-${i}`))
+    await $.agent.spawn(spawnIn('run 1', 'worker'))
+    const least = 2 + 3 + 2 + 1 + 2 + SUIT_BLOCK_ROWS + 4
+    let tree = await draw($, least, 100)
+    expect([suitShown(tree), runs(tree), jobs(tree)]).toEqual([true, 1, 2])
+    expect(findText(tree, /還有/)).toBeUndefined()
+    tree = await draw($, least - 1, 100)
+    expect([suitShown(tree), runs(tree), jobs(tree)]).toEqual([false, 1, 2])
   })
 
   test('idle with 30 finished in 49 rows: the suit, and at least 8 finished', async ($, on) => {
@@ -4946,19 +5094,19 @@ describe('now page height order', () => {
   })
 
   for (const events of [0, 5]) {
-    test(`too short for the suit and 8 finished (${events} events): no suit, the 8 finished kept`, async ($, on) => {
+    test(`too short for the suit and 3 finished (${events} events): no suit, 8 finished kept`, async ($, on) => {
       engineAll(on)
       for (let i = 1; i <= 10; i += 1) await $.agent.spawn(spawnIn(`job ${i}`, 'worker'))
       for (let i = 1; i <= 10; i += 1) await $.turn.complete(complete(`agent-${i}`))
       for (let i = 0; i < events; i += 1) await $.tool.call({ tool: 'Read', file_path: `/f/e${i}.ts` })
       for (const cols of [40, 65, 100]) {
-        // title, tabs, the list 3 + 8 + `… 還有 2 個`, the suit (readouts under it when
+        // title, tabs, the list 3 + 3 + `… 還有 7 個`, the suit (readouts under it when
         // narrow), in flight 4; the recent events left out
-        const least = 2 + 3 + MIN_FINISHED + 1 + SUIT_BLOCK_ROWS + (cols < SCAN_SIDE_MIN_COLS ? SUIT_UNDER_ROWS : 0) + 4
+        const least = 2 + 3 + 3 + 1 + SUIT_BLOCK_ROWS + (cols < SCAN_SIDE_MIN_COLS ? SUIT_UNDER_ROWS : 0) + 4
         let tree = await draw($, least, cols)
         expect([cols, suitShown(tree)]).toEqual([cols, true])
-        expect(jobs(tree)).toBe(MIN_FINISHED)
-        expect(findText(tree, /^… 還有 2 個$/)).toBeDefined()
+        expect(jobs(tree)).toBe(3)
+        expect(findText(tree, /^… 還有 7 個$/)).toBeDefined()
         expect(linesOf(tree).join('\n')).not.toContain('最近事件')
         expect(paneH(tree)).toBeLessThanOrEqual(least)
         tree = await draw($, least - 1, cols)
