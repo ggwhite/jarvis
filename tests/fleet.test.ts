@@ -1,21 +1,35 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { costAt } from '../hooks/jarvis'
+import type { FleetSession } from '../types'
+import { cellWidth, costAt } from '../hooks/jarvis'
 import {
   BEATS,
+  BEAT_GLYPHS,
   BEAT_MS,
+  DECOMMISSION_MS,
   addToday,
+  beatLine,
+  beatsOf,
   contextPctOf,
   dayKey,
+  decommissionCount,
+  fleetSections,
   fleetStatus,
+  fleetTotals,
+  fmtAgo,
+  fmtBig,
+  forecast,
   freshFile,
   parsePanes,
+  parseQuota,
   projectDir,
+  quotaStale,
   resumeFrom,
   splitLines,
   tailOf,
   transcriptPath,
   utf8Len,
+  wrapCells,
 } from '../hooks/fleet'
 
 // ---- fixtures：結構照 herdr 0.9.1 與 Claude Code 的真實輸出，內容全是假的 ----
@@ -77,6 +91,30 @@ const toolUse = (name: string) => ({ type: 'tool_use', id: 'toolu_x', name, inpu
 const lastPrompt = (t: string) => JSON.stringify({ type: 'last-prompt', lastPrompt: t, sessionId: 'sess-a' })
 const jsonl = (...lines: string[]) => lines.map(l => `${l}\n`).join('')
 const rowsOf = (...lines: string[]) => splitLines(jsonl(...lines), false).rows
+
+const suit = (over: Partial<FleetSession> = {}): FleetSession => ({
+  paneId: 'w1:p1',
+  tabId: 'w1:t1',
+  sessionId: 'sess-a',
+  title: 'Alpha review',
+  status: 'idle',
+  cwd: '/srv/alpha',
+  workspace: 'Acme',
+  stamps: [],
+  tools: 0,
+  todayTokens: 0,
+  todayCost: 0,
+  ...over,
+})
+
+// structure of ~/.claude/herdr-usagebar/claude-limits-latest.json; resetsAt in seconds
+const RESET = Math.floor(T0 / 1000) + 900 * 60
+const limitsJson = (used7d: number, fetchedAtMs = T0) =>
+  JSON.stringify({
+    fiveHour: { usedPercentage: 5, resetsAt: Math.floor(T0 / 1000) + 120 * 60, windowMinutes: 300 },
+    sevenDay: { usedPercentage: used7d, resetsAt: RESET, windowMinutes: 10080 },
+    fetchedAtMs,
+  })
 
 describe('fleet paths and panes', () => {
   test('a cwd maps to its projects folder, every non alphanumeric a dash', () => {
@@ -224,5 +262,94 @@ describe('fleet today', () => {
     expect(resumeFrom(f, 300, T0)).toBeUndefined()
     expect(resumeFrom(f, 500, T0 + 24 * 60 * MIN)).toBeUndefined()
     expect(resumeFrom(undefined, 500, T0)).toBeUndefined()
+  })
+})
+
+describe('fleet quota', () => {
+  test('the usagebar cache: seconds become ms; garbage is undefined', () => {
+    const q = parseQuota(limitsJson(92))
+    expect(q?.sevenDay).toEqual({ usedPct: 92, resetsAt: RESET * 1000, windowMin: 10080 })
+    expect(q?.fiveHour?.usedPct).toBe(5)
+    expect(q?.fetchedAt).toBe(T0)
+    expect(parseQuota('nope')).toBeUndefined()
+    expect(parseQuota(undefined)).toBeUndefined()
+    expect(parseQuota(JSON.stringify({ sevenDay: {} }))).toBeUndefined()
+  })
+
+  test('at the pace so far: 92% with 900 of 10080 minutes left runs out before the reset', () => {
+    const w = { usedPct: 92, resetsAt: T0 + 900 * MIN, windowMin: 10080 }
+    const f = forecast(w, T0)
+    expect(f?.beforeReset).toBe(true)
+    near(((f?.depleteAt ?? 0) - T0) / MIN, (8 * 9180) / 92, 6)
+  })
+
+  test('a slow pace lasts past the reset; nothing used, or a window not begun, has no forecast', () => {
+    expect(forecast({ usedPct: 30, resetsAt: T0 + 5040 * MIN, windowMin: 10080 }, T0)?.beforeReset).toBe(false)
+    expect(forecast({ usedPct: 0, resetsAt: T0 + 5040 * MIN, windowMin: 10080 }, T0)).toBeUndefined()
+    expect(forecast({ usedPct: 10, resetsAt: T0 + 10080 * MIN, windowMin: 10080 }, T0)).toBeUndefined()
+    expect(forecast({ usedPct: 100, resetsAt: T0 + 60 * MIN, windowMin: 10080 }, T0)).toEqual({ depleteAt: T0, beforeReset: true })
+  })
+
+  test('a cache older than 15 minutes is stale', () => {
+    const q = parseQuota(limitsJson(92, T0))
+    expect(q && quotaStale(q, T0 + 15 * MIN)).toBe(false)
+    expect(q && quotaStale(q, T0 + 15 * MIN + 1)).toBe(true)
+  })
+})
+
+describe('fleet order and readouts', () => {
+  test('sections: waiting, working, the rest; each newest first, no time last', () => {
+    const s = fleetSections([
+      suit({ paneId: 'a', status: 'idle', lastAt: T0 - 60 * MIN }),
+      suit({ paneId: 'b', status: 'blocked', lastAt: T0 - 5 * MIN }),
+      suit({ paneId: 'c', status: 'idle' }),
+      suit({ paneId: 'd', status: 'working', lastAt: T0 }),
+      suit({ paneId: 'e', status: 'idle', lastAt: T0 - MIN }),
+    ])
+    expect([s.blocked, s.working, s.idle].map(l => l.map(x => x.paneId))).toEqual([['b'], ['d'], ['e', 'a', 'c']])
+  })
+
+  test('decommission: idle over a day; working, waiting or unknown time never', () => {
+    expect(
+      decommissionCount(
+        [
+          suit({ lastAt: T0 - DECOMMISSION_MS - 1 }),
+          suit({ lastAt: T0 - DECOMMISSION_MS }),
+          suit({ status: 'blocked', lastAt: T0 - 3 * DECOMMISSION_MS }),
+          suit({}),
+        ],
+        T0,
+      ),
+    ).toBe(1)
+  })
+
+  test('heartbeat: a reply lands in its five-minute bucket, the newest on the right', () => {
+    const beats = beatsOf([T0 - 1 * MIN, T0 - 2 * MIN, T0 - 59 * MIN, T0 - 61 * MIN, T0 + MIN], T0)
+    expect(beats).toHaveLength(12)
+    expect(beats[11]).toBe(2)
+    expect(beats[0]).toBe(1)
+    expect(beats.reduce((a, b) => a + b, 0)).toBe(3)
+  })
+
+  test('heartbeat glyphs scale to the fleet busiest; silence is the blank braille', () => {
+    expect(beatLine([0, 1, 2, 4], 4)).toBe(`${BEAT_GLYPHS[0]}${BEAT_GLYPHS[1]}${BEAT_GLYPHS[2]}${BEAT_GLYPHS[4]}`)
+    expect(beatLine([0, 0], 0)).toBe(`${BEAT_GLYPHS[0]}${BEAT_GLYPHS[0]}`)
+    expect(cellWidth(beatLine(Array.from({ length: 12 }, () => 3), 3))).toBe(12)
+  })
+
+  test('ago, big numbers and fleet totals', () => {
+    expect([45_000, 12 * MIN, 3 * 60 * MIN, 50 * 60 * MIN].map(fmtAgo)).toEqual(['45s', '12m', '3h', '2d'])
+    expect(fmtBig(4_200_000)).toBe('4.2M')
+    expect(fmtBig(950)).toBe('950')
+    expect(fleetTotals([suit({ todayTokens: 100, todayCost: 1 }), suit({ title: 'Big', todayTokens: 5, todayCost: 2 })])).toEqual({ tokens: 105, cost: 3, top: 'Big' })
+    expect(fleetTotals([suit({})]).top).toBeUndefined()
+  })
+
+  test('wrap: words flow by cells, whitespace collapses, a cut last line ends in an ellipsis', () => {
+    expect(wrapCells('abc def ghi', 4, 5)).toEqual(['abc', 'def', 'ghi'])
+    expect(wrapCells('a\n\n  b', 10, 2)).toEqual(['a b'])
+    expect(wrapCells('一二三四五', 4, 2)).toEqual(['一二', '三…'])
+    expect(wrapCells('', 4, 2)).toEqual([])
+    expect(wrapCells('abc', 0, 2)).toEqual([])
   })
 })

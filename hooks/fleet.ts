@@ -1,5 +1,5 @@
-import type { FleetFile, FleetSession, FleetStatus, FleetTail } from '../types'
-import { costAt, familyOf } from './jarvis'
+import type { FleetFile, FleetQuota, FleetSession, FleetStatus, FleetTail, QuotaWindow } from '../types'
+import { cellWidth, costAt, familyOf, fitCells, fmtK } from './jarvis'
 
 // A Claude session as herdr lists it, before its transcript is read.
 export type FleetPane = Pick<FleetSession, 'paneId' | 'tabId' | 'sessionId' | 'title' | 'status' | 'cwd' | 'workspace' | 'contextPct'>
@@ -233,4 +233,141 @@ export function addToday(file: FleetFile, rows: Record<string, unknown>[], bytes
     cost += u.cost
   }
   return { ...file, offset: file.offset + bytes, tokens, cost, lastMsgId }
+}
+
+export const STALE_QUOTA_MS = 15 * 60 * 1000
+export const DECOMMISSION_MS = 24 * 60 * 60 * 1000
+export const CONTEXT_WARN = 70
+export const CONTEXT_ALERT = 90
+// A heartbeat bucket by how busy it was against the fleet's busiest: silence, then rising.
+export const BEAT_GLYPHS = ['⠀', '⣀', '⣤', '⣶', '⣿']
+
+const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
+
+// The usagebar cache the statusLine keeps; undefined when missing or not its shape.
+export function parseQuota(text: string | undefined): FleetQuota | undefined {
+  if (text === undefined) return undefined
+  let o: Record<string, unknown> | undefined
+  try {
+    o = obj(JSON.parse(text))
+  } catch {
+    return undefined
+  }
+  const fetchedAt = num(o?.['fetchedAtMs'])
+  if (!o || fetchedAt === undefined) return undefined
+  const win = (v: unknown): QuotaWindow | undefined => {
+    const w = obj(v)
+    const usedPct = num(w?.['usedPercentage'])
+    const resetsAt = num(w?.['resetsAt'])
+    const windowMin = num(w?.['windowMinutes'])
+    if (usedPct === undefined || resetsAt === undefined || windowMin === undefined) return undefined
+    return { usedPct, resetsAt: resetsAt * 1000, windowMin }
+  }
+  const fiveHour = win(o['fiveHour'])
+  const sevenDay = win(o['sevenDay'])
+  return { fetchedAt, ...(fiveHour ? { fiveHour } : {}), ...(sevenDay ? { sevenDay } : {}) }
+}
+
+export function quotaStale(q: FleetQuota, now: number): boolean {
+  return now - q.fetchedAt > STALE_QUOTA_MS
+}
+
+export type Forecast = { depleteAt: number; beforeReset: boolean }
+
+// When the window runs out at the pace used so far, measured `at` the cache's time;
+// undefined with nothing used or the window not yet under way.
+export function forecast(w: QuotaWindow, at: number): Forecast | undefined {
+  const leftMin = (w.resetsAt - at) / 60_000
+  const usedMin = w.windowMin - leftMin
+  if (w.usedPct <= 0 || usedMin <= 0 || leftMin <= 0) return undefined
+  if (w.usedPct >= 100) return { depleteAt: at, beforeReset: true }
+  const depleteAt = at + ((100 - w.usedPct) / (w.usedPct / usedMin)) * 60_000
+  return { depleteAt, beforeReset: depleteAt < w.resetsAt }
+}
+
+export type FleetSections = { blocked: FleetSession[]; working: FleetSession[]; idle: FleetSession[] }
+
+// The fleet by what it needs of the person: waiting, working, the rest; each the most
+// recently heard from first, a session never heard from last.
+export function fleetSections(list: readonly FleetSession[]): FleetSections {
+  const recent = (a: FleetSession, b: FleetSession) => (b.lastAt ?? -Infinity) - (a.lastAt ?? -Infinity)
+  return {
+    blocked: list.filter(s => s.status === 'blocked').sort(recent),
+    working: list.filter(s => s.status === 'working').sort(recent),
+    idle: list.filter(s => s.status === 'idle').sort(recent),
+  }
+}
+
+export function decommissionCount(list: readonly FleetSession[], now: number): number {
+  return list.filter(s => s.status === 'idle' && s.lastAt !== undefined && now - s.lastAt > DECOMMISSION_MS).length
+}
+
+// Replies per bucket over the last hour, oldest first.
+export function beatsOf(stamps: readonly number[], now: number): number[] {
+  const out = Array.from({ length: BEATS }, () => 0)
+  for (const t of stamps) {
+    const age = now - t
+    if (age < 0 || age >= BEATS * BEAT_MS) continue
+    const i = BEATS - 1 - Math.floor(age / BEAT_MS)
+    out[i] = (out[i] ?? 0) + 1
+  }
+  return out
+}
+
+export function beatLine(beats: readonly number[], max: number): string {
+  return beats
+    .map(n => (n <= 0 || max <= 0 ? BEAT_GLYPHS[0] : BEAT_GLYPHS[Math.min(4, Math.max(1, Math.ceil((n / max) * 4)))]) ?? '⠀')
+    .join('')
+}
+
+// How long ago, in one unit: 45s, 12m, 3h, 2d.
+export function fmtAgo(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h`
+  return `${Math.floor(h / 24)}d`
+}
+
+export function fmtBig(n: number): string {
+  return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : fmtK(n)
+}
+
+export function fleetTotals(list: readonly FleetSession[]): { tokens: number; cost: number; top?: string } {
+  let tokens = 0
+  let cost = 0
+  let top: FleetSession | undefined
+  for (const s of list) {
+    tokens += s.todayTokens
+    cost += s.todayCost
+    if (s.todayCost > 0 && (!top || s.todayCost > top.todayCost)) top = s
+  }
+  return { tokens, cost, ...(top ? { top: top.title } : {}) }
+}
+
+// `text` on at most `maxLines` lines of `width` cells, its whitespace one space; a text
+// cut short ends its last line in an ellipsis.
+export function wrapCells(text: string, width: number, maxLines: number): string[] {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  if (flat === '' || width <= 0 || maxLines <= 0) return []
+  const lines: string[] = []
+  let cur = ''
+  let cut = false
+  for (const ch of flat) {
+    if (cellWidth(cur + ch) <= width) {
+      cur += ch
+      continue
+    }
+    lines.push(cur.trimEnd())
+    if (lines.length === maxLines) {
+      cut = true
+      break
+    }
+    cur = ch === ' ' ? '' : ch
+  }
+  if (cut) lines[maxLines - 1] = fitCells(`${lines[maxLines - 1] ?? ''}…`, width)
+  else if (cur !== '') lines.push(cur.trimEnd())
+  return lines
 }
