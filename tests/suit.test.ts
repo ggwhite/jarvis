@@ -149,22 +149,18 @@ describe('suit frames', () => {
   // canvas pixels of the art: column + 4, row + 1
   const at = (cells: Cell[][], r: number, c: number) => px(cells, r + 1, c + 4)
   const rgb = (c: string) => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16))
-  // a theme color, or one on the line between two
+  // a theme color, or one on its way to bright: off the line by a rounding at most per channel
   const onTheme = (c: string): boolean => {
-    const theme = Object.values(THEME) as string[]
     const z = rgb(c)
-    return theme.some(a =>
-      theme.some(b => {
-        const x = rgb(a)
-        const y = rgb(b)
-        const spans = x.map((v, i) => Math.abs((y[i] ?? v) - v))
-        const k = spans.indexOf(Math.max(...spans))
-        if ((spans[k] ?? 0) === 0) return z.every((v, i) => Math.abs(v - (x[i] ?? 0)) <= 1)
-        const t = ((z[k] ?? 0) - (x[k] ?? 0)) / ((y[k] ?? 0) - (x[k] ?? 0))
-        if (t < -0.01 || t > 1.01) return false
-        return z.every((v, i) => Math.abs(v - ((x[i] ?? 0) + ((y[i] ?? 0) - (x[i] ?? 0)) * t)) <= 2)
-      }),
-    )
+    const y = rgb(THEME.bright)
+    return (Object.values(THEME) as string[]).some(a => {
+      const x = rgb(a)
+      const spans = x.map((v, i) => Math.abs((y[i] ?? v) - v))
+      const k = spans.indexOf(Math.max(...spans))
+      const t = (spans[k] ?? 0) === 0 ? 0 : ((z[k] ?? 0) - (x[k] ?? 0)) / ((y[k] ?? 0) - (x[k] ?? 0))
+      if (t < 0 || t > 1) return false
+      return Math.max(...z.map((v, i) => Math.abs(v - ((x[i] ?? 0) + ((y[i] ?? 0) - (x[i] ?? 0)) * t)))) <= 1
+    })
   }
   const CYCLE = (STANDBY_MS + WAVE_MS + HOVER_MS + REPULSOR_MS + CHARGE_MS) / T
 
@@ -299,7 +295,7 @@ describe('suit frames', () => {
     expect(crewDeployed(1000, undefined)).toBe(false)
   })
 
-  test('every color a theme color or a blend of two', () => {
+  test('every color a theme color or one blended toward bright', () => {
     for (const busy of [false, true]) {
       for (let f = 0; f < CYCLE; f += 1) {
         for (const c of idle(f, { busy, deployedAt: 0, now: (f % 3) * T }).cells.flat()) {
@@ -309,6 +305,8 @@ describe('suit frames', () => {
       }
     }
     expect(onTheme('#123456')).toBe(false)
+    expect(onTheme(mix(THEME.suitRed, THEME.accent, 0.5))).toBe(false)
+    expect(onTheme(mix(THEME.suitGold, THEME.bright, 0.35))).toBe(true)
   })
 })
 

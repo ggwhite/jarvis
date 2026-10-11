@@ -351,6 +351,13 @@ export const register: Register = on => {
     }
 
     suitOff()
+    // the last session's frame and deployment left behind; written only when there are any
+    try {
+      const last = await read($, suit)
+      if (last.n !== 0 || last.deployedAt !== undefined) await update($, suit, () => ({ n: 0 }))
+    } catch {
+      // the suit keeps its frame
+    }
     suitOn = (now: number) => {
       suitSeenAt = now
       if (suitTimer !== undefined) return

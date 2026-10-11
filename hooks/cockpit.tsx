@@ -1321,7 +1321,20 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         [crewDeployed(now, ctx.deployedAt) ? { t: '◆ CREW DEPLOYED', color: ACCENT } : { t: `MARK XLII · ${frame.pose}`, color: FRAME }],
         cols,
       ),
-      centered([{ t: view.sections.length === 0 ? 'AWAITING ORDERS, SIR.' : 'ALL CREW DOCKED, SIR.', color: PRIMARY }], cols),
+      centered(
+        [
+          {
+            t:
+              view.running.length > 0
+                ? 'CREW DEPLOYED, SIR.'
+                : view.sections.length === 0
+                  ? 'AWAITING ORDERS, SIR.'
+                  : 'ALL CREW DOCKED, SIR.',
+            color: PRIMARY,
+          },
+        ],
+        cols,
+      ),
       ...under,
     ]
     return { h: lines.length, node: <Box flexDirection="column">{lines.map(lineNode)}</Box> }
