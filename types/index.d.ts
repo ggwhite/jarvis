@@ -22,6 +22,9 @@ export type JarvisAgent = {
   agentIndex?: number
   // the engine says it is waiting on background work it owns: running, shown as WAITING
   waiting?: boolean
+  // brought back to running by the engine's view after its turn ended: the engine's view
+  // also ends it
+  revived?: boolean
 }
 
 // One finished tool call, main loop or subagent. `ts` is when it started.

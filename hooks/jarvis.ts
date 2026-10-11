@@ -291,8 +291,9 @@ export function finishTurn(
   return list.map(a => {
     if (a.id !== id) return a
     const u = c.usage
+    const { revived: _r, ...rest } = a
     return {
-      ...a,
+      ...rest,
       status: c.reason === 'answer' ? 'done' : 'failed',
       tool: '',
       lastSeenAt: now,
@@ -330,8 +331,9 @@ const ENGINE_LIVE = new Set(['pending', 'running', 'waiting'])
 const ENGINE_FAILED = new Set(['failed', 'killed'])
 
 // Brings each listed agent in line with what the engine says of it: one the engine still
-// runs or holds on its background work runs again (waiting marked); one the engine has
-// ended is done or failed. Returns the same array when nothing changed.
+// runs or holds on its background work runs again (waiting marked; revived when it had
+// ended); a waiting or revived one the engine has ended is done or failed. One running in
+// its own turn is left to its turn.complete. Returns the same array when nothing changed.
 export function reconcileAgents(
   list: readonly JarvisAgent[],
   engine: readonly EngineAgent[],
@@ -352,11 +354,19 @@ export function reconcileAgents(
       }
       changed = true
       const { waiting: _w, ...rest } = a
-      return { ...rest, status: 'running' as const, runStartedAt: now, lastSeenAt: now, endedAt: 0, ...(waiting ? { waiting: true } : {}) }
+      return {
+        ...rest,
+        status: 'running' as const,
+        runStartedAt: now,
+        lastSeenAt: now,
+        endedAt: 0,
+        revived: true,
+        ...(waiting ? { waiting: true } : {}),
+      }
     }
-    if (a.waiting !== true) return a
+    if (a.waiting !== true && a.revived !== true) return a
     changed = true
-    const { waiting: _w, ...rest } = a
+    const { waiting: _w, revived: _r, ...rest } = a
     return {
       ...rest,
       status: ENGINE_FAILED.has(s) ? ('failed' as const) : ('done' as const),
@@ -369,10 +379,15 @@ export function reconcileAgents(
   return changed ? out : list
 }
 
-// Whether the engine's view is worth asking for: an agent waits, or one finished within
-// RECONCILE_RECENT_MS.
+// Whether the engine's view is worth asking for: an agent waits or runs revived, or one
+// finished within RECONCILE_RECENT_MS.
 export function needsReconcile(list: readonly JarvisAgent[], now: number): boolean {
-  return list.some(a => a.waiting === true || (a.status !== 'running' && a.endedAt > 0 && now - a.endedAt <= RECONCILE_RECENT_MS))
+  return list.some(
+    a =>
+      a.waiting === true ||
+      (a.status === 'running' && a.revived === true) ||
+      (a.status !== 'running' && a.endedAt > 0 && now - a.endedAt <= RECONCILE_RECENT_MS),
+  )
 }
 
 export function staleOf(list: readonly JarvisAgent[]): JarvisAgent[] {

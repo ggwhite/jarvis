@@ -3837,6 +3837,22 @@ describe('background wait', () => {
     expect(markStale(waiting, 5000 + STALE_MS + 1)).toBe(waiting)
   })
 
+  test('a finished agent the engine still ran ends once the engine completes it', () => {
+    const revived = reconcileAgents([base()], [{ id: 'w1', status: 'running' }], 5000)
+    const done = reconcileAgents(revived, [{ id: 'w1', status: 'completed' }], 7000)
+    expect(done[0]?.status).toBe('done')
+    expect(done[0]?.endedAt).toBe(7000)
+    expect(reconcileAgents(revived, [{ id: 'w1', status: 'idle' }], 7000)[0]?.status).toBe('done')
+    expect(reconcileAgents(revived, [{ id: 'w1', status: 'killed' }], 7000)[0]?.status).toBe('failed')
+    expect(needsReconcile(revived, 5000 + 10 * RECONCILE_RECENT_MS)).toBe(true)
+    expect(needsReconcile(done, 7000 + RECONCILE_RECENT_MS + 1)).toBe(false)
+  })
+
+  test('a subagent running in its first turn is left to its turn.complete', () => {
+    const list = [base({ status: 'running', endedAt: 0, doneMs: 0 })]
+    expect(reconcileAgents(list, [{ id: 'w1', status: 'completed' }], 5000)).toBe(list)
+  })
+
   test('reconcile is due while one waits or one finished in the last minute', () => {
     expect(needsReconcile([base({ endedAt: 1000 })], 1000 + RECONCILE_RECENT_MS)).toBe(true)
     expect(needsReconcile([base({ endedAt: 1000 })], 1000 + RECONCILE_RECENT_MS + 1)).toBe(false)
@@ -3858,6 +3874,20 @@ describe('background wait, wired', () => {
     const lines = linesOf(await draw($, 40, 80)).join('\n')
     expect(lines).toContain('WAITING')
     expect(lines).not.toContain('MISSION COMPLETE')
+    expect(findText(await draw($, 40, 80), /WAITING/)?.props?.color).toBe(THEME.accent)
+  })
+
+  test('a turn that ends while the engine still runs it shows it running, then complete on the next tick', async ($, on) => {
+    const clock = engine(on, 'agent-1')
+    const engineRows = [{ id: 'agent-1', status: 'running' }]
+    listed(on, engineRows)
+    await start($)
+    await $.agent.spawn(spawnInput({ description: 'check', subagentType: 'verifier' }))
+    await $.turn.complete(complete('agent-1'))
+    expect(linesOf(await draw($, 40, 80)).join('\n')).not.toContain('MISSION COMPLETE')
+    engineRows[0] = { id: 'agent-1', status: 'completed' }
+    await clock.advance(1500)
+    expect(linesOf(await draw($, 40, 80)).join('\n')).toContain('MISSION COMPLETE')
   })
 
   test('the tick brings a waiting agent back to complete once the engine ends it', async ($, on) => {
