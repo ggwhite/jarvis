@@ -24,6 +24,7 @@ import {
   fmtBig,
   forecast,
   quotaStale,
+  wrapCells,
 } from './fleet'
 import type { FleetSections } from './fleet'
 import {
@@ -1285,14 +1286,34 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return out
   }
 
-  const fleetDetailBlock = (s: FleetSession): Block =>
-    cardRow([
-      {
-        w: cols,
-        color: FRAME,
-        lines: [[suitIcon(s), sp(1), { t: s.title, color: PRIMARY, bold: true }], [FLEET_STATUS_TEXT[s.status]]],
-      },
-    ])
+  const fleetDetailBlock = (s: FleetSession): Block => {
+    const labelW = 9
+    const inner = cols - 4
+    const field = (label: string, value: Seg[]): Seg[] => [{ t: padCells(label, labelW), color: FRAME }, ...value]
+    // a paragraph under its label: wrapped to the card, at most `max` lines
+    const para = (label: string, text: string | undefined, max: number, color: string): Seg[][] => {
+      const wrapped = wrapCells(text ?? '', Math.max(1, inner - labelW), max)
+      if (wrapped.length === 0) return [field(label, [{ t: '（無）', color: FRAME }])]
+      return wrapped.map((l, i) => [{ t: padCells(i === 0 ? label : '', labelW), color: FRAME }, { t: l, color }])
+    }
+    const family = s.model ? nameFamilyOf(s.model) : undefined
+    const jumpError = fleetView.jumpError?.paneId === s.paneId ? fleetView.jumpError.text : undefined
+    const lines: Line[] = [
+      [suitIcon(s), sp(1), { t: s.title, color: PRIMARY, bold: true }],
+      field('狀態', [FLEET_STATUS_TEXT[s.status]]),
+      field('工作區', [{ t: s.workspace, color: PRIMARY }]),
+      field('目錄', [{ t: s.cwd, color: PRIMARY }]),
+      field('模型', [{ t: s.model ? shortModel(s.model) : '?', color: family ? FAMILY_COLOR[family] : FRAME }]),
+      field('閒置', [{ t: s.lastAt === undefined ? '?' : fmtAgo(view.now - s.lastAt), color: PRIMARY }]),
+      field('今日', [{ t: `${fmtBig(s.todayTokens)} tok · ${fmtUsd(s.todayCost)}`, color: BRIGHT, bold: true }]),
+      field('近期工具', [{ t: `${s.tools} 次`, color: PRIMARY }]),
+      ...para('最後提問', s.lastUser, 3, PRIMARY),
+      ...para('最後回覆', s.lastReply, 5, BRIGHT),
+      ...(jumpError ? [[{ t: jumpError, color: ERROR, bold: true }]] : []),
+    ]
+    const spec: CardSpec = { w: cols, color: FRAME, lines }
+    return card(spec, heightOf(spec))
+  }
 
   // ---- 開機 ---------------------------------------------------------------
 
