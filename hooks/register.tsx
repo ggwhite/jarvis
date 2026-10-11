@@ -50,6 +50,7 @@ const ui = atom({ plugin: 'jarvis', key: 'ui' } as const, {
   agentId: '',
   paused: false,
   pausedTotal: 0,
+  paneId: '',
 })
 const eventTotal = atom({ plugin: 'jarvis', key: 'eventTotal' } as const, 0)
 
