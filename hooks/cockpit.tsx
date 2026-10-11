@@ -1,6 +1,7 @@
 import type { EngineInterface, RenderElement } from 'claude-code'
 
 import type {
+  FleetQuota,
   FleetSession,
   FleetStatus,
   FleetView,
@@ -16,7 +17,8 @@ import type { Cell, StackPart } from './fleetChart'
 import { idlePerRow, planFleet } from './fleetLayout'
 import type { FleetMode, FleetPlan } from './fleetLayout'
 import { FAIL_WARN, planStats, roleBeats, successRate } from './statsView'
-import { SUIT_BLOCK_ROWS, SUIT_COLS, SUIT_ROWS, suitCells } from './suit'
+import { SCAN_SIDE_MIN_COLS, SUIT_BLOCK_ROWS, SUIT_COLS, SUIT_ROWS, SUIT_UNDER_ROWS, standbyReadouts, suitCells } from './suit'
+import type { Readout } from './suit'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
 import type { CardLines } from './fleetCards'
 import {
@@ -73,6 +75,10 @@ const SUIT_MIN_LIST = 3
 // The boot's rows below the title with the suit: a blank, the suit and a blank, ONLINE
 // and the loading two.
 const BOOT_SUIT_H = 1 + SUIT_ROWS + 1 + 3
+// The standby suit in its sights: a blank cell and a corner either side of the art.
+const SCAN_FRAME_W = SUIT_COLS + 4
+// A power readout's meter, in cells.
+const POWER_METER_W = 5
 // From this many columns a model badge carries its version: `[Sonnet 5.5]`.
 export const BADGE_FULL_COLS = 90
 // Cells a plain Button's hotkey takes before its label: `1: `.
@@ -122,6 +128,9 @@ export type Ctx = {
   sessionId: string
   openFleet: (paneId: string) => void
   jump: (paneId: string) => void
+  // the standby suit's readouts: the usagebar cache, and when the session started
+  quota?: FleetQuota
+  startedAt?: number
 }
 
 const FRAME = THEME.frame
@@ -1227,13 +1236,70 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   const suitArt = (): Seg[][] => suitCells().map(r => centered(cellsToSegs(r), cols))
 
-  // the suit at rest over its two lines: standing by, and whether any order ever came
+  // the readouts beside the suit from this width; below it, under the suit
+  const scanSide = cols >= SCAN_SIDE_MIN_COLS
+  // the rows the standby suit takes, its readouts under it when they do not fit beside
+  const suitH = SUIT_BLOCK_ROWS + (scanSide ? 0 : SUIT_UNDER_ROWS)
+
+  const READOUT_COLOR: Record<Readout['tone'], string> = { primary: PRIMARY, bright: BRIGHT, error: ERROR, frame: FRAME }
+
+  // `LABEL ▰▱▱▱▱ value`: the label in frame, a meter when it has one, the value in its tone
+  const readoutSegs = (r: Readout | undefined): Seg[] => {
+    if (r === undefined) return []
+    const color = READOUT_COLOR[r.tone]
+    const lit = r.meter ? Math.min(POWER_METER_W, Math.max(0, Math.ceil(r.meter.pct * POWER_METER_W))) : 0
+    return [
+      ...(r.label === '' ? [] : [{ t: r.label, color: FRAME }, sp(1)]),
+      ...(r.meter ? [{ t: '▰'.repeat(lit), color }, { t: '▱'.repeat(POWER_METER_W - lit), color: MUTED }, sp(1)] : []),
+      { t: r.value, color },
+    ]
+  }
+
+  // the art in its sights: corners on its first and last rows, a blank cell between
+  const sightedArt = (): Seg[][] => {
+    const art = suitCells()
+    return art.map((r, i) => {
+      const [open, close] = i === 0 ? ['⌜', '⌝'] : i === art.length - 1 ? ['⌞', '⌟'] : [' ', ' ']
+      return [{ t: open, color: FRAME }, sp(1), ...cellsToSegs(r), sp(1), { t: close, color: FRAME }]
+    })
+  }
+
+  // the suit at rest over its two lines: standing by, and whether any order ever came; its
+  // readouts either side when wide, under the two lines when narrow
   const standbyBlock = (): Block => {
+    const now = view.now
+    const lastEv = view.events.at(-1)
+    const r = standbyReadouts({
+      ...(ctx.quota ? { quota: ctx.quota } : {}),
+      crewCost: view.summary.cost,
+      ...(ctx.startedAt === undefined ? {} : { uptimeMs: now - ctx.startedAt }),
+      done: view.finished.filter(a => a.status === 'done').length,
+      active: view.running.length,
+      failed: view.finished.filter(a => a.status === 'failed').length,
+      ...(lastEv ? { lastAgoMs: now - (lastEv.ts + lastEv.ms) } : {}),
+    })
+    const sighted = sightedArt()
+    let art: Seg[][]
+    let under: Seg[][] = []
+    if (scanSide) {
+      const side = Math.floor((cols - SCAN_FRAME_W) / 2)
+      const rest = cols - SCAN_FRAME_W - side
+      // the readouts from the art's second row
+      art = sighted.map((row, i) => {
+        const l = clip(readoutSegs(r.left[i - 1]), side)
+        const rt = clip(readoutSegs(r.right[i - 1]), rest)
+        return [sp(side - segsWidth(l)), ...l, ...row, ...rt, sp(rest - segsWidth(rt))]
+      })
+    } else {
+      art = sighted.map(row => centered(row, cols))
+      under = Array.from({ length: SUIT_UNDER_ROWS }, (_, i) => leftRight(readoutSegs(r.left[i]), readoutSegs(r.right[i]), cols))
+    }
     const lines: Seg[][] = [
-      ...suitArt(),
+      ...art,
       BLANK,
       centered([{ t: 'MARK XLII · STANDBY', color: FRAME }], cols),
       centered([{ t: view.sections.length === 0 ? 'AWAITING ORDERS, SIR.' : 'ALL CREW DOCKED, SIR.', color: PRIMARY }], cols),
+      ...under,
     ]
     return { h: lines.length, node: <Box flexDirection="column">{lines.map(lineNode)}</Box> }
   }
@@ -1281,7 +1347,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const suit =
       view.running.length === 0 &&
       suitFits &&
-      left() - flight.h - SUIT_BLOCK_ROWS - recentH(Math.min(total, MIN_RECENT)) >= leastList
+      left() - flight.h - suitH - recentH(Math.min(total, MIN_RECENT)) >= leastList
         ? standbyBlock()
         : undefined
     const room = left() - flight.h - (suit?.h ?? 0)

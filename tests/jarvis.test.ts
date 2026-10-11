@@ -81,7 +81,8 @@ import {
 } from '../hooks/herdr'
 import { register } from '../hooks/register'
 import { BIG_ROWS, BURN_RAMP, GAUGE_RAMP } from '../hooks/fleetChart'
-import { SUIT_BLOCK_ROWS, SUIT_ROWS } from '../hooks/suit'
+import { SCAN_SIDE_MIN_COLS, SUIT_BLOCK_ROWS, SUIT_COLS, SUIT_ROWS, SUIT_UNDER_ROWS } from '../hooks/suit'
+import { LIMITS_PATH } from '../hooks/fleetSource'
 
 const near = (got: number | undefined, want: number, digits: number) =>
   expect(got !== undefined && Math.abs(got - want) < 10 ** -digits).toBe(true)
@@ -3864,14 +3865,16 @@ describe('standby suit', () => {
     expect(lines[lineOf(lines, STANDBY) - 1]?.trim()).toBe('')
     expect(lineOf(lines, '子代理')).toBeGreaterThan(lineOf(lines, 'AWAITING ORDERS'))
     expect(lines.join('\n')).toContain('還沒有派工')
-    // centered in the 80 cells: the helmet's top 12 pixels wide, its sides 16 wide
+    // centered in the 80 cells: the helmet's top 12 pixels wide, its sides 16 wide; the
+    // sights' corner a blank cell before the art
     const flat = (n: Node | string): string[] =>
       typeof n === 'string' || n.type === 'Text' || n.props?.flexDirection === 'row'
         ? [textOf(n)]
         : (n.children ?? []).flatMap(flat)
     const rowsDrawn = flat(tree)
     const top = rowsDrawn[rowsDrawn.findIndex(l => l.includes(STANDBY)) - SUIT_ROWS - 1] ?? ''
-    expect(top.length - top.trimStart().length).toBe(Math.floor((80 - 24) / 2) + 4)
+    expect(top.length - top.trimStart().length).toBe(Math.floor((80 - 24) / 2) - 2)
+    expect(top.indexOf('▄')).toBe(Math.floor((80 - 24) / 2) + 4)
     expect(cellWidth(top)).toBe(80)
     expect(findText(tree, /^MARK XLII · STANDBY$/)?.props?.['color']).toBe(THEME.frame)
     expect(findText(tree, /^AWAITING ORDERS, SIR\.$/)?.props?.['color']).toBe(THEME.primary)
@@ -3926,8 +3929,10 @@ describe('standby suit', () => {
       for (let i = 0; i < events; i += 1) await $.tool.call({ tool: 'Read', file_path: `/f/e${i}.ts` })
       // title, tabs, in-flight 4, recent events 3 + max(1, events up to 3), the least list:
       // 3 + 3 finished + `… 還有 1 個` (as tall as all 4 finished, which it then shows)
-      const least = 2 + 4 + 3 + Math.max(1, Math.min(events, 3)) + 3 + 3 + 1 + SUIT_BLOCK_ROWS
+      const base = 2 + 4 + 3 + Math.max(1, Math.min(events, 3)) + 3 + 3 + 1 + SUIT_BLOCK_ROWS
       for (const cols of [40, 65, 100]) {
+        // a narrow pane puts the readouts under the suit
+        const least = base + (cols < SCAN_SIDE_MIN_COLS ? SUIT_UNDER_ROWS : 0)
         let tree = await draw($, least, cols)
         expect(linesOf(tree).join('\n')).toContain(STANDBY)
         expect(findAllText(tree, /^job \d+\s*$/)).toHaveLength(4)
@@ -3938,6 +3943,153 @@ describe('standby suit', () => {
       }
     })
   }
+
+  // one string per drawn row, the texts of a row Box joined as drawn
+  const rowsOf = (n: Node | string): string[] =>
+    typeof n === 'string' || n.type === 'Text' || n.props?.flexDirection === 'row'
+      ? [textOf(n)]
+      : (n.children ?? []).flatMap(rowsOf)
+  const QHOME = '/home/u'
+  const limits = (used5h: number, used7d: number) =>
+    JSON.stringify({
+      fiveHour: { usedPercentage: used5h, resetsAt: 1000, windowMinutes: 300 },
+      sevenDay: { usedPercentage: used7d, resetsAt: 2000, windowMinutes: 10080 },
+      fetchedAtMs: 0,
+    })
+  // the usagebar cache under HOME, its reads counted
+  const quotaFile = (on: On, text: string | undefined) => {
+    const reads = { n: 0 }
+    mock.env(on, { HOME: QHOME })
+    on('fs.read', async (_$, e) => {
+      if (e.path !== `${QHOME}/${LIMITS_PATH}`) throw new Error('ENOENT')
+      reads.n += 1
+      if (text === undefined) throw new Error('ENOENT')
+      return { value: text }
+    })
+    return reads
+  }
+
+  for (const cols of [64, 65, 100]) {
+    test(`wide enough (${cols}): readouts either side of the suit, corners round it`, async ($, on) => {
+      const clock = engine(on, 'agent-1')
+      quotaFile(on, limits(9, 100))
+      await start($)
+      await $.agent.spawn(spawnInput({ description: 'find files', subagentType: 'Explore' }))
+      await clock.advance(3000)
+      await $.tool.call({ tool: 'Read', file_path: '/f/a.ts' })
+      await $.turn.complete(complete('agent-1'))
+      await draw($, 45, cols)
+      await clock.advance(10)
+      const tree = await draw($, 45, cols)
+      const rows = rowsOf(tree)
+      const standby = rows.findIndex(l => l.includes(STANDBY))
+      const top = standby - SUIT_ROWS - 1
+      const art = rows.slice(top, standby - 1)
+      expect(art.every(l => /[▀▄]/.test(l))).toBe(true)
+      // the corners round the art, the readouts outside them
+      const frame = SUIT_COLS + 4
+      const side = Math.floor((cols - frame) / 2)
+      const first = art[0] ?? ''
+      const last = art[art.length - 1] ?? ''
+      expect([...first].slice(side, side + frame).join('')).toMatch(/^⌜ .* ⌝$/)
+      expect([...last].slice(side, side + frame).join('')).toMatch(/^⌞ .* ⌟$/)
+      // left and right columns on the same rows: POWER 5H beside the crew docked, the spend beside FAIL
+      expect(art[1]).toMatch(/POWER 5H ▰▱▱▱▱ 9%.*⌝?.*CREW 1 DOCKED/)
+      expect(art[3]).toMatch(/CREW \$\S+.*0 FAIL/)
+      expect(art[4]).toMatch(/UPTIME 3s.*LAST 0s/)
+      expect(art[2]).toContain('0 ACTIVE')
+      // the left column ends against the frame, the right starts after it
+      expect((art[1] ?? '').indexOf('9%') + 2).toBe(side)
+      expect([...(art[1] ?? '')].slice(side + frame).join('').startsWith('CREW 1 DOCKED')).toBe(true)
+      // 100% is a cell wider than the 18 a 64- or 65-wide side has: cut, not spilled
+      if (side < 19) expect(art[2]).toContain('POWER 7D ▰▰▰▰▰ 10…')
+      else expect(art[2]).toContain('POWER 7D ▰▰▰▰▰ 100%')
+      expect(findText(tree, /^POWER 5H$/)?.props?.['color']).toBe(THEME.frame)
+      expect(findText(tree, /^9%$/)?.props?.['color']).toBe(THEME.primary)
+      expect(findText(tree, /^⌜$/)?.props?.['color']).toBe(THEME.frame)
+      expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
+      // beside the suit the readouts add no row: the art, a blank, then the two lines
+      expect(rows[standby + 1]).toContain('ALL CREW DOCKED, SIR.')
+      expect(rows.slice(standby + 2).some(l => l.includes('子代理'))).toBe(true)
+      expect(rows.slice(standby + 2).some(l => l.includes('DOCKED') && !l.includes('SIR'))).toBe(false)
+    })
+  }
+
+  test('narrow: readouts under the suit, the gate counting their rows', async ($, on) => {
+    const clock = engine(on, 'agent-1')
+    quotaFile(on, limits(9, 96))
+    await start($)
+    await draw($, 60, 40)
+    await clock.advance(10)
+    const tree = await draw($, 60, 40)
+    const rows = rowsOf(tree)
+    const standby = rows.findIndex(l => l.includes(STANDBY))
+    expect(rows[standby + 1]).toContain('AWAITING ORDERS, SIR.')
+    const under = rows.slice(standby + 2, standby + 2 + SUIT_UNDER_ROWS)
+    expect(under[0]).toMatch(/^POWER 5H ▰▱▱▱▱ 9% +CREW 0 DOCKED$/)
+    expect(under[1]).toMatch(/^POWER 7D ▰▰▰▰▰ 96% +0 ACTIVE$/)
+    expect(under[2]).toMatch(/^CREW \$0 +0 FAIL$/)
+    expect(under[3]).toMatch(/^UPTIME 0s +LAST --$/)
+    expect(rows[standby + 2 + SUIT_UNDER_ROWS]).not.toMatch(/POWER|DOCKED|UPTIME/)
+    // corners round the centered art, no readout beside it
+    expect(rows[standby - SUIT_ROWS - 1]).toMatch(/^ *⌜ .* ⌝ *$/)
+    expect(rows[standby - 2]).toMatch(/^ *⌞ .* ⌟ *$/)
+    expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(40)
+    // title, tabs, in-flight 4, recent events 4, the subagent card's border and title 3,
+    // its least rows 3, the suit and the readouts under it
+    const least = 2 + 4 + 4 + 3 + 3 + SUIT_BLOCK_ROWS + SUIT_UNDER_ROWS
+    let at = await draw($, least, 40)
+    expect(linesOf(at).join('\n')).toContain(STANDBY)
+    expect(paneRows(at)).toBeLessThanOrEqual(least)
+    at = await draw($, least - 1, 40)
+    expect(linesOf(at).join('\n')).not.toContain(STANDBY)
+    expect(paneRows(at)).toBeLessThanOrEqual(least - 1)
+  })
+
+  test('no quota file: the left column has no power lines', async ($, on) => {
+    const clock = engine(on, 'agent-1')
+    quotaFile(on, undefined)
+    await start($)
+    await draw($, 45, 80)
+    await clock.advance(10)
+    const text = rowsOf(await draw($, 45, 80)).join('\n')
+    expect(text).toContain(STANDBY)
+    expect(text).not.toContain('POWER')
+    expect(text).toContain('UPTIME')
+  })
+
+  test('the quota file is read at most once in 30 s while the now page shows the suit', async ($, on) => {
+    const clock = engine(on, 'agent-1')
+    const reads = quotaFile(on, limits(9, 96))
+    await start($)
+    await draw($, 45, 80)
+    await clock.advance(10)
+    expect(reads.n).toBe(1)
+    expect(rowsOf(await draw($, 45, 80)).join('\n')).toContain('POWER 7D')
+    for (let i = 0; i < 2; i += 1) {
+      await clock.advance(10_000)
+      await draw($, 45, 80)
+    }
+    await clock.advance(10_000)
+    expect(reads.n).toBe(1)
+    await clock.advance(1_000)
+    await draw($, 45, 80)
+    await clock.advance(10)
+    expect(reads.n).toBe(2)
+    // another page: no reads however long
+    await press($, 'tab-log', 45, 80)
+    await clock.advance(31_000)
+    await draw($, 45, 80)
+    await clock.advance(10)
+    expect(reads.n).toBe(2)
+    // nor while a subagent runs
+    await $.agent.spawn(spawnInput({ description: 'find files', subagentType: 'Explore' }))
+    await press($, 'tab-now', 45, 80)
+    await clock.advance(31_000)
+    await draw($, 45, 80)
+    await clock.advance(10)
+    expect(reads.n).toBe(2)
+  })
 
   test('narrower than the art and its margin the suit is left out; no row overflows', async ($, on) => {
     engine(on, 'agent-1')

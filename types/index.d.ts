@@ -175,6 +175,8 @@ declare module 'claude-code' {
       eventTotal: number
       fleet: FleetView
       fleetCursor: FleetCursor
+      // the usagebar cache as the standby suit last read it; null when it was not there
+      standbyQuota: FleetQuota | null
     }
   }
 }

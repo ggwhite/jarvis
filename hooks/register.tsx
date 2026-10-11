@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { FleetJumpError, JarvisAgent, JarvisPage, JarvisUi } from '../types'
+import type { FleetJumpError, FleetQuota, JarvisAgent, JarvisPage, JarvisUi } from '../types'
 
 import {
   ANIM_MS,
@@ -30,7 +30,8 @@ import type { Completion, EngineAgent } from './jarvis'
 import { drawCockpit } from './cockpit'
 import { RUN_TIMEOUT_MS, createReporter, jarvisText, inHerdr } from './herdr'
 import type { Reporter } from './herdr'
-import { EMPTY_FLEET, FLEET_MS, FLEET_RUN_TIMEOUT_MS, focusArgv, refreshFleet, withJump } from './fleetSource'
+import { parseQuota } from './fleet'
+import { EMPTY_FLEET, FLEET_MS, FLEET_RUN_TIMEOUT_MS, LIMITS_PATH, focusArgv, refreshFleet, withJump } from './fleetSource'
 import type { FleetIo } from './fleetSource'
 
 const PANE = 'jarvis'
@@ -38,6 +39,8 @@ const MAX_EARLY = 100
 // the fleet page counts as in view a poll period past SEEN_MS: a drawing that lands after
 // the next tick does not stop the poll
 const FLEET_SEEN_MS = SEEN_MS + FLEET_MS
+// the standby suit reads the usagebar cache at most this often
+const QUOTA_EVERY_MS = 30_000
 
 const agents = atom({ plugin: 'jarvis', key: 'agents' } as const, [])
 const main = atom({ plugin: 'jarvis', key: 'main' } as const, {
@@ -64,6 +67,7 @@ const ui = atom({ plugin: 'jarvis', key: 'ui' } as const, {
 const eventTotal = atom({ plugin: 'jarvis', key: 'eventTotal' } as const, 0)
 const fleet = atom({ plugin: 'jarvis', key: 'fleet' } as const, EMPTY_FLEET)
 const fleetCursor = atom({ plugin: 'jarvis', key: 'fleetCursor' } as const, {})
+const standbyQuota = atom({ plugin: 'jarvis', key: 'standbyQuota' } as const, null as FleetQuota | null)
 
 // Tool calls that last as long as the agents they start, whose own calls are tracked:
 // counting them in flight would hide a stuck subagent.
@@ -167,6 +171,11 @@ export const register: Register = on => {
   // the fleet poll, one per register: a session started again cancels the last one's
   let fleetTimer: Timer | undefined
   let fleetBusy = false
+  // when the session started: the standby suit's uptime
+  let sessionStartedAt: number | undefined
+  // the standby suit's quota read, when it last asked for one; set at session.start
+  let quotaReadAt = -Infinity
+  let quotaOn: ((now: number) => void) | undefined
 
   on('session.start', async ($, e, next) => {
     unknown.clear()
@@ -178,6 +187,13 @@ export const register: Register = on => {
       })
     } catch {
       // the command is optional
+    }
+
+    try {
+      sessionStartedAt = await $.clock.now()
+    } catch {
+      // no clock: no uptime
+      sessionStartedAt = undefined
     }
 
     let reporter: Reporter | undefined
@@ -303,6 +319,24 @@ export const register: Register = on => {
           // the page stays as it was
         }
       })()
+    }
+
+    quotaReadAt = -Infinity
+    quotaOn = (now: number) => {
+      if (home === '' || now - quotaReadAt < QUOTA_EVERY_MS) return
+      quotaReadAt = now
+      try {
+        $.clock.after(1, async () => {
+          try {
+            const q = parseQuota(await io.read(`${home}/${LIMITS_PATH}`))
+            await update($, standbyQuota, () => q ?? null)
+          } catch {
+            // the suit keeps what it showed
+          }
+        })
+      } catch {
+        // no clock: no power lines
+      }
     }
 
     try {
@@ -557,6 +591,8 @@ export const register: Register = on => {
     if (view.running.length > 0 || boot !== undefined) pace?.(ANIM_MS)
     const shown = await read($, ui)
     if (shown.page === 'fleet' || shown.page === 'fleetDetail') fleetOn?.(now)
+    if (shown.page === 'now' && view.running.length === 0) quotaOn?.(now)
+    const quota = await read($, standbyQuota)
     let sessionId = ''
     try {
       sessionId = await $.session.id()
@@ -596,6 +632,8 @@ export const register: Register = on => {
       sessionId,
       openFleet: (paneId: string) => setUi(u => ({ ...u, page: 'fleetDetail', paneId })),
       jump: (paneId: string) => fleetJump?.(paneId),
+      ...(quota ? { quota } : {}),
+      ...(sessionStartedAt === undefined ? {} : { startedAt: sessionStartedAt }),
     })
   })
 }
