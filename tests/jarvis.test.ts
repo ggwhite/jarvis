@@ -2880,12 +2880,12 @@ describe('Mark 42', () => {
 
   test('the palette lives in THEME; no squad color is a theme tone or reads as the alarm red', () => {
     expect(THEME).toMatchObject({
-      frame: '#2B9FC0',
-      primary: '#5CE1FF',
-      accent: '#F2B84B',
-      bright: '#E6FBFF',
+      frame: '#B07A2A',
+      primary: '#F2B84B',
+      accent: '#5CE1FF',
+      bright: '#FFF1D6',
       error: '#FF3B30',
-      muted: '#1F4E5F',
+      muted: '#4A3418',
       suitRed: '#C8102E',
       suitGold: '#E8B04B',
     })
@@ -2894,6 +2894,8 @@ describe('Mark 42', () => {
     for (const c of JARVIS_PALETTE) {
       const [r, g, b] = rgb(c)
       expect(r > 200 && g < 140 && b < 140).toBe(false)
+      const [pr, pg, pb] = rgb(THEME.primary)
+      expect(Math.hypot(r - pr, g - pg, b - pb)).toBeGreaterThan(100)
     }
   })
 

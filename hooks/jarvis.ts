@@ -24,26 +24,26 @@ export const SEEN_MS = 5000
 // Two events further apart than this are drawn with a dated rule between them.
 export const BREAK_MS = 60 * 60 * 1000
 
-// The HUD palette, Mark 42: the deep teal of frames and rules, ice blue text, amber for
-// what runs and what is locked on, near white for the figures that matter, the alarm red
-// of errors and warnings, the dark blue of what is finished or old; the suit's red and
-// gold for the title.
+// The HUD palette, JARVIS amber: the dark gold of frames and rules, amber text, ice blue
+// for what runs and what is locked on, warm white for the figures that matter, the alarm
+// red of errors and warnings, the dark brown of what is finished or old; the suit's red
+// and gold for the title.
 export const THEME = {
-  frame: '#2B9FC0',
-  primary: '#5CE1FF',
-  accent: '#F2B84B',
-  bright: '#E6FBFF',
+  frame: '#B07A2A',
+  primary: '#F2B84B',
+  accent: '#5CE1FF',
+  bright: '#FFF1D6',
   error: '#FF3B30',
-  muted: '#1F4E5F',
+  muted: '#4A3418',
   suitRed: '#C8102E',
   suitGold: '#E8B04B',
 } as const
 
 // One color per squad member, by dispatch order; none is a theme tone or near the alarm red.
-export const JARVIS_PALETTE = ['#3EC6FF', '#5EE6A8', '#9B8CFF', '#FF8FB1', '#D4E157', '#E6A7FF']
+export const JARVIS_PALETTE = ['#3EC6FF', '#5EE6A8', '#9B8CFF', '#FF8FB1', '#A8F868', '#E6A7FF']
 
 // The arc reactor beside the title: braille cells brightening and dimming while a squad
-// member runs, amber at the dim end and near white at the bright; one dark cell at rest.
+// member runs, ice blue at the dim end and warm white at the bright; one dark cell at rest.
 export const REACTOR = ['⣀', '⣤', '⣶', '⣿', '⣶', '⣤']
 const REACTOR_COLOR = [THEME.accent, THEME.accent, THEME.bright, THEME.bright, THEME.bright, THEME.accent]
 const REACTOR_IDLE = '⣿'

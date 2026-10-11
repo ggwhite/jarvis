@@ -25,15 +25,15 @@ describe('fleet chart colors', () => {
     expect(mix(THEME.frame, THEME.accent, 0)).toBe(THEME.frame)
     expect(mix(THEME.frame, THEME.accent, 1)).toBe(THEME.accent)
     expect(GAUGE_RAMP).toHaveLength(9)
-    expect([GAUGE_RAMP[0], GAUGE_RAMP.at(-1)]).toEqual([THEME.primary, THEME.accent])
+    expect([GAUGE_RAMP[0], GAUGE_RAMP[4], GAUGE_RAMP.at(-1)]).toEqual([THEME.frame, THEME.primary, THEME.bright])
     expect(BURN_RAMP).toHaveLength(17)
-    expect([BURN_RAMP[0], BURN_RAMP[8], BURN_RAMP.at(-1)]).toEqual([THEME.frame, THEME.accent, THEME.suitRed])
+    expect([BURN_RAMP[0], BURN_RAMP[8], BURN_RAMP.at(-1)]).toEqual([THEME.frame, THEME.primary, THEME.suitRed])
     expect(ramp([THEME.error], 4)).toEqual([THEME.error])
   })
 
   test('pick clamps to the ends', () => {
-    expect(pick(GAUGE_RAMP, -1)).toBe(THEME.primary)
-    expect(pick(GAUGE_RAMP, 2)).toBe(THEME.accent)
+    expect(pick(GAUGE_RAMP, -1)).toBe(THEME.frame)
+    expect(pick(GAUGE_RAMP, 2)).toBe(THEME.bright)
   })
 })
 

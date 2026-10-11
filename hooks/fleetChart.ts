@@ -42,9 +42,10 @@ export function pick(colors: readonly string[], t: number): string {
   return colors[Math.round(clamp01(t) * (colors.length - 1))] ?? colors[0] ?? THEME.frame
 }
 
-// The arc reactor's glow, ice to amber; the burn chart's heat, teal to amber to suit red.
-export const GAUGE_RAMP = ramp([THEME.primary, THEME.accent], 8)
-export const BURN_RAMP = ramp([THEME.frame, THEME.accent, THEME.suitRed], 8)
+// The arc reactor's glow, dark gold to amber to warm white; the burn chart's heat, dark
+// gold to amber to suit red.
+export const GAUGE_RAMP = ramp([THEME.frame, THEME.primary, THEME.bright], 4)
+export const BURN_RAMP = ramp([THEME.frame, THEME.primary, THEME.suitRed], 8)
 
 // Two rows of pixels to one row of cells: a half block in the top pixel's color, the
 // bottom one its background.
@@ -72,8 +73,8 @@ export type RingSpec = { w: number; h: number; rOut: number; rIn: number; tip: n
 export const RING_BIG: RingSpec = { w: 14, h: 14, rOut: 7, rIn: 4.4, tip: 0.04 }
 export const RING_SMALL: RingSpec = { w: 7, h: 6, rOut: 3.4, rIn: 1.6, tip: 0.06 }
 
-// A ring lit clockwise from twelve o'clock as far as `pct`: ice to amber, a bright tip,
-// red all round when the window runs out before it resets; the rest muted.
+// A ring lit clockwise from twelve o'clock as far as `pct`: dark gold to warm white, a
+// bright tip, red all round when the window runs out before it resets; the rest muted.
 export function ringPixels(spec: RingSpec, pct: number, depleted: boolean): Pixels {
   const p = clamp01(pct)
   const cx = spec.w / 2
@@ -118,8 +119,8 @@ export function gaugeCells(spec: RingSpec, pct: number, depleted: boolean, overl
 
 const EIGHTHS = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█']
 
-// A bar `width` cells long filled to `pct` in eighths of a cell, glowing ice to amber
-// (red when depleted); the rest shaded.
+// A bar `width` cells long filled to `pct` in eighths of a cell, glowing dark gold to
+// warm white (red when depleted); the rest shaded.
 export function gaugeBar(width: number, pct: number, depleted: boolean): Cell[] {
   const p = clamp01(pct)
   const eighths = Math.round(p * width * 8)

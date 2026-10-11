@@ -135,7 +135,7 @@ export const ROLE_COLOR: Record<Role, string> = {
   worker: '#9B8CFF',
   verifier: '#FF8FB1',
   fork: '#E6A7FF',
-  workflow: '#D4E157',
+  workflow: '#A8F868',
   other: FRAME,
 }
 export const MAIN_COLOR = ACCENT
@@ -145,8 +145,8 @@ const LIST_COLOR = FRAME
 const EVENT_COLOR = FRAME
 const FLIGHT_COLOR = ACCENT
 const IDLE_COLOR = MUTED
-// A tool's name in an event or in flight: a label in the frame teal, bold, beside the ice
-// blue of what it did.
+// A tool's name in an event or in flight: a label in the frame gold, bold, beside the
+// amber of what it did.
 const TOOL_COLOR = FRAME
 
 export const RECOVERED = '↻'
@@ -549,7 +549,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   }
 
   // the rule between two runs of events more than BREAK_MS apart, dated by the later one:
-  // the rule dark blue, the date in the frame teal
+  // the rule dark brown, the date in the frame gold
   const breakLine = (ts: number, inner: number): Seg[] => {
     const date = fmtDate(ts)
     return [
@@ -888,8 +888,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       const { n, color } = memberOf(a)
       const live = p === 'init' || p === 'active'
       const lock = view.locks.get(a.id)
-      // a finished, failed or lost card reads in the frame teal; its brackets and mark are
-      // the dark blue
+      // a finished, failed or lost card reads in the frame gold; its brackets and mark are
+      // the dark brown
       const tone: Partial<Seg> = live ? {} : { color: FRAME }
       const statusColor =
         lock === 'lost'
@@ -1004,7 +1004,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const inner = cols - 4
     const list = view.inflight
     const color = list.length > 0 ? FLIGHT_COLOR : IDLE_COLOR
-    // the frame dark blue when idle, the title still in the frame teal
+    // the frame dark brown when idle, the title still in the frame gold
     const head = leftRight(
       [title('進行中', list.length > 0 ? FLIGHT_COLOR : FRAME)],
       list.length > 0 ? [{ t: `${list.length} 個`, color: FRAME }] : [],
