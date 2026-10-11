@@ -25,14 +25,26 @@ describe('fleet layout', () => {
       [23, { idle: 'summary', blanks: true, height: 23 }],
       [22, { idle: 'summary', blanks: false, height: 21 }],
       [20, { burnRows: 2, height: 19 }],
-      [18, { burnRows: 0, height: 14 }],
-      [13, { active: 'lines', gauge: 'small', height: 8 }],
+      [14, { burnRows: 0, height: 14 }],
+      [8, { active: 'lines', gauge: 'small', height: 8 }],
       [7, { active: 'lines', gauge: 'bar', height: 7 }],
       [6, { gauge: 'bar', cut: 2, height: 6 }],
     ]
     for (const [room, want] of rows) expect(planFleet(shape(room))).toMatchObject(want)
     expect(planFleet(shape(31)).cut).toBeUndefined()
     expect(planFleet(shape(7)).cut).toBeUndefined()
+  })
+
+  test('a stage that gave up the burn or the idle rows takes back what still fits: the burn, then idle lines, then blanks', () => {
+    const busy = (room: number) => planFleet({ cols: 65, room, windows: 2, active: 8, idle: 0 })
+    // 65×30, eight suits working: their cards do not fit, but beside their lines the 4-row burn does
+    expect(busy(28)).toMatchObject({ active: 'lines', gauge: 'small', burnRows: 4, blanks: true, height: 22 })
+    expect(busy(28).cut).toBeUndefined()
+    expect(busy(19)).toMatchObject({ active: 'lines', burnRows: 2, blanks: false, height: 18 })
+    const mixed = (room: number) => planFleet({ cols: 65, room, windows: 2, active: 7, idle: 3 })
+    expect(mixed(28)).toMatchObject({ active: 'lines', burnRows: 4, idle: 'lines', blanks: true, height: 24 })
+    expect(mixed(23)).toMatchObject({ burnRows: 4, idle: 'lines', blanks: false, height: 22 })
+    expect(mixed(21)).toMatchObject({ burnRows: 4, idle: 'summary', blanks: false, height: 20 })
   })
 
   test('wide starts with big rings and gives them up last; narrow starts on lines and bars', () => {

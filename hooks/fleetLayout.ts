@@ -56,6 +56,18 @@ export function fleetHeight(s: FleetShape, mode: FleetMode, st: FleetStage): num
   return gauge + burn + legion + (st.blanks ? sections - 1 : 0)
 }
 
+// The stage that fit may have given up more than it had to: take back, while it still fits,
+// the burn (its full rows, else two), then the idle suits' lines, then the blank rows.
+function refill(s: FleetShape, mode: FleetMode, st: FleetStage, base: number): FleetStage {
+  const fits = (x: FleetStage) => fleetHeight(s, mode, x) <= s.room
+  let best = st
+  const burn = [base, Math.min(2, base)].find(n => n > best.burnRows && fits({ ...best, burnRows: n }))
+  if (burn !== undefined) best = { ...best, burnRows: burn }
+  if (best.idle === 'summary' && fits({ ...best, idle: 'lines' })) best = { ...best, idle: 'lines' }
+  if (!best.blanks && fits({ ...best, blanks: true })) best = { ...best, blanks: true }
+  return best
+}
+
 export function planFleet(s: FleetShape): FleetPlan {
   const mode = modeOf(s.cols)
   const narrow = mode === 'narrow'
@@ -76,8 +88,9 @@ export function planFleet(s: FleetShape): FleetPlan {
   const s7: FleetStage = { ...s6, gauge: s6.gauge === 'big' ? 'small' : s6.gauge }
   const s8: FleetStage = { ...s7, gauge: s7.gauge === 'none' ? 'none' : 'bar' }
   for (const st of [s0, s1, s2, s3, s4, s5, s6, s7, s8]) {
-    const height = fleetHeight(s, mode, st)
-    if (height <= s.room) return { ...st, mode, height }
+    if (fleetHeight(s, mode, st) > s.room) continue
+    const best = refill(s, mode, st, base)
+    return { ...best, mode, height: fleetHeight(s, mode, best) }
   }
   const full = fleetHeight(s, mode, s8)
   const body = legionRows(s, mode, s8)

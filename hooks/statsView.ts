@@ -35,7 +35,8 @@ export function roleBeats(events: readonly JarvisEvent[], agents: readonly Jarvi
 }
 
 export type StatsShape = { cols: number; room: number; roles: number; models: number }
-// `roleCut`: rows left for the dispatch roles, the last one `… 還有 N 種`.
+// `roleCut`: rows left for the dispatch roles, the last one `… 還有 N 種`; a single row is a
+// summary line of every role instead.
 export type StatsPlan = { mode: FleetMode; gauge: GaugeForm; height: number; roleCut?: number }
 
 const GAUGES: Record<FleetMode, GaugeForm[]> = { wide: ['big', 'small', 'bar'], mid: ['small', 'bar'], narrow: ['bar'] }

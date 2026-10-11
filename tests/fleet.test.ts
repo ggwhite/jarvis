@@ -1156,6 +1156,16 @@ describe('fleet page', () => {
     expect(lines).toContain('STANDBY 30 艘')
   })
 
+  test('65×30 with eight suits working: their lines, and the burn back in the room they left', async ($, on) => {
+    const busy = Array.from({ length: 8 }, (_, i) => pane({ pane_id: `w1:b${i}`, label: `Busy ${i}`, agent_status: 'working', agent_session: { value: `busy-${i}` } }))
+    const w = sampleWorld({ panes: busy })
+    const clock = fleetEngine(on, w)
+    const lines = linesOf(await openFleet($, clock, 30, 65))
+    expect(lines.join('\n')).toContain('── TODAY BURN')
+    expect(lines.filter(l => /Busy \d/.test(l))).toHaveLength(8)
+    expect(lines.length).toBeLessThanOrEqual(30)
+  })
+
   test('too many busy suits for the rows are cut with a count', async ($, on) => {
     const busy = Array.from({ length: 8 }, (_, i) => pane({ pane_id: `w1:b${i}`, label: `Busy ${i}`, agent_status: 'working', agent_session: { value: `busy-${i}` } }))
     const w = sampleWorld({ panes: busy })
@@ -1232,7 +1242,7 @@ describe('fleet page', () => {
     for (const head of ['── TODAY BURN', '── IRON LEGION']) {
       expect(roomy[roomy.findIndex(l => l.startsWith(head)) - 1]?.trim()).toBe('')
     }
-    const tight = linesOf(await draw($, 12, 80))
+    const tight = linesOf(await draw($, 10, 80))
     const legion = tight.findIndex(l => l.startsWith('── IRON LEGION'))
     expect(tight[legion - 1]?.trim()).not.toBe('')
   })
@@ -1384,6 +1394,16 @@ describe('fleet detail page', () => {
     const lines = linesOf(await draw($)).join('\n')
     expect(lines).toMatch(/目錄\s*（無）/)
     expect(lines).toMatch(/工作區\s*（無）/)
+  })
+
+  test('at 40 columns the detail page compacts the tabs, its actions keep their words: 跳轉', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    await openFleet($, clock, 40, 40)
+    await press($, 'suit-1', 40, 40)
+    const bar = tabBarButtons(await draw($, 40, 40)).map(b => [b.props?.['key'], textOf(b)])
+    expect(bar).toContainEqual(['tab-now', '現'])
+    expect(bar).toContainEqual(['jump', '跳轉'])
   })
 
   test('a jump error over many stderr lines shows its first line only', async ($, on) => {

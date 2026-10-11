@@ -64,7 +64,7 @@ import {
   lockOf,
   reactorOf,
 } from '../hooks/jarvis'
-import { HEALTH_TEXT, MIN_EVENT_ROWS, RECOVERED, ROLE_COLOR, TINY_COLS, TITLE, WIDE_COLS } from '../hooks/cockpit'
+import { HEALTH_TEXT, MIN_EVENT_ROWS, RECOVERED, ROLE_COLOR, TITLE } from '../hooks/cockpit'
 import {
   MAX_FAILURES,
   REFRESH_MS,
@@ -1638,6 +1638,9 @@ describe('cockpit layout helpers', () => {
 })
 
 describe('cockpit layout', () => {
+  // a pane comfortably wide (stats side by side) and one under the 64-column mid breakpoint
+  const WIDE_COLS = 120
+  const TINY_COLS = 64
   const callMain = async ($: Engine, n: number) => {
     for (let i = 0; i < n; i += 1) await $.tool.call({ tool: 'Read', file_path: `/a/f${i}.ts` })
   }
@@ -1848,6 +1851,20 @@ describe('pages', () => {
     expect(blockTitles(await draw($)).slice(2)).toEqual([['事件流']])
     await hotkey($, 'n')
     expect(blockTitles(await draw($)).slice(2, 5)).toEqual([['子代理'], ['進行中'], ['最近事件']])
+  })
+
+  test('at 40 columns the tabs not shown keep their first character: 現 beside the whole 事件流 on the log page', async ($, on) => {
+    engineAll(on)
+    await press($, 'tab-log', 30, 40)
+    const ui = await mountPane($, 30, 40)
+    const tabs = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('tab-'))
+    expect(tabs.map(b => [b.key, b.text])).toEqual([
+      ['tab-now', '現'],
+      ['tab-log', '事件流'],
+      ['tab-stats', '統'],
+      ['tab-fleet', '艦'],
+    ])
+    await ui.unmount()
   })
 
   test('the title bar carries the health: nominal primary, loop and stall red', async ($, on) => {
@@ -2590,6 +2607,19 @@ describe('beauty pass 4', () => {
 })
 
 describe('HUD logic', () => {
+  test('each dispatch role wears a squad color: one palette for both, its values unchanged', () => {
+    expect(JARVIS_PALETTE).toEqual(['#E879F9', '#88F8A8', '#9B8CFF', '#FF8FB1', '#A8F868', '#D0C8F8'])
+    expect(ROLE_COLOR).toEqual({
+      Explore: JARVIS_PALETTE[0],
+      clerk: JARVIS_PALETTE[1],
+      worker: JARVIS_PALETTE[2],
+      verifier: JARVIS_PALETTE[3],
+      fork: JARVIS_PALETTE[5],
+      workflow: JARVIS_PALETTE[4],
+      other: THEME.frame,
+    })
+  })
+
   test('jarvis colors cycle through the palette by dispatch order, none the accent, error or muted tone', () => {
     expect(JARVIS_PALETTE.length).toBeGreaterThanOrEqual(6)
     expect(JARVIS_PALETTE.map((_, i) => jarvisColor(i))).toEqual(JARVIS_PALETTE)
@@ -3533,6 +3563,28 @@ describe('stats dashboard', () => {
     expect(modelCard(tree).rows.some(r => /Opus\s+\d+%\s+×1/.test(r))).toBe(true)
   })
 
+  test('model bars fill the card\'s inside exactly, an unpriced model\'s 未計價 and its ×N kept whole', async ($, on) => {
+    mock.clock(on, { now: 0 })
+    const plan = ['claude-opus-5-5', 'claude-sonnet-5-5', HAIKU, 'mystery-model']
+    let n = 0
+    on('agent.spawn', async () => ({ model: plan[n] ?? HAIKU, agentId: `agent-${(n += 1)}` }))
+    on('turn.complete', async (_$, e) => ({ text: e.answer }))
+    for (const [i, model] of plan.entries()) {
+      await $.agent.spawn(spawnIn(`job ${i}`, 'worker'))
+      await $.turn.complete(complete(`agent-${i + 1}`, { usage: usage(model, 10_000, 1000, 0, 0) }))
+    }
+    await press($, 'tab-stats')
+    for (const [cols, rows] of [[40, 60], [44, 60], [64, 20]] as const) {
+      const { rows: lines, inner } = modelCard(await draw($, rows, cols))
+      const bars = lines.filter(l => /^(Opus|Sonnet|Haiku|其他)/.test(l))
+      expect([cols, bars.length]).toEqual([cols, 4])
+      expect([cols, bars.filter(l => /[█▏▎▍▌▋▊▉]/.test(l)).length]).toEqual([cols, 3])
+      for (const l of bars) expect([cols, l, cellWidth(l)]).toEqual([cols, l, inner])
+      for (const l of bars) expect(l).toMatch(/ ×1$/)
+      expect(bars.find(l => l.startsWith('其他'))).toMatch(/ 未計價 ×1$/)
+    }
+  })
+
   test('short of rows: the rings become bars, then the roles are cut with … 還有 N 種; never past the pane', async ($, on) => {
     engineAll(on)
     await press($, 'tab-stats')
@@ -3541,7 +3593,38 @@ describe('stats dashboard', () => {
       expect(linesOf(tree).length).toBeLessThanOrEqual(rows)
       expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
     }
-    expect(linesOf(await draw($, 20, 80)).some(l => /… 還有 \d+ 種/.test(l))).toBe(true)
+    // two rows for the roles: one role, then the count of the rest (one row is the summary line)
+    expect(linesOf(await draw($, 21, 80)).some(l => /… 還有 \d+ 種/.test(l))).toBe(true)
+  })
+
+  test('room for one dispatch row only: a summary of every role, ▶ for those running, not … 還有 N 種', async ($, on) => {
+    mock.clock(on, { now: 0 })
+    // four models: the model card leaves the dispatch card one row at 65×20 and 44×18
+    const plan = ['claude-opus-5-5', 'claude-sonnet-5-5', HAIKU, 'mystery-model']
+    let n = 0
+    on('agent.spawn', async () => ({ model: plan[n % plan.length] ?? HAIKU, agentId: `agent-${(n += 1)}` }))
+    on('turn.complete', async (_$, e) => ({ text: e.answer }))
+    const types = ['Explore', 'clerk', 'worker', 'verifier', 'fork', 'Plan']
+    for (const [i, t] of types.entries()) await $.agent.spawn(spawnIn(`job ${i + 1}`, t))
+    for (const [i, model] of plan.entries()) {
+      await $.turn.complete(complete(`agent-${i + 1}`, { usage: usage(model, 10_000, 1000, 0, 0) }))
+    }
+    await press($, 'tab-stats')
+    for (const [rows, cols] of [[20, 65], [18, 44]] as const) {
+      const tree = await draw($, rows, cols)
+      const dispatch = (tree.children ?? []).find(k => typeof k !== 'string' && findText(k, /^DISPATCH$/)) as Node
+      const card = (dispatch.children ?? [])[0] as Node
+      const lines = (card.children ?? []).map(k => (typeof k === 'string' ? k : textOf(k)))
+      expect([cols, lines.length]).toEqual([cols, 2])
+      expect(lines.join('\n')).not.toMatch(/還有/)
+      expect(lines[1]).toMatch(/^Explore 1 · clerk 1 · worker 1 · /)
+      expect(cellWidth(lines[1] ?? '')).toBeLessThanOrEqual(cols - 4)
+      for (const t of findAllText(card, /\S/).slice(1)) expect([THEME.frame, THEME.accent]).toContain(t.props?.color)
+      if (cols === 65) {
+        expect(lines[1]).toMatch(/verifier 1 · fork ▶1 · /)
+        expect(findText(card, /^▶1$/)?.props?.color).toBe(THEME.accent)
+      }
+    }
   })
 
   test('busy stats at 40, 65 and 100 columns, short to tall: never past the width; from 24 rows, never past the rows', async ($, on) => {

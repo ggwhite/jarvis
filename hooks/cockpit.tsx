@@ -22,6 +22,7 @@ import {
   CHAIN_WARN,
   FAMILY_COLOR,
   FAMILY_NAME,
+  JARVIS_PALETTE,
   MAIN_ACTOR,
   MAX_EVENTS,
   MAX_NUMBERED,
@@ -50,10 +51,6 @@ import {
 } from './jarvis'
 import type { BootStage, Cockpit, EventRow, Health, ListUnit, Lock, ModelShare, Outcome, Phase, Role, RoleStat } from './jarvis'
 
-// At this many columns the stats page sets the main and dispatch cards side by side.
-export const WIDE_COLS = 120
-// Below this the stats page stacks the model and savings cards.
-export const TINY_COLS = 64
 export const MIN_EVENT_ROWS = 4
 // The dispatch card draws each role's last hour once its inside is this wide.
 export const BEATS_MIN_INNER = 56
@@ -132,14 +129,15 @@ export const HEALTH_TEXT: Record<Health, string> = {
   stuck: 'WARNING: STALL DETECTED',
 }
 
-// One color per role in the dispatch flow; the main loop is the accent gold everywhere.
+// One color per role in the dispatch flow, from the squad palette; the main loop is the
+// accent ice blue everywhere.
 export const ROLE_COLOR: Record<Role, string> = {
-  Explore: '#E879F9',
-  clerk: '#88F8A8',
-  worker: '#9B8CFF',
-  verifier: '#FF8FB1',
-  fork: '#D0C8F8',
-  workflow: '#A8F868',
+  Explore: JARVIS_PALETTE[0],
+  clerk: JARVIS_PALETTE[1],
+  worker: JARVIS_PALETTE[2],
+  verifier: JARVIS_PALETTE[3],
+  fork: JARVIS_PALETTE[5],
+  workflow: JARVIS_PALETTE[4],
   other: FRAME,
 }
 export const MAIN_COLOR = ACCENT
@@ -622,6 +620,16 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       if (showBeats) segs.push(sp(2), { t: brailleLine(beats.get(r.role) ?? [], ROLE_BEAT_W), color: active ? ACCENT : FRAME })
       return segs
     }
+    // one row only: every role on it, its done count and ▶ while running, cut to the card
+    if (cut !== undefined && cut <= 1) {
+      const brief: Seg[] = statsRoles.flatMap((r, i): Seg[] => [
+        ...(i > 0 ? [{ t: ' · ', color: FRAME }] : []),
+        { t: r.label, color: FRAME },
+        ...(r.done > 0 || r.running === 0 ? [{ t: ` ${r.done}`, color: FRAME }] : []),
+        ...(r.running > 0 ? [sp(1), { t: `▶${r.running}`, color: ACCENT, bold: true }] : []),
+      ])
+      return { w, color: ACCENT, lines: [[title('DISPATCH', ACCENT)], clip(brief, inner)] }
+    }
     const shown = cut === undefined ? statsRoles : statsRoles.slice(0, Math.max(0, cut - 1))
     const more: Seg[][] = cut === undefined ? [] : [[{ t: `… 還有 ${statsRoles.length - shown.length} 種`, color: FRAME }]]
     return { w, color: ACCENT, lines: [[title('DISPATCH', ACCENT)], ...shown.map(row), ...more] }
@@ -644,9 +652,9 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const colorOf = (r: ModelShare) => (r.family ? FAMILY_COLOR[r.family] : FRAME)
     const labelW = Math.max(4, ...view.models.map(r => cellWidth(r.label)))
     const countW = Math.max(0, ...view.models.map(r => cellWidth(`×${r.count}`)))
-    const shareW = 4
-    const share = (r: ModelShare): Seg =>
-      r.family ? { t: padCells(shareLabel(r.share), shareW, 'right'), color: PRIMARY } : { t: '未計價', color: FRAME }
+    const shareText = (r: ModelShare) => (r.family ? shareLabel(r.share) : '未計價')
+    const shareW = Math.max(4, ...view.models.map(r => cellWidth(shareText(r))))
+    const share = (r: ModelShare): Seg => ({ t: padCells(shareText(r), shareW, 'right'), color: r.family ? PRIMARY : FRAME })
     if (gauge === 'bar') {
       const barW = Math.max(3, inner - labelW - 1 - 1 - shareW - 1 - countW)
       const rows = view.models.map((r): Seg[] => [

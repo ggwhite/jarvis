@@ -40,7 +40,7 @@ export const THEME = {
 } as const
 
 // One color per squad member, by dispatch order; none is a theme tone or near the alarm red.
-export const JARVIS_PALETTE = ['#E879F9', '#88F8A8', '#9B8CFF', '#FF8FB1', '#A8F868', '#D0C8F8']
+export const JARVIS_PALETTE = ['#E879F9', '#88F8A8', '#9B8CFF', '#FF8FB1', '#A8F868', '#D0C8F8'] as const
 
 // The arc reactor beside the title: braille cells brightening and dimming while a squad
 // member runs, ice blue at the dim end and warm white at the bright; one dark cell at rest.
