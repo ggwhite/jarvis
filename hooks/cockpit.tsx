@@ -1290,21 +1290,24 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const labelW = 9
     const inner = cols - 4
     const field = (label: string, value: Seg[]): Seg[] => [{ t: padCells(label, labelW), color: FRAME }, ...value]
+    const orNone = (text: string | undefined, color: string): Seg => (text ? { t: text, color } : { t: '（無）', color: FRAME })
     // a paragraph under its label: wrapped to the card, at most `max` lines
     const para = (label: string, text: string | undefined, max: number, color: string): Seg[][] => {
       const wrapped = wrapCells(text ?? '', Math.max(1, inner - labelW), max)
-      if (wrapped.length === 0) return [field(label, [{ t: '（無）', color: FRAME }])]
+      if (wrapped.length === 0) return [field(label, [orNone(undefined, color)])]
       return wrapped.map((l, i) => [{ t: padCells(i === 0 ? label : '', labelW), color: FRAME }, { t: l, color }])
     }
     const family = s.model ? nameFamilyOf(s.model) : undefined
-    const jumpError = fleetView.jumpError?.paneId === s.paneId ? fleetView.jumpError.text : undefined
+    // one line however many herdr wrote on stderr
+    const jumpText = fleetView.jumpError?.paneId === s.paneId ? fleetView.jumpError.text : undefined
+    const jumpError = jumpText === undefined ? undefined : fitCells(jumpText.split('\n').map(l => l.trim()).find(l => l !== '') ?? '', inner)
     const lines: Line[] = [
       [suitIcon(s), sp(1), { t: s.title, color: PRIMARY, bold: true }],
       field('狀態', [FLEET_STATUS_TEXT[s.status]]),
-      field('工作區', [{ t: s.workspace, color: PRIMARY }]),
-      field('目錄', [{ t: s.cwd, color: PRIMARY }]),
-      field('模型', [{ t: s.model ? shortModel(s.model) : '?', color: family ? FAMILY_COLOR[family] : FRAME }]),
-      field('閒置', [{ t: s.lastAt === undefined ? '?' : fmtAgo(view.now - s.lastAt), color: PRIMARY }]),
+      field('工作區', [orNone(s.workspace, PRIMARY)]),
+      field('目錄', [orNone(s.cwd, PRIMARY)]),
+      field('模型', [orNone(s.model && shortModel(s.model), family ? FAMILY_COLOR[family] : FRAME)]),
+      field('閒置', [orNone(s.lastAt === undefined ? undefined : fmtAgo(view.now - s.lastAt), PRIMARY)]),
       field('今日', [{ t: `${fmtBig(s.todayTokens)} tok · ${fmtUsd(s.todayCost)}`, color: BRIGHT, bold: true }]),
       field('近期工具', [{ t: `${s.tools} 次`, color: PRIMARY }]),
       ...para('最後提問', s.lastUser, 3, PRIMARY),

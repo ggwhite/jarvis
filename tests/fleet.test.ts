@@ -147,6 +147,8 @@ type World = {
   cap?: number
   // `herdr agent focus` answers exit 1, `no such pane`
   focusFails?: boolean
+  // what a failed focus says on stderr instead of `no such pane`
+  focusStderr?: string
   // the session the engine says it is
   selfId?: string
   calls: string[][]
@@ -162,7 +164,7 @@ const fakeIo = (w: World): FleetIo => ({
     }
     if (argv[0] === 'herdr' && argv[1] === 'workspace') return ok(workspaceJson)
     if (argv[0] === 'herdr' && argv[1] === 'agent' && w.focusFails) {
-      return { exitCode: 1, stdout: '', stderr: 'no such pane', truncated: false }
+      return { exitCode: 1, stdout: '', stderr: w.focusStderr ?? 'no such pane', truncated: false }
     }
     if (argv[0] === 'tail') {
       const c = w.files[argv[3] ?? '']
@@ -1093,4 +1095,44 @@ describe('fleet detail page', () => {
       .map(textOf)
     expect(bad).toEqual([])
   })
+
+  test('a suit with no cwd or workspace reads （無） there', async ($, on) => {
+    const w = sampleWorld({ panes: [pane({ cwd: '', workspace_id: '' })] })
+    const clock = fleetEngine(on, w)
+    await openFleet($, clock)
+    await press($, 'suit-1')
+    const lines = linesOf(await draw($)).join('\n')
+    expect(lines).toMatch(/目錄\s*（無）/)
+    expect(lines).toMatch(/工作區\s*（無）/)
+  })
+
+  test('a jump error over many stderr lines shows its first line only', async ($, on) => {
+    const w = sampleWorld({ focusFails: true, focusStderr: '\nno such pane\n  at herdr::agent::focus\n' })
+    const clock = fleetEngine(on, w)
+    await openFleet($, clock)
+    await press($, 'suit-1')
+    await press($, 'jump')
+    await clock.advance(10)
+    const lines = linesOf(await draw($))
+    expect(lines.filter(l => l.includes('跳轉失敗'))).toHaveLength(1)
+    expect(lines.join('\n')).toContain('跳轉失敗：no such pane')
+    expect(lines.join('\n')).not.toContain('herdr::agent')
+  })
+
+  for (const cols of [40, 64, 80]) {
+    test(`a detail page with a long cwd and reply stays within ${cols} columns`, async ($, on) => {
+      const cwd = `/srv/${'deep/'.repeat(30)}alpha`
+      const long = Array.from({ length: 80 }, (_, i) => `word${i}`).join(' ')
+      const w = sampleWorld({ panes: [pane({ cwd })], focusFails: true, focusStderr: 'x'.repeat(200) })
+      w.files[pathOf(cwd, 'sess-a')] = jsonl(human(T0 - 3 * MIN, long), reply(T0 - MIN, 'a1', [text(long)]))
+      const clock = fleetEngine(on, w)
+      await openFleet($, clock, 40, cols)
+      await press($, 'suit-1', 40, cols)
+      await press($, 'jump', 40, cols)
+      await clock.advance(10)
+      const tree = await draw($, 40, cols)
+      expect(linesOf(tree).join('\n')).toContain('跳轉失敗')
+      expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
+    })
+  }
 })
