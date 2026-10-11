@@ -119,6 +119,9 @@ export const register: Register = on => {
   let fleetSeenAt = -Infinity
   let fleetOn: ((now: number) => void) | undefined
   let fleetJump: ((paneId: string) => void) | undefined
+  // the fleet poll, one per register: a session started again cancels the last one's
+  let fleetTimer: Timer | undefined
+  let fleetBusy = false
 
   on('session.start', async ($, e, next) => {
     try {
@@ -206,8 +209,9 @@ export const register: Register = on => {
       },
     }
     fleetEnabled = herdrOn && home !== ''
-    let fleetTimer: Timer | undefined
-    let fleetBusy = false
+    fleetTimer?.cancel()
+    fleetTimer = undefined
+    fleetBusy = false
     const refresh = async () => {
       if (fleetBusy) return
       fleetBusy = true

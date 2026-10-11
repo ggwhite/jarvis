@@ -968,6 +968,21 @@ describe('fleet page', () => {
     expect(paneLists(w)).toBe(settled)
   })
 
+  test('a session started again leaves one fleet poll: one pane list each FLEET_MS', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    await openFleet($, clock)
+    await start($)
+    await draw($)
+    await clock.advance(10)
+    for (let i = 0; i < 3; i += 1) {
+      const before = paneLists(w)
+      await draw($)
+      await clock.advance(FLEET_MS)
+      expect(paneLists(w) - before).toBe(1)
+    }
+  })
+
   test('TODAY reads SCANNING… until the first scan has caught up', async ($, on) => {
     const w = sampleWorld()
     const clock = fleetEngine(on, w)
