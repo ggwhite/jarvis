@@ -9,6 +9,7 @@ import {
   BEAT_GLYPHS,
   BEAT_MS,
   DECOMMISSION_MS,
+  EMPTY_TAIL,
   addToday,
   beatLine,
   beatsOf,
@@ -70,6 +71,9 @@ const near = (got: number | undefined, want: number, digits: number) =>
   expect(got !== undefined && Math.abs(got - want) < 10 ** -digits).toBe(true)
 
 const T0 = new Date(2026, 9, 11, 15, 0, 0).getTime()
+// the local midnight that starts T0's day, and a time the day before
+const MIDNIGHT = new Date(2026, 9, 11).getTime()
+const YESTERDAY = new Date(2026, 9, 10, 22, 0, 0).getTime()
 const MIN = 60_000
 const iso = (ts: number) => new Date(ts).toISOString()
 
@@ -151,6 +155,8 @@ type World = {
   focusStderr?: string
   // the session the engine says it is
   selfId?: string
+  // listing a folder fails for a moment
+  listFails?: boolean
   calls: string[][]
 }
 
@@ -174,15 +180,16 @@ const fakeIo = (w: World): FleetIo => ({
   },
   stat: async path => {
     const c = w.files[path]
-    return c === undefined ? undefined : { size: utf8Len(c), mtimeMs: w.mtime?.[path] ?? 1 }
+    return c === undefined ? undefined : { size: utf8Len(c), mtimeMs: w.mtime?.[path] ?? T0 }
   },
   read: async path => (path === `${HOME}/.claude/herdr-usagebar/claude-limits-latest.json` ? w.quota : undefined),
   // a folder exists while some file is in it
   list: async dir => {
+    if (w.listFails) return undefined
     const prefix = `${dir}/`
     const inside = Object.keys(w.files).filter(p => p.startsWith(prefix) && !p.slice(prefix.length).includes('/'))
     if (inside.length === 0) return undefined
-    return inside.map(p => ({ name: p.slice(prefix.length), kind: 'file', size: utf8Len(w.files[p] ?? ''), mtimeMs: w.mtime?.[p] ?? 1 }))
+    return inside.map(p => ({ name: p.slice(prefix.length), kind: 'file', size: utf8Len(w.files[p] ?? ''), mtimeMs: w.mtime?.[p] ?? T0 }))
   },
 })
 
@@ -281,6 +288,13 @@ describe('fleet transcript tail', () => {
     expect(tailOf([], T0)).toEqual({ stamps: [], tools: 0 })
   })
 
+  test('the empty tail is frozen, its stamps too: no session pushes into another', () => {
+    expect(Object.isFrozen(EMPTY_TAIL)).toBe(true)
+    expect(Object.isFrozen(EMPTY_TAIL.stamps)).toBe(true)
+    expect(() => EMPTY_TAIL.stamps.push(1)).toThrow()
+    expect(freshFile(T0).tail.stamps).toEqual([])
+  })
+
   test('the heartbeat window is BEATS buckets of BEAT_MS', () => {
     expect(BEATS * BEAT_MS).toBe(60 * MIN)
   })
@@ -328,12 +342,19 @@ describe('fleet today', () => {
     expect(f.cost).toBe(0)
   })
 
-  test('today resumes on the same day and a grown file, restarts on a new day or a shrunk file', () => {
+  test('today resumes on a grown file, restarts on a shrunk file', () => {
     const f = { ...freshFile(T0), offset: 400, tokens: 9 }
     expect(resumeFrom(f, 500, T0)?.tokens).toBe(9)
     expect(resumeFrom(f, 300, T0)).toBeUndefined()
-    expect(resumeFrom(f, 500, T0 + 24 * 60 * MIN)).toBeUndefined()
     expect(resumeFrom(undefined, 500, T0)).toBeUndefined()
+  })
+
+  test('a new day goes on from where the file was read, its count at zero', () => {
+    const f = { ...freshFile(T0), offset: 400, tokens: 9, cost: 1, lastMsgId: 'm9' }
+    const tomorrow = T0 + 24 * 60 * MIN
+    const r = resumeFrom(f, 500, tomorrow)
+    expect([r?.offset, r?.day, r?.tokens, r?.cost, r?.lastMsgId]).toEqual([400, dayKey(tomorrow), 0, 0, 'm9'])
+    expect(resumeFrom(f, 300, tomorrow)).toBeUndefined()
   })
 })
 
@@ -545,7 +566,7 @@ describe('fleet refresh', () => {
       for (const id of ids) {
         const p = pathOf('/srv/alpha', id)
         w.files[p] = (w.files[p] ?? '') + jsonl(reply(at - MIN, `${id}-r${round}`, [text(`r${round}`)], use(1, 1)))
-        ;(w.mtime ??= {})[p] = round + 1
+        ;(w.mtime ??= {})[p] = at + round
       }
     }
 
@@ -637,11 +658,11 @@ describe('fleet refresh', () => {
   })
 
   test('a shrunk transcript is counted again from the start', async () => {
-    const w: World = { panes: [pane()], files: { [alpha]: alphaLog }, mtime: { [alpha]: 1 }, calls: [] }
+    const w: World = { panes: [pane()], files: { [alpha]: alphaLog }, mtime: { [alpha]: T0 + 1 }, calls: [] }
     const io = fakeIo(w)
     const first = await refreshFleet(io, EMPTY_FLEET, {}, T0)
     w.files[alpha] = jsonl(reply(T0 - MIN, 'n1', [text('fresh')], use(1, 1)))
-    w.mtime = { [alpha]: 2 }
+    w.mtime = { [alpha]: T0 + 2 }
     const next = await refreshFleet(io, first.view, first.cursor, T0 + 5000)
     expect(next.view.sessions[0]?.todayTokens).toBe(2)
     expect(next.view.sessions[0]?.lastReply).toBe('fresh')
@@ -665,7 +686,7 @@ describe('fleet refresh', () => {
     expect(second.view.sessions[0]?.todayTokens).toBe(192)
 
     w.files[sub] = subLog + jsonl(reply(T0 - MIN, 's2', [text('more')], use(3, 3)))
-    w.mtime = { [sub]: 2 }
+    w.mtime = { [sub]: T0 + 2 }
     const third = await refreshFleet(io, second.view, second.cursor, T0 + 10_000)
     expect(third.view.sessions[0]?.todayTokens).toBe(198)
     expect(w.calls.filter(c => c[0] === 'tail' && c[3] === sub).map(c => c[2])).toEqual(['+1', `+${utf8Len(subLog) + 1}`])
@@ -687,6 +708,76 @@ describe('fleet refresh', () => {
     for (let i = 0; i < 5 && state.view.scanning; i += 1) state = await refreshFleet(io, state.view, state.cursor, T0)
     expect(state.view.scanning).toBe(false)
     expect(state.view.sessions.map(s => s.todayTokens)).toEqual([167, 167, 167, 167])
+  })
+
+  describe('a cold start reads today only', () => {
+    const oldLog = jsonl(human(YESTERDAY - MIN, 'old ask'), reply(YESTERDAY, 'y1', [text('OLD-REPLY')], use(100, 50)))
+    const subs = Array.from({ length: 12 }, (_, i) => subOf('/srv/alpha', 'sess-a', `agent-${i}.jsonl`))
+
+    test('files last written before today: no use read, the main one its tail once, scanning done at once', async () => {
+      const files: Record<string, string> = { [alpha]: oldLog }
+      const mtime: Record<string, number> = { [alpha]: MIDNIGHT - 1 }
+      for (const s of subs) {
+        files[s] = jsonl(reply(YESTERDAY, s, [text('x')], use(5, 5)))
+        mtime[s] = YESTERDAY
+      }
+      const w: World = { panes: [pane()], files, mtime, calls: [] }
+      const io = fakeIo(w)
+      const { view, cursor } = await refreshFleet(io, EMPTY_FLEET, {}, T0)
+      expect(w.calls.filter(c => c[0] === 'tail').map(c => [c[2], c[3]])).toEqual([[String(TAIL_BYTES), alpha]])
+      expect(view.scanning).toBe(false)
+      expect([view.sessions[0]?.todayTokens, view.sessions[0]?.lastReply]).toEqual([0, 'OLD-REPLY'])
+      for (const p of [alpha, ...subs]) {
+        const f = cursor[p]
+        expect([f?.offset, f?.size, f?.day, f?.tokens, f?.caughtUpDay]).toEqual([utf8Len(files[p] ?? ''), utf8Len(files[p] ?? ''), dayKey(T0), 0, dayKey(T0)])
+      }
+      expect(cursor[subs[0] ?? '']?.readAt).toBeUndefined()
+      const before = tails(w)
+      const next = await refreshFleet(io, view, cursor, T0 + 5000)
+      expect(tails(w)).toBe(before)
+      expect(next.view.sessions[0]?.lastReply).toBe('OLD-REPLY')
+    })
+
+    test('a file written today is counted from its start as before', async () => {
+      const sub = subOf('/srv/alpha', 'sess-a', 'agent-t.jsonl')
+      const w: World = {
+        panes: [pane()],
+        files: { [alpha]: alphaLog, [sub]: jsonl(reply(T0 - 3 * MIN, 's1', [text('x')], use(20, 7))) },
+        mtime: { [alpha]: MIDNIGHT + MIN, [sub]: T0 - MIN },
+        calls: [],
+      }
+      const { view } = await refreshFleet(fakeIo(w), EMPTY_FLEET, {}, T0)
+      expect(w.calls.filter(c => c[0] === 'tail' && c[2] === '+1').map(c => c[3])).toEqual([alpha, sub])
+      expect([view.sessions[0]?.todayTokens, view.scanning]).toEqual([165 + 27, false])
+    })
+
+    test('a new day goes on from the last offset of a file that grew today', async () => {
+      const w: World = { panes: [pane()], files: { [alpha]: oldLog }, mtime: { [alpha]: YESTERDAY }, calls: [] }
+      const io = fakeIo(w)
+      const first = await refreshFleet(io, EMPTY_FLEET, {}, YESTERDAY + MIN)
+      expect(first.view.sessions[0]?.todayTokens).toBe(150)
+      w.files[alpha] = oldLog + jsonl(reply(T0 - MIN, 'n1', [text('NEW-REPLY')], use(1, 1)))
+      w.mtime = { [alpha]: T0 - MIN }
+      const next = await refreshFleet(io, first.view, first.cursor, T0)
+      expect(w.calls.filter(c => c[0] === 'tail' && c[2]?.startsWith('+')).map(c => c[2])).toEqual(['+1', `+${utf8Len(oldLog) + 1}`])
+      expect([next.view.sessions[0]?.todayTokens, next.view.sessions[0]?.lastReply, next.view.scanning]).toEqual([2, 'NEW-REPLY', false])
+    })
+  })
+
+  test('a subagents folder that fails to list for a moment keeps its files as they were', async () => {
+    const sub = subOf('/srv/alpha', 'sess-a', 'agent-x.jsonl')
+    const w: World = { panes: [pane()], files: { [alpha]: alphaLog, [sub]: jsonl(reply(T0 - 3 * MIN, 's1', [text('x')], use(20, 7))) }, calls: [] }
+    const io = fakeIo(w)
+    const first = await refreshFleet(io, EMPTY_FLEET, {}, T0)
+    w.listFails = true
+    const second = await refreshFleet(io, first.view, first.cursor, T0 + 5000)
+    expect(second.cursor[sub]).toEqual(first.cursor[sub])
+    expect(second.view.sessions[0]?.todayTokens).toBe(192)
+    w.listFails = false
+    const before = tails(w)
+    const third = await refreshFleet(io, second.view, second.cursor, T0 + 10_000)
+    expect(tails(w)).toBe(before)
+    expect(third.view.sessions[0]?.todayTokens).toBe(192)
   })
 
   test('no subagents folder is no subagents', async () => {
@@ -719,6 +810,15 @@ const linesOf = (n: Node | string): string[] => {
   const kids = n.children ?? []
   if (n.props?.flexDirection === 'row') return [kids.map(textOf).join('')]
   return kids.flatMap(linesOf)
+}
+
+// every row of texts side by side
+const rowNodes = (n: Node | string, out: Node[] = []): Node[] => {
+  if (typeof n === 'string') return out
+  const kids = n.children ?? []
+  if (n.props?.flexDirection === 'row' && kids.length > 0 && kids.every(k => typeof k !== 'string' && k.type === 'Text')) out.push(n)
+  for (const k of kids) rowNodes(k, out)
+  return out
 }
 
 const allTexts = (n: Node | string, out: Node[] = []): Node[] => {
@@ -792,7 +892,7 @@ const fleetEngine = (on: On, w: World) => {
   on('fs.stat', async (_$, e) => {
     const c = w.files[e.path]
     if (c === undefined) throw new Error('ENOENT')
-    return { value: { kind: 'file' as const, size: utf8Len(c), mtimeMs: w.mtime?.[e.path] ?? 1, isLink: false } }
+    return { value: { kind: 'file' as const, size: utf8Len(c), mtimeMs: w.mtime?.[e.path] ?? T0, isLink: false } }
   })
   on('fs.read', async (_$, e) => {
     if (e.path === `${HOME}/${LIMITS_PATH}` && w.quota !== undefined) return { value: w.quota }
@@ -881,6 +981,36 @@ describe('fleet page', () => {
     expect(lines).not.toContain('DEPLETED')
   })
 
+  test('a stale quota still shows when it resets', async ($, on) => {
+    const w = sampleWorld({ quota: limitsJson(92, T0 - 16 * MIN) })
+    const clock = fleetEngine(on, w)
+    const lines = linesOf(await openFleet($, clock)).join('\n')
+    expect(lines).toMatch(/7d .* 92%  STALE · RESET \d\d:\d\d/)
+  })
+
+  test('a forecast that runs out before the reset paints its whole line in the error color', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const tree = await openFleet($, clock)
+    const colors = (label: string) =>
+      allTexts(rowNodes(tree).find(r => textOf(r).startsWith(label)) ?? {})
+        .filter(t => textOf(t).trim() !== '')
+        .map(t => t.props?.['color'])
+    expect(colors('7d ').length).toBeGreaterThan(0)
+    expect(colors('7d ').every(c => c === THEME.error)).toBe(true)
+    expect(colors('5h ').every(c => c === THEME.error)).toBe(false)
+  })
+
+  test('a window used up reads DEPLETED, not a countdown, in the error color', async ($, on) => {
+    const w = sampleWorld({ quota: limitsJson(100) })
+    const clock = fleetEngine(on, w)
+    const tree = await openFleet($, clock)
+    const lines = linesOf(tree).join('\n')
+    expect(lines).toMatch(/7d .*100%  DEPLETED · RESET \d\d:\d\d/)
+    expect(lines).not.toContain('DEPLETED IN')
+    expect(allTexts(tree).find(t => textOf(t).trim() === 'DEPLETED')?.props?.['color']).toBe(THEME.error)
+  })
+
   test('a full context is red, an old idle suit is up for decommission', async ($, on) => {
     const w = sampleWorld()
     const clock = fleetEngine(on, w)
@@ -918,6 +1048,17 @@ describe('fleet page', () => {
       expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
       expect(tabBarWidth(tree)).toBeLessThanOrEqual(cols)
     })
+  }
+
+  for (const cols of [40, 64, 80]) {
+    for (const [name, quota] of [['stale', limitsJson(92, T0 - 16 * MIN)], ['used-up', limitsJson(100)]] as const) {
+      test(`a ${name} quota stays within ${cols} columns`, async ($, on) => {
+        const w = sampleWorld({ quota })
+        const clock = fleetEngine(on, w)
+        const tree = await openFleet($, clock, 40, cols)
+        expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
+      })
+    }
   }
 
   test('the tab bar fits 40 columns on every page', async ($, on) => {
@@ -968,6 +1109,31 @@ describe('fleet page', () => {
     const settled = paneLists(w)
     await clock.advance(30_000)
     expect(paneLists(w)).toBe(settled)
+  })
+
+  test('leaving the fleet page stops the poll at its next tick', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    await openFleet($, clock)
+    await press($, 'tab-now')
+    await draw($)
+    const before = paneLists(w)
+    await clock.advance(FLEET_MS)
+    expect(paneLists(w)).toBe(before)
+  })
+
+  test('a drawing that lands after the next tick does not stop the poll', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    await openFleet($, clock)
+    const before = paneLists(w)
+    await clock.advance(FLEET_MS + 800)
+    // the drawing after that refresh is late: the next tick comes first
+    await clock.advance(FLEET_MS)
+    expect(paneLists(w) - before).toBe(2)
+    await draw($)
+    await clock.advance(FLEET_MS)
+    expect(paneLists(w) - before).toBe(3)
   })
 
   test('a session started again leaves one fleet poll: one pane list each FLEET_MS', async ($, on) => {

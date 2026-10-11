@@ -1198,14 +1198,26 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const tone = pct >= CONTEXT_ALERT ? ERROR : pct >= CONTEXT_WARN ? ACCENT : PRIMARY
     const stale = quotaStale(q, view.now)
     const f = stale ? undefined : forecast(w, q.fetchedAt)
+    const reset = `RESET ${fmtReset(w.resetsAt)}`
+    // a window that runs out before its reset is one line of the error color
+    if (f?.beforeReset) {
+      const out = w.usedPct >= 100 ? 'DEPLETED' : `DEPLETED IN ~${fmtAgo(Math.max(0, f.depleteAt - view.now))}`
+      return [
+        { t: `${label} `, color: ERROR, bold: true },
+        { t: '█'.repeat(fill), color: ERROR },
+        { t: '░'.repeat(QUOTA_BAR - fill), color: ERROR },
+        { t: padCells(`${pct}%`, 5, 'right'), color: ERROR, bold: true },
+        sp(2),
+        { t: out, color: ERROR, bold: true },
+        { t: ` · ${reset}`, color: ERROR },
+      ]
+    }
     const tail: Seg[] = stale
-      ? [{ t: 'STALE', color: FRAME, bold: true }]
-      : f?.beforeReset
-        ? [
-            { t: `DEPLETED IN ~${fmtAgo(Math.max(0, f.depleteAt - view.now))}`, color: ERROR, bold: true },
-            { t: ` · RESET ${fmtReset(w.resetsAt)}`, color: FRAME },
-          ]
-        : [{ t: `RESET ${fmtReset(w.resetsAt)}`, color: FRAME }]
+      ? [
+          { t: 'STALE', color: FRAME, bold: true },
+          { t: ` · ${reset}`, color: FRAME },
+        ]
+      : [{ t: reset, color: FRAME }]
     return [
       { t: `${label} `, color: FRAME, bold: true },
       { t: '█'.repeat(fill), color: tone },

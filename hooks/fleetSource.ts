@@ -1,5 +1,5 @@
 import type { FleetCursor, FleetFile, FleetJumpError, FleetSession, FleetView } from '../types'
-import { EMPTY_TAIL, addToday, dayKey, freshFile, parsePanes, parseQuota, projectDir, resumeFrom, splitLines, tailOf, transcriptPath } from './fleet'
+import { EMPTY_TAIL, addToday, dayKey, dayStart, freshFile, parsePanes, parseQuota, projectDir, resumeFrom, splitLines, tailOf, transcriptPath } from './fleet'
 
 // How often the fleet page asks herdr and the transcripts, while it is in view.
 export const FLEET_MS = 5000
@@ -46,8 +46,8 @@ const subagentDir = (home: string, cwd: string, sessionId: string): string =>
 
 // One look at the fleet: herdr's Claude panes, each transcript and subagent transcript
 // read only when it changed (the main one's tail for the last words, the bytes added
-// since for today's use), at most MAX_READS reads; herdr not answering keeps the last
-// fleet, flagged lost.
+// since for today's use; one last written before today has no use of today to read),
+// at most MAX_READS reads; herdr not answering keeps the last fleet, flagged lost.
 export async function refreshFleet(
   io: FleetIo,
   prev: FleetView,
@@ -60,6 +60,7 @@ export async function refreshFleet(
   if (!panes) return { view: { ...prev, at: now, linkLost: true }, cursor }
 
   const today = dayKey(now)
+  const midnight = dayStart(now)
   const next: FleetCursor = {}
   const sessions: FleetSession[] = []
   let reads = 0
@@ -107,11 +108,21 @@ export async function refreshFleet(
     else if (cursor[path]) next[path] = cursor[path]
     const dir = subagentDir(io.home, p.cwd, p.sessionId)
     const subs: string[] = []
-    for (const e of (await io.list(dir)) ?? []) {
-      if (e.kind !== 'file' || !e.name.endsWith('.jsonl')) continue
-      const subPath = `${dir}/${e.name}`
-      subs.push(subPath)
-      jobs.push({ path: subPath, size: e.size, mtimeMs: e.mtimeMs, main: false })
+    const entries = await io.list(dir)
+    if (entries) {
+      for (const e of entries) {
+        if (e.kind !== 'file' || !e.name.endsWith('.jsonl')) continue
+        const subPath = `${dir}/${e.name}`
+        subs.push(subPath)
+        jobs.push({ path: subPath, size: e.size, mtimeMs: e.mtimeMs, main: false })
+      }
+    } else {
+      // a folder that could not be listed keeps its files as they were
+      for (const [key, f] of Object.entries(cursor)) {
+        if (!key.startsWith(`${dir}/`)) continue
+        next[key] = f
+        subs.push(key)
+      }
     }
     plans.push({ base, path, subs })
   }
@@ -120,6 +131,11 @@ export async function refreshFleet(
   for (const j of [...jobs].sort((x, y) => readAt(x) - readAt(y))) {
     const old = cursor[j.path]
     const same = unchanged(old, j)
+    // last written before today and not yet seen today: read to its end, nothing counted
+    const quiet: FleetFile | undefined =
+      j.mtimeMs < midnight && old?.day !== today
+        ? { ...(old ?? freshFile(now)), offset: j.size, size: j.size, mtimeMs: j.mtimeMs, day: today, tokens: 0, cost: 0 }
+        : undefined
     if (same) {
       next[j.path] = settle(same, true)
     } else if (j.main) {
@@ -131,9 +147,16 @@ export async function refreshFleet(
       const snap = await io.run(['tail', '-c', String(TAIL_BYTES), j.path])
       reads += 1
       const tail = snap?.exitCode === 0 ? tailOf(splitLines(snap.stdout, j.size > TAIL_BYTES).rows, now) : (old?.tail ?? EMPTY_TAIL)
+      const snapped = snap?.exitCode === 0 && !snap.truncated
+      if (quiet) {
+        next[j.path] = settle({ ...quiet, tail, readAt: now }, snapped)
+        continue
+      }
       const rest = await countRest(j.path, resumeFrom(old, j.size, now) ?? freshFile(now), j.size)
       const file = { ...rest.file, size: j.size, mtimeMs: j.mtimeMs, tail, readAt: now }
-      next[j.path] = settle(file, snap?.exitCode === 0 && !snap.truncated && rest.done)
+      next[j.path] = settle(file, snapped && rest.done)
+    } else if (quiet) {
+      next[j.path] = settle(quiet, true)
     } else {
       const before = reads
       const rest = await countRest(j.path, resumeFrom(old, j.size, now) ?? freshFile(now), j.size)

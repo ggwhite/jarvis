@@ -32,6 +32,9 @@ import type { FleetIo } from './fleetSource'
 
 const PANE = 'jarvis'
 const MAX_EARLY = 100
+// the fleet page counts as in view a poll period past SEEN_MS: a drawing that lands after
+// the next tick does not stop the poll
+const FLEET_SEEN_MS = SEEN_MS + FLEET_MS
 
 const agents = atom({ plugin: 'jarvis', key: 'agents' } as const, [])
 const main = atom({ plugin: 'jarvis', key: 'main' } as const, {
@@ -114,7 +117,7 @@ export const register: Register = on => {
   let bootAt: number | undefined
   // the boot animates only while the pane is in view
   const booting = (now: number) => bootAt !== undefined && now - drawnAt <= SEEN_MS
-  // the fleet page: its poll runs while the page was drawn within SEEN_MS
+  // the fleet page: its poll runs while it is the page and was drawn within FLEET_SEEN_MS
   let fleetEnabled = false
   let fleetSeenAt = -Infinity
   let fleetOn: ((now: number) => void) | undefined
@@ -232,7 +235,8 @@ export const register: Register = on => {
       try {
         fleetTimer = $.clock.every(FLEET_MS, async () => {
           const t = await $.clock.now()
-          if (t - fleetSeenAt > SEEN_MS) {
+          const { page } = await read($, ui)
+          if ((page !== 'fleet' && page !== 'fleetDetail') || t - fleetSeenAt > FLEET_SEEN_MS) {
             fleetTimer?.cancel()
             fleetTimer = undefined
             return

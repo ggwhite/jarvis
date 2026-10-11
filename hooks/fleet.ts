@@ -111,11 +111,19 @@ export function dayKey(ts: number): string {
   return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`
 }
 
+// The local midnight that starts the day of `ts`.
+export function dayStart(ts: number): number {
+  const d = new Date(ts)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
 // The heartbeat: the last hour in BEATS buckets of BEAT_MS.
 export const BEATS = 12
 export const BEAT_MS = 5 * 60 * 1000
 
-export const EMPTY_TAIL: FleetTail = { stamps: [], tools: 0 }
+// shared by every file not yet read: frozen, stamps too, so none can write into another's
+export const EMPTY_TAIL: FleetTail = Object.freeze({ stamps: Object.freeze([]) as unknown as number[], tools: 0 })
 
 const msgOf = (row: Record<string, unknown>) => obj(row['message'])
 
@@ -207,11 +215,13 @@ export function freshFile(now: number): FleetFile {
   return { size: 0, mtimeMs: 0, offset: 0, day: dayKey(now), tokens: 0, cost: 0, lastMsgId: '', tail: EMPTY_TAIL }
 }
 
-// Where today's count of a file goes on: as it was on the same day while the file only
-// grew; undefined (count again from the start) on a new day or a file that shrank.
+// Where today's count of a file goes on while it only grew: as it was on the same day,
+// at zero on a new day (what came before the offset was written before today);
+// undefined (count again from the start) for a file that shrank.
 export function resumeFrom(file: FleetFile | undefined, size: number, now: number): FleetFile | undefined {
-  if (!file || file.day !== dayKey(now) || size < file.offset) return undefined
-  return file
+  if (!file || size < file.offset) return undefined
+  const today = dayKey(now)
+  return file.day === today ? file : { ...file, day: today, tokens: 0, cost: 0 }
 }
 
 // Adds the assistant messages of `rows` sent today, each message once though its lines
