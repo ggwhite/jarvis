@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { THEME } from '../hooks/jarvis'
-import { SUIT_ART, SUIT_BLOCK_ROWS, SUIT_COLS, SUIT_ROWS, standbyReadouts, suitCells } from '../hooks/suit'
+import { SUIT_ART, SUIT_BLOCK_ROWS, SUIT_COLS, SUIT_ROWS, fmtUptime, standbyReadouts, suitCells } from '../hooks/suit'
 
 describe('suit', () => {
   test('the art is 14 rows of 24 cells, a block of 17 rows with its two lines', () => {
@@ -79,10 +79,22 @@ describe('standby readouts', () => {
     expect(r.left[0]?.tone).toBe('primary')
     expect(r.left[1]?.tone).toBe('error')
     expect(r.left[2]?.value).toBe('$65.48')
-    expect(r.left[3]?.value).toBe('452m00s')
+    expect(r.left[3]?.value).toBe('7h32m')
     expect(r.right.map(x => x.value)).toEqual(['50 DOCKED', '0 ACTIVE', '4 FAIL', '2m00s'])
     expect(r.right.map(x => x.label)).toEqual(['CREW', '', '', 'LAST'])
     expect(r.right[2]?.tone).toBe('error')
+  })
+
+  test('uptime as the statusline writes it: seconds, minutes, hours and minutes, days and hours', () => {
+    expect(fmtUptime(45_000)).toBe('45s')
+    expect(fmtUptime(59_999)).toBe('59s')
+    expect(fmtUptime(60_000)).toBe('1m')
+    expect(fmtUptime(12 * 60_000 + 30_000)).toBe('12m')
+    expect(fmtUptime(3600_000 - 1)).toBe('59m')
+    expect(fmtUptime(3600_000)).toBe('1h0m')
+    expect(fmtUptime(7 * 3600_000 + 32 * 60_000 + 59_000)).toBe('7h32m')
+    expect(fmtUptime(24 * 3600_000 - 1)).toBe('23h59m')
+    expect(fmtUptime(27 * 3600_000 + 59 * 60_000)).toBe('1d3h')
   })
 
   test('power tone: bright from 50%, error from 80%', () => {

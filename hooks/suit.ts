@@ -66,6 +66,17 @@ export const SUIT_UNDER_ROWS = 4
 
 export type Readout = { label: string; value: string; tone: 'primary' | 'bright' | 'error' | 'frame'; meter?: { pct: number } }
 
+// How long the session has been up, as the statusline writes it: `45s`, `12m`, `7h32m`, `1d3h`.
+export function fmtUptime(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h${m % 60}m`
+  return `${Math.floor(h / 24)}d${h % 24}h`
+}
+
 const powerTone = (pct: number): Readout['tone'] => (pct >= 80 ? 'error' : pct >= 50 ? 'bright' : 'primary')
 
 // The scan station's readouts: power, crew spend and uptime on the left; the crew's count
@@ -88,7 +99,7 @@ export function standbyReadouts(input: {
     left.push({ label: 'POWER 7D', value: `${Math.round(q.sevenDay.usedPct)}%`, tone: powerTone(q.sevenDay.usedPct), meter: { pct: q.sevenDay.usedPct / 100 } })
   }
   left.push({ label: 'CREW', value: fmtUsd(input.crewCost), tone: 'primary' })
-  left.push({ label: 'UPTIME', value: input.uptimeMs === undefined ? '--' : fmtDur(input.uptimeMs), tone: 'primary' })
+  left.push({ label: 'UPTIME', value: input.uptimeMs === undefined ? '--' : fmtUptime(input.uptimeMs), tone: 'primary' })
   const right: Readout[] = [
     { label: 'CREW', value: `${input.done} DOCKED`, tone: 'primary' },
     { label: '', value: `${input.active} ACTIVE`, tone: input.active > 0 ? 'bright' : 'frame' },
