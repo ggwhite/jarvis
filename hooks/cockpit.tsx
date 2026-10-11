@@ -1240,11 +1240,13 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     // event rows: a dated rule takes a row like an event
     const total = eventRows(view.events).length
     const recentH = (n: number) => Math.max(1, n) + 3
-    // the suit at rest over the subagent card, when nothing runs and the card keeps its rows
+    // the suit at rest over the subagent card, when nothing runs and the card keeps its rows:
+    // its least list whole, `… 還有` line too, and never under SUIT_MIN_LIST rows inside
+    const leastList = Math.max(listHeight(Math.min(finishedUnits.length, MIN_FINISHED)), SUIT_MIN_LIST + 3)
     const suit =
       view.running.length === 0 &&
       suitFits &&
-      left() - flight.h - SUIT_BLOCK_ROWS - recentH(Math.min(total, MIN_RECENT)) - 3 >= SUIT_MIN_LIST
+      left() - flight.h - SUIT_BLOCK_ROWS - recentH(Math.min(total, MIN_RECENT)) >= leastList
         ? standbyBlock()
         : undefined
     const room = left() - flight.h - (suit?.h ?? 0)

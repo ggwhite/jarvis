@@ -76,7 +76,7 @@ import {
 } from '../hooks/herdr'
 import { register } from '../hooks/register'
 import { BURN_RAMP, GAUGE_RAMP } from '../hooks/fleetChart'
-import { SUIT_BLOCK_ROWS } from '../hooks/suit'
+import { SUIT_BLOCK_ROWS, SUIT_ROWS } from '../hooks/suit'
 
 const near = (got: number | undefined, want: number, digits: number) =>
   expect(got !== undefined && Math.abs(got - want) < 10 ** -digits).toBe(true)
@@ -3665,7 +3665,7 @@ describe('standby suit', () => {
     expect(lineOf(lines, 'AWAITING ORDERS, SIR.')).toBe(lineOf(lines, STANDBY) + 1)
     expect(lines.join('\n')).not.toContain('ALL CREW DOCKED')
     // 14 rows of art, a blank row, then the text; the subagent card below
-    const art = lines.slice(lineOf(lines, STANDBY) - 15, lineOf(lines, STANDBY) - 1)
+    const art = lines.slice(lineOf(lines, STANDBY) - SUIT_ROWS - 1, lineOf(lines, STANDBY) - 1)
     expect(art.every(l => /[▀▄]/.test(l))).toBe(true)
     expect(lines[lineOf(lines, STANDBY) - 1]?.trim()).toBe('')
     expect(lineOf(lines, '子代理')).toBeGreaterThan(lineOf(lines, 'AWAITING ORDERS'))
@@ -3676,7 +3676,7 @@ describe('standby suit', () => {
         ? [textOf(n)]
         : (n.children ?? []).flatMap(flat)
     const rowsDrawn = flat(tree)
-    const top = rowsDrawn[rowsDrawn.findIndex(l => l.includes(STANDBY)) - 15] ?? ''
+    const top = rowsDrawn[rowsDrawn.findIndex(l => l.includes(STANDBY)) - SUIT_ROWS - 1] ?? ''
     expect(top.length - top.trimStart().length).toBe(Math.floor((80 - 24) / 2) + 4)
     expect(cellWidth(top)).toBe(80)
     expect(findText(tree, /^MARK XLII · STANDBY$/)?.props?.['color']).toBe(THEME.frame)
@@ -3707,12 +3707,43 @@ describe('standby suit', () => {
   test('short of rows for three rows of the subagent card the suit is left out', async ($, on) => {
     engine(on, 'agent-1')
     // title, tabs, in-flight card 4, recent events 4, the subagent card's border and title 3
-    expect(linesOf(await draw($, 2 + 4 + 4 + 3 + 3 + 17)).join('\n')).toContain(STANDBY)
-    const text = linesOf(await draw($, 2 + 4 + 4 + 3 + 3 + 17 - 1)).join('\n')
+    expect(linesOf(await draw($, 2 + 4 + 4 + 3 + 3 + SUIT_BLOCK_ROWS)).join('\n')).toContain(STANDBY)
+    const text = linesOf(await draw($, 2 + 4 + 4 + 3 + 3 + SUIT_BLOCK_ROWS - 1)).join('\n')
     expect(text).not.toContain(STANDBY)
     expect(text).toContain('還沒有派工')
     expect(text).toContain('最近事件')
   })
+
+  // rows the pane draws: a card its own height, a row its tallest, a column the sum
+  const paneRows = (n: Node | string): number => {
+    if (typeof n === 'string' || n.type === 'Text') return 1
+    const h = Number(n.props?.['height'])
+    if (Number.isFinite(h) && h > 0) return h
+    const kids = (n.children ?? []).map(paneRows)
+    if (kids.length === 0) return 0
+    return n.props?.flexDirection === 'row' ? Math.max(...kids) : kids.reduce((a, b) => a + b, 0)
+  }
+
+  for (const events of [0, 5]) {
+    test(`more finished than the list keeps (${events} events): the suit only when the whole page fits`, async ($, on) => {
+      engineAll(on)
+      for (let i = 1; i <= 4; i += 1) await $.agent.spawn(spawnIn(`job ${i}`, 'worker'))
+      for (let i = 1; i <= 4; i += 1) await $.turn.complete(complete(`agent-${i}`))
+      for (let i = 0; i < events; i += 1) await $.tool.call({ tool: 'Read', file_path: `/f/e${i}.ts` })
+      // title, tabs, in-flight 4, recent events 3 + max(1, events up to 3), the least list:
+      // 3 + 3 finished + `… 還有 1 個` (as tall as all 4 finished, which it then shows)
+      const least = 2 + 4 + 3 + Math.max(1, Math.min(events, 3)) + 3 + 3 + 1 + SUIT_BLOCK_ROWS
+      for (const cols of [40, 65, 100]) {
+        let tree = await draw($, least, cols)
+        expect(linesOf(tree).join('\n')).toContain(STANDBY)
+        expect(findAllText(tree, /^job \d+\s*$/)).toHaveLength(4)
+        expect(paneRows(tree)).toBeLessThanOrEqual(least)
+        tree = await draw($, least - 1, cols)
+        expect(linesOf(tree).join('\n')).not.toContain(STANDBY)
+        expect(paneRows(tree)).toBeLessThanOrEqual(least - 1)
+      }
+    })
+  }
 
   test('narrower than the art and its margin the suit is left out; no row overflows', async ($, on) => {
     engine(on, 'agent-1')
@@ -3739,7 +3770,7 @@ describe('standby suit', () => {
     const lines = linesOf(await draw($, 20))
     const online = lineOf(lines, 'J.A.R.V.I.S. ONLINE')
     const art = lines.slice(0, online).filter(l => /[▀▄]/.test(l))
-    expect(art).toHaveLength(14)
+    expect(art).toHaveLength(SUIT_ROWS)
     expect(lines.join('\n')).not.toContain(STANDBY)
     expect(Math.max(...rowWidths(await draw($, 20, 40)))).toBeLessThanOrEqual(40)
     const short = linesOf(await draw($, 19)).join('\n')
