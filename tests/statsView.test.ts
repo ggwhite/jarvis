@@ -49,6 +49,12 @@ describe('stats figures', () => {
     expect([...beats.keys()]).toEqual([])
   })
 
+  test('role beats: a call stamped in the future is dropped', () => {
+    const beats = roleBeats([ev('w1', -1000), ev('v1', -1), ev('v1', 1000)], [agent('w1', 'worker'), agent('v1', 'verifier')], NOW)
+    expect([...beats.keys()]).toEqual(['verifier'])
+    expect(beats.get('verifier')).toEqual([...Array.from({ length: BEATS - 1 }, () => 0), 1])
+  })
+
   test('role beats: a role with nothing in the last hour gets no row', () => {
     const beats = roleBeats([ev('e1', BEATS * BEAT_MS), ev('e1', 2 * BEATS * BEAT_MS)], [agent('e1', 'Explore')], NOW)
     expect([...beats.keys()]).toEqual([])

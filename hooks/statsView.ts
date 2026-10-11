@@ -1,5 +1,5 @@
 import type { JarvisAgent, JarvisEvent } from '../types'
-import { BEAT_MS, BEATS } from './fleet'
+import { beatsOf } from './fleet'
 import type { FleetMode, GaugeForm } from './fleetLayout'
 import { modeOf } from './fleetLayout'
 import { dispatchRoleOf, MAIN_ACTOR } from './jarvis'
@@ -17,17 +17,19 @@ export function successRate(ok: number, fail: number): number | undefined {
 // main loop's calls and calls from agents no longer listed count for no role.
 export function roleBeats(events: readonly JarvisEvent[], agents: readonly JarvisAgent[], now: number): Map<Role, number[]> {
   const roleOf = new Map(agents.map(a => [a.id, dispatchRoleOf(a)] as const))
-  const out = new Map<Role, number[]>()
+  const stamps = new Map<Role, number[]>()
   for (const e of events) {
     if (e.actor === MAIN_ACTOR) continue
     const role = roleOf.get(e.actor)
     if (role === undefined) continue
-    const age = now - e.ts
-    if (age < 0 || age >= BEATS * BEAT_MS) continue
-    const row = out.get(role) ?? Array.from({ length: BEATS }, () => 0)
-    const i = BEATS - 1 - Math.floor(age / BEAT_MS)
-    row[i] = (row[i] ?? 0) + 1
-    out.set(role, row)
+    const ts = stamps.get(role) ?? []
+    ts.push(e.ts)
+    stamps.set(role, ts)
+  }
+  const out = new Map<Role, number[]>()
+  for (const [role, ts] of stamps) {
+    const beats = beatsOf(ts, now)
+    if (beats.some(n => n > 0)) out.set(role, beats)
   }
   return out
 }
