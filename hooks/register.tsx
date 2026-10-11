@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { JarvisAgent, JarvisPage, JarvisUi } from '../types'
+import type { FleetJumpError, JarvisAgent, JarvisPage, JarvisUi } from '../types'
 
 import {
   ANIM_MS,
@@ -27,6 +27,8 @@ import type { Completion } from './jarvis'
 import { drawCockpit } from './cockpit'
 import { RUN_TIMEOUT_MS, createReporter, jarvisText, inHerdr } from './herdr'
 import type { Reporter } from './herdr'
+import { EMPTY_FLEET, FLEET_MS, FLEET_RUN_TIMEOUT_MS, focusArgv, refreshFleet, withJump } from './fleetSource'
+import type { FleetIo } from './fleetSource'
 
 const PANE = 'jarvis'
 const MAX_EARLY = 100
@@ -53,6 +55,8 @@ const ui = atom({ plugin: 'jarvis', key: 'ui' } as const, {
   paneId: '',
 })
 const eventTotal = atom({ plugin: 'jarvis', key: 'eventTotal' } as const, 0)
+const fleet = atom({ plugin: 'jarvis', key: 'fleet' } as const, EMPTY_FLEET)
+const fleetCursor = atom({ plugin: 'jarvis', key: 'fleetCursor' } as const, {})
 
 // Tool calls that last as long as the agents they start, whose own calls are tracked:
 // counting them in flight would hide a stuck subagent.
@@ -110,6 +114,11 @@ export const register: Register = on => {
   let bootAt: number | undefined
   // the boot animates only while the pane is in view
   const booting = (now: number) => bootAt !== undefined && now - drawnAt <= SEEN_MS
+  // the fleet page: its poll runs while the page was drawn within SEEN_MS
+  let fleetEnabled = false
+  let fleetSeenAt = -Infinity
+  let fleetOn: ((now: number) => void) | undefined
+  let fleetJump: ((paneId: string) => void) | undefined
 
   on('session.start', async ($, e, next) => {
     try {
@@ -122,10 +131,14 @@ export const register: Register = on => {
     }
 
     let reporter: Reporter | undefined
+    let herdrOn = false
+    let home = ''
     try {
       const herdrEnv = await $.env.get('HERDR_ENV')
       const paneId = await $.env.get('HERDR_PANE_ID')
-      if (paneId !== undefined && inHerdr(herdrEnv, paneId)) {
+      home = (await $.env.get('HOME')) ?? ''
+      herdrOn = paneId !== undefined && inHerdr(herdrEnv, paneId)
+      if (paneId !== undefined && herdrOn) {
         reporter = createReporter(paneId, async argv => {
           try {
             const out = await $.process.run(argv, { timeoutMs: RUN_TIMEOUT_MS })
@@ -157,6 +170,88 @@ export const register: Register = on => {
     timer?.cancel()
     timer = undefined
     setPace(IDLE_MS)
+
+    const io: FleetIo = {
+      home,
+      run: async argv => {
+        try {
+          const r = await $.process.run(argv, { timeoutMs: FLEET_RUN_TIMEOUT_MS })
+          return { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr, truncated: r.isStdoutTruncated === true }
+        } catch {
+          return undefined
+        }
+      },
+      stat: async path => {
+        try {
+          const s = await $.fs.stat(path)
+          return s.kind === 'file' ? { size: s.size, mtimeMs: s.mtimeMs } : undefined
+        } catch {
+          return undefined
+        }
+      },
+      read: async path => {
+        try {
+          const t = await $.fs.read(path)
+          return typeof t === 'string' ? t : undefined
+        } catch {
+          return undefined
+        }
+      },
+      list: async dir => {
+        try {
+          return await $.fs.list(dir)
+        } catch {
+          return undefined
+        }
+      },
+    }
+    fleetEnabled = herdrOn && home !== ''
+    let fleetTimer: Timer | undefined
+    let fleetBusy = false
+    const refresh = async () => {
+      if (fleetBusy) return
+      fleetBusy = true
+      try {
+        const now = await $.clock.now()
+        const out = await refreshFleet(io, await read($, fleet), await read($, fleetCursor), now)
+        await update($, fleetCursor, () => out.cursor)
+        await update($, fleet, () => out.view)
+      } catch {
+        // the fleet page keeps what it showed
+      } finally {
+        fleetBusy = false
+      }
+    }
+    fleetOn = (now: number) => {
+      fleetSeenAt = now
+      if (!fleetEnabled || fleetTimer !== undefined) return
+      try {
+        fleetTimer = $.clock.every(FLEET_MS, async () => {
+          const t = await $.clock.now()
+          if (t - fleetSeenAt > SEEN_MS) {
+            fleetTimer?.cancel()
+            fleetTimer = undefined
+            return
+          }
+          await refresh()
+        })
+        $.clock.after(1, () => void refresh())
+      } catch {
+        fleetTimer = undefined
+      }
+    }
+    fleetJump = (paneId: string) => {
+      void (async () => {
+        try {
+          const r = await io.run(focusArgv(paneId))
+          const err: FleetJumpError | undefined =
+            r?.exitCode === 0 ? undefined : { paneId, text: `跳轉失敗：${(r?.stderr ?? '').trim() || 'herdr 沒有回應'}` }
+          await update($, fleet, v => withJump(v, err))
+        } catch {
+          // the page stays as it was
+        }
+      })()
+    }
 
     try {
       await update($, inflight, () => [])
@@ -388,6 +483,13 @@ export const register: Register = on => {
     drawnAt = now
     if (view.running.length > 0 || boot !== undefined) pace?.(ANIM_MS)
     const shown = await read($, ui)
+    if (shown.page === 'fleet' || shown.page === 'fleetDetail') fleetOn?.(now)
+    let sessionId = ''
+    try {
+      sessionId = await $.session.id()
+    } catch {
+      // no session id: no row is marked as this one
+    }
     const total = await read($, eventTotal)
     // what a press changes, written from its onPress (state is not written while drawing)
     const setUi = (fn: (u: JarvisUi, recorded: number) => JarvisUi) => {
@@ -415,6 +517,12 @@ export const register: Register = on => {
       open: (agentId: string) => setUi(u => ({ ...u, page: 'detail', agentId })),
       pause: () =>
         setUi((u, recorded) => (u.paused ? { ...u, paused: false } : { ...u, paused: true, pausedTotal: recorded })),
+      fleet: await read($, fleet),
+      herdr: fleetEnabled,
+      paneId: shown.paneId ?? '',
+      sessionId,
+      openFleet: (paneId: string) => setUi(u => ({ ...u, page: 'fleetDetail', paneId })),
+      jump: (paneId: string) => fleetJump?.(paneId),
     })
   })
 }

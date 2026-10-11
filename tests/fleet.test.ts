@@ -1,7 +1,9 @@
-import { describe, expect, test } from 'claude-code/testing'
+import type { On, RenderElement } from 'claude-code'
+import type { Engine } from 'claude-code/testing'
+import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { FleetSession } from '../types'
-import { cellWidth, costAt } from '../hooks/jarvis'
+import { FAMILY_COLOR, THEME, cellWidth, costAt } from '../hooks/jarvis'
 import {
   BEATS,
   BEAT_GLYPHS,
@@ -31,7 +33,7 @@ import {
   utf8Len,
   wrapCells,
 } from '../hooks/fleet'
-import { EMPTY_FLEET, MAX_READS, PANE_LIST, TAIL_BYTES, focusArgv, refreshFleet, withJump } from '../hooks/fleetSource'
+import { EMPTY_FLEET, FLEET_MS, LIMITS_PATH, MAX_READS, PANE_LIST, TAIL_BYTES, focusArgv, refreshFleet, withJump } from '../hooks/fleetSource'
 import type { FleetIo, RunOut } from '../hooks/fleetSource'
 
 // ---- fixtures：結構照 herdr 0.9.1 與 Claude Code 的真實輸出，內容全是假的 ----
@@ -145,6 +147,8 @@ type World = {
   cap?: number
   // `herdr agent focus` answers exit 1, `no such pane`
   focusFails?: boolean
+  // the session the engine says it is
+  selfId?: string
   calls: string[][]
 }
 
@@ -700,5 +704,298 @@ describe('fleet refresh', () => {
     const w: World = { panes: [], files: {}, calls: [] }
     await refreshFleet(fakeIo(w), EMPTY_FLEET, {}, T0)
     expect(w.calls[0]).toEqual([...PANE_LIST])
+  })
+})
+
+type Node = { type?: string; props?: Record<string, unknown>; children?: (Node | string)[] }
+
+const textOf = (n: Node | string): string => (typeof n === 'string' ? n : (n.children ?? []).map(textOf).join(''))
+
+const linesOf = (n: Node | string): string[] => {
+  if (typeof n === 'string') return [n]
+  if (n.type === 'Text') return [textOf(n)]
+  const kids = n.children ?? []
+  if (n.props?.flexDirection === 'row') return [kids.map(textOf).join('')]
+  return kids.flatMap(linesOf)
+}
+
+const allTexts = (n: Node | string, out: Node[] = []): Node[] => {
+  if (typeof n === 'string') return out
+  if (n.type === 'Text') out.push(n)
+  for (const k of n.children ?? []) allTexts(k, out)
+  return out
+}
+
+const buttons = (n: Node | string, out: Node[] = []): Node[] => {
+  if (typeof n === 'string') return out
+  if (n.type === 'Button') out.push(n)
+  for (const k of n.children ?? []) buttons(k, out)
+  return out
+}
+
+// each drawn row's width: a row of texts and plain Buttons side by side, a plain Button's
+// hotkey drawn as `1: ` before its label
+const rowWidths = (n: Node | string): number[] => {
+  if (typeof n === 'string') return [cellWidth(n)]
+  if (n.type === 'Text') return [cellWidth(textOf(n))]
+  const kids = n.children ?? []
+  const cells = (k: Node) =>
+    cellWidth(textOf(k)) + (k.type === 'Button' && k.props?.['hotkey'] ? cellWidth(`${String(k.props['hotkey'])}: `) : 0)
+  if (
+    n.props?.flexDirection === 'row' &&
+    kids.every(k => typeof k !== 'string' && (k.type === 'Text' || (k.type === 'Button' && k.props?.['plain'])))
+  ) {
+    return [kids.reduce((sum, k) => sum + cells(k as Node), 0)]
+  }
+  return kids.flatMap(rowWidths)
+}
+
+// the tab bar's width: each chrome Button is `[ ` + label + ` ]`, one cell apart
+const tabBarWidth = (tree: Node): number => {
+  const tabs = buttons(tree).filter(b => /^(tab-|back$|pause$|jump$)/.test(String(b.props?.['key'] ?? '')))
+  return tabs.reduce((n, b) => n + cellWidth(textOf(b)) + 4, 0) + Math.max(0, tabs.length - 1)
+}
+
+const draw = async ($: Engine, rows = 40, cols = 80): Promise<Node> =>
+  (await $.ui.render({
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'jarvis',
+    viewport: { columns: cols + 20, rows: rows + 10 },
+    props: { title: 'Jarvis', isFocused: false, bodyColumns: cols, placement: 'dock', scroll: { offset: 0, bodyRows: rows }, view: {} },
+  })) as RenderElement as Node
+
+const press = async ($: Engine, key: string, rows = 40, cols = 80) => {
+  const ui = await $.ui.mount({
+    plugin: 'jarvis',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'jarvis',
+    props: { title: 'Jarvis', isFocused: true, bodyColumns: cols, placement: 'dock' as const, scroll: { offset: 0, bodyRows: rows }, view: {} },
+    viewport: { columns: cols + 20, rows: rows + 10 },
+  })
+  await ui.press({ key })
+  await ui.unmount()
+}
+
+// the world beneath the mod: herdr, the transcripts, the usagebar cache, all fake
+const fleetEngine = (on: On, w: World) => {
+  const clock = mock.clock(on, { now: T0 })
+  mock.env(on, { HOME, HERDR_ENV: '1', HERDR_PANE_ID: 'w2:p9' })
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('process.run', async (_$, e) => {
+    const out = (await fakeIo(w).run(e.argv)) ?? { exitCode: 1, stdout: '', stderr: '', truncated: false }
+    return { value: { exitCode: out.exitCode, stdout: out.stdout, stderr: out.stderr, isStdoutTruncated: out.truncated, isStderrTruncated: false } }
+  })
+  on('fs.stat', async (_$, e) => {
+    const c = w.files[e.path]
+    if (c === undefined) throw new Error('ENOENT')
+    return { value: { kind: 'file' as const, size: utf8Len(c), mtimeMs: w.mtime?.[e.path] ?? 1, isLink: false } }
+  })
+  on('fs.read', async (_$, e) => {
+    if (e.path === `${HOME}/${LIMITS_PATH}` && w.quota !== undefined) return { value: w.quota }
+    throw new Error('ENOENT')
+  })
+  on('fs.list', async (_$, e) => {
+    const out = await fakeIo(w).list(e.path)
+    if (out === undefined) return { deny: 'ENOENT' }
+    return { value: out.map(x => ({ ...x, kind: 'file' as const, isLink: false })) }
+  })
+  on('session.id', async () => ({ value: w.selfId ?? 'sess-self' }))
+  return clock
+}
+
+const start = ($: Engine) => $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+
+const SAMPLE_PANES = [
+  pane({ pane_id: 'w1:p1', label: 'Alpha review', agent_status: 'blocked' }),
+  pane({ pane_id: 'w2:p2', label: 'Bravo build', agent_status: 'working', workspace_id: 'w2', agent_session: { value: 'sess-b' }, cwd: '/srv/bravo' }),
+  pane({ pane_id: 'w1:p3', label: 'Charlie docs', agent_session: { value: 'sess-c' }, cwd: '/srv/charlie', tokens: { context: '⛁ 95% (950k)' } }),
+  pane({ pane_id: 'w1:p4', agent: 'codex', label: 'Codex job' }),
+]
+
+const sampleWorld = (over: Partial<World> = {}): World => ({
+  panes: SAMPLE_PANES,
+  files: {
+    [pathOf('/srv/alpha', 'sess-a')]: jsonl(human(T0 - 3 * MIN, 'SECRET-PROMPT'), reply(T0 - 2 * MIN, 'a1', [text('SECRET-REPLY')], use(100, 50))),
+    [pathOf('/srv/bravo', 'sess-b')]: jsonl(reply(T0 - MIN, 'b1', [toolUse('Bash')], use(10, 5))),
+    [pathOf('/srv/charlie', 'sess-c')]: jsonl(reply(T0 - 26 * 60 * MIN, 'c1', [text('old')], use(1, 1))),
+  },
+  quota: limitsJson(92),
+  calls: [],
+  ...over,
+})
+
+// opens the fleet page and lets its first refresh land
+const openFleet = async ($: Engine, clock: { advance: (ms: number) => Promise<void> }, rows = 40, cols = 80) => {
+  await start($)
+  await press($, 'tab-fleet', rows, cols)
+  await draw($, rows, cols)
+  await clock.advance(10)
+  return draw($, rows, cols)
+}
+
+const paneLists = (w: World) => w.calls.filter(c => c[0] === 'herdr' && c[1] === 'pane' && c[2] === 'list').length
+
+const ALLOWED = new Set<string>([...Object.values(THEME), ...Object.values(FAMILY_COLOR)])
+
+describe('fleet page', () => {
+  test('three sections in order, codex left out, the header counts the suits', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const lines = linesOf(await openFleet($, clock)).join('\n')
+    expect(lines).toContain('IRON LEGION · 3 SUITS')
+    // each found after the one before: the costliest's title also reads in POWER, above them all
+    const order: number[] = []
+    for (const t of ['AWAITING ORDERS', 'Alpha review', 'IN FLIGHT', 'Bravo build', 'STANDBY', 'Charlie docs']) {
+      order.push(lines.indexOf(t, (order.at(-1) ?? -1) + 1))
+    }
+    expect(order.every(x => x >= 0)).toBe(true)
+    expect(lines).not.toContain('Codex job')
+  })
+
+  test('the list never shows what was said', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const lines = linesOf(await openFleet($, clock)).join('\n')
+    expect(lines).not.toContain('SECRET-PROMPT')
+    expect(lines).not.toContain('SECRET-REPLY')
+  })
+
+  test('POWER: 92% weekly runs out before the reset, today adds up, the costliest is named', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const lines = linesOf(await openFleet($, clock)).join('\n')
+    expect(lines).toMatch(/7d .* 92%.*DEPLETED IN ~\d+h/)
+    expect(lines).toMatch(/5h .*  5%.*RESET/)
+    expect(lines).toMatch(/TODAY 165 tok · \$\d+\.\d+ · top: Alpha review/)
+  })
+
+  test('a stale quota says STALE and makes no forecast', async ($, on) => {
+    const w = sampleWorld({ quota: limitsJson(92, T0 - 16 * MIN) })
+    const clock = fleetEngine(on, w)
+    const lines = linesOf(await openFleet($, clock)).join('\n')
+    expect(lines).toContain('STALE')
+    expect(lines).not.toContain('DEPLETED')
+  })
+
+  test('a full context is red, an old idle suit is up for decommission', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const tree = await openFleet($, clock)
+    expect(allTexts(tree).find(t => textOf(t).trim() === '95%')?.props?.['color']).toBe(THEME.error)
+    expect(linesOf(tree).join('\n')).toContain('1 SUITS READY FOR DECOMMISSION')
+  })
+
+  test('only the number and icon are a Button; 1-9 carry their hotkey', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const suits = buttons(await openFleet($, clock)).filter(b => String(b.props?.['key'] ?? '').startsWith('suit-'))
+    expect(suits.map(b => [b.props?.['key'], b.props?.['hotkey'], b.props?.['plain'], cellWidth(textOf(b))])).toEqual([
+      ['suit-1', '1', true, 1],
+      ['suit-2', '2', true, 1],
+      ['suit-3', '3', true, 1],
+    ])
+  })
+
+  test('every text the fleet page draws wears a theme or model color', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const bad = allTexts(await openFleet($, clock))
+      .filter(t => textOf(t).trim() !== '')
+      .filter(t => !ALLOWED.has(String(t.props?.['color'] ?? '')))
+      .map(textOf)
+    expect(bad).toEqual([])
+  })
+
+  for (const cols of [40, 64, 80]) {
+    test(`no row is wider than ${cols} columns, the tab bar included`, async ($, on) => {
+      const w = sampleWorld()
+      const clock = fleetEngine(on, w)
+      const tree = await openFleet($, clock, 40, cols)
+      expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
+      expect(tabBarWidth(tree)).toBeLessThanOrEqual(cols)
+    })
+  }
+
+  test('the tab bar fits 40 columns on every page', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    await openFleet($, clock, 40, 40)
+    for (const key of ['tab-now', 'tab-log', 'tab-stats', 'tab-fleet', 'suit-1']) {
+      await press($, key, 40, 40)
+      expect(tabBarWidth(await draw($, 40, 40))).toBeLessThanOrEqual(40)
+    }
+  })
+
+  test('many standby suits are cut with a count; POWER and the waiting stay', async ($, on) => {
+    const many = Array.from({ length: 30 }, (_, i) => pane({ pane_id: `w1:x${i}`, label: `Idle ${i}`, agent_session: { value: `idle-${i}` } }))
+    const w = sampleWorld({ panes: [pane({ agent_status: 'blocked', label: 'Alpha review' }), ...many] })
+    const clock = fleetEngine(on, w)
+    const lines = linesOf(await openFleet($, clock, 24, 80)).join('\n')
+    expect(lines).toContain('POWER')
+    expect(lines).toContain('Alpha review')
+    expect(lines).toMatch(/… 還有 \d+ 艘/)
+  })
+
+  test('herdr down: FLEET LINK LOST, the last suits kept', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    await openFleet($, clock)
+    w.herdr = false
+    await clock.advance(FLEET_MS)
+    const lines = linesOf(await draw($)).join('\n')
+    expect(lines).toContain('FLEET LINK LOST')
+    expect(lines).toContain('Alpha review')
+  })
+
+  test('herdr is asked only while the fleet page is in view', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    await start($)
+    await draw($)
+    await clock.advance(20_000)
+    expect(paneLists(w)).toBe(0)
+    await press($, 'tab-fleet')
+    await draw($)
+    await clock.advance(FLEET_MS + 10)
+    expect(paneLists(w)).toBeGreaterThanOrEqual(2)
+    await press($, 'tab-now')
+    await draw($)
+    await clock.advance(30_000)
+    const settled = paneLists(w)
+    await clock.advance(30_000)
+    expect(paneLists(w)).toBe(settled)
+  })
+
+  test('TODAY reads SCANNING… until the first scan has caught up', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    await start($)
+    await press($, 'tab-fleet')
+    const before = allTexts(await draw($)).find(t => textOf(t).includes('SCANNING…'))
+    expect(before?.props?.['color']).toBe(THEME.frame)
+    await clock.advance(10)
+    const lines = linesOf(await draw($)).join('\n')
+    expect(lines).not.toContain('SCANNING…')
+    expect(lines).toMatch(/TODAY 165 tok/)
+  })
+
+  test('this session is marked THIS, in the frame color', async ($, on) => {
+    const w = sampleWorld({ selfId: 'sess-c' })
+    const clock = fleetEngine(on, w)
+    const tree = await openFleet($, clock)
+    const lines = linesOf(tree)
+    expect(lines.find(l => l.includes('Charlie docs'))).toMatch(/Charlie docs\s+THIS/)
+    expect(lines.filter(l => l.includes('THIS'))).toHaveLength(1)
+    expect(allTexts(tree).find(t => textOf(t).trim() === 'THIS')?.props?.['color']).toBe(THEME.frame)
+  })
+
+  test('too narrow, THIS goes before the workspace', async ($, on) => {
+    const w = sampleWorld({ selfId: 'sess-c' })
+    const clock = fleetEngine(on, w)
+    const row = linesOf(await openFleet($, clock, 40, 57)).find(l => l.includes('Charlie')) ?? ''
+    expect(row).toContain('Acme')
+    expect(row).not.toContain('THIS')
   })
 })

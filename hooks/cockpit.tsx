@@ -1,6 +1,31 @@
 import type { EngineInterface, RenderElement } from 'claude-code'
 
-import type { JarvisAgent, JarvisEvent, JarvisInflight, JarvisPage } from '../types'
+import type {
+  FleetQuota,
+  FleetSession,
+  FleetStatus,
+  FleetView,
+  JarvisAgent,
+  JarvisEvent,
+  JarvisInflight,
+  JarvisPage,
+  QuotaWindow,
+} from '../types'
+import {
+  BEATS,
+  CONTEXT_ALERT,
+  CONTEXT_WARN,
+  beatLine,
+  beatsOf,
+  decommissionCount,
+  fleetSections,
+  fleetTotals,
+  fmtAgo,
+  fmtBig,
+  forecast,
+  quotaStale,
+} from './fleet'
+import type { FleetSections } from './fleet'
 import {
   CHAIN_WARN,
   FAMILY_COLOR,
@@ -86,6 +111,14 @@ export type Ctx = {
   go: (page: JarvisPage) => void
   open: (agentId: string) => void
   pause: () => void
+  // the fleet page: what the last refresh saw, whether herdr is there to ask, the session
+  // its detail page is about, and this session's id (its row is marked THIS)
+  fleet: FleetView
+  herdr: boolean
+  paneId: string
+  sessionId: string
+  openFleet: (paneId: string) => void
+  jump: (paneId: string) => void
 }
 
 const FRAME = THEME.frame
@@ -181,7 +214,38 @@ const TABS: { page: JarvisPage; hotkey: string; label: string }[] = [
   { page: 'now', hotkey: 'n', label: '現況' },
   { page: 'log', hotkey: 'l', label: '事件流' },
   { page: 'stats', hotkey: 's', label: '統計' },
+  { page: 'fleet', hotkey: 'f', label: '艦隊' },
 ]
+
+// A fleet row: the icon, the title (at least FLEET_TITLE_MIN), THIS on this session's row,
+// the workspace, the heartbeat, the context, how long idle. Too narrow, THIS goes first,
+// then the workspace, then the heartbeat, then the idle time.
+type SuitFit = { self: boolean; ws: boolean; beats: boolean; idle: boolean }
+const SUIT_FITS: SuitFit[] = [
+  { self: true, ws: true, beats: true, idle: true },
+  { self: false, ws: true, beats: true, idle: true },
+  { self: false, ws: false, beats: true, idle: true },
+  { self: false, ws: false, beats: false, idle: true },
+]
+const SUIT_NARROWEST: SuitFit = { self: false, ws: false, beats: false, idle: false }
+const FLEET_TITLE_MIN = 8
+const WS_W = 12
+const CTX_W = 4
+const IDLE_W = 4
+const QUOTA_BAR = 10
+const SELF_TEXT = 'THIS'
+
+const FLEET_SECTIONS: { key: keyof FleetSections; label: string; color: string }[] = [
+  { key: 'blocked', label: 'AWAITING ORDERS', color: THEME.error },
+  { key: 'working', label: 'IN FLIGHT', color: THEME.accent },
+  { key: 'idle', label: 'STANDBY', color: THEME.frame },
+]
+
+const FLEET_STATUS_TEXT: Record<FleetStatus, { t: string; color: string }> = {
+  blocked: { t: 'AWAITING ORDERS', color: THEME.error },
+  working: { t: 'IN FLIGHT', color: THEME.accent },
+  idle: { t: 'STANDBY', color: THEME.frame },
+}
 
 const BLANK: Seg[] = [{ t: ' ' }]
 
@@ -384,10 +448,14 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       : { t: padCells('?', ACTOR_W), color: FRAME }
   }
 
+  const fleetView = ctx.fleet
+  const fleetSelected = ctx.page === 'fleetDetail' ? fleetView.sessions.find(s => s.paneId === ctx.paneId) : undefined
   const listed = [...view.running, ...view.stale, ...view.finished]
   const selected = ctx.page === 'detail' ? listed.find(a => a.id === ctx.agentId) : undefined
-  // a detail page whose subagent left the list is the now page
-  const page: JarvisPage = ctx.page === 'detail' && !selected ? 'now' : ctx.page
+  // a detail page whose subagent or session left the list is its list page
+  const page: JarvisPage =
+    ctx.page === 'detail' && !selected ? 'now' : ctx.page === 'fleetDetail' && !fleetSelected ? 'fleet' : ctx.page
+  const onFleet = page === 'fleet' || page === 'fleetDetail'
 
   // ---- 標題列 -------------------------------------------------------------
 
@@ -403,49 +471,68 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       { t: reactor.glyph, color: reactor.color },
     ]
     const health: Seg = { t: HEALTH_TEXT[view.health], color: HEALTH_COLOR[view.health], bold: true }
-    return { h: 1, node: lineNode(leftRight(left, [health], cols)) }
+    const right: Seg =
+      !onFleet || view.health !== 'ok'
+        ? health
+        : fleetView.linkLost
+          ? { t: 'FLEET LINK LOST', color: ERROR, bold: true }
+          : { t: `IRON LEGION · ${fleetView.sessions.length} SUITS`, color: PRIMARY, bold: true }
+    return { h: 1, node: lineNode(leftRight(left, [right], cols)) }
   }
 
   // ---- 分頁列 -------------------------------------------------------------
 
   const tabBar = (): Block => {
-    const buttons: { node: RenderElement; w: number }[] = TABS.map(tab => {
-      const current = tab.page === page
-      const text = `${tab.hotkey} ${tab.label}`
-      return {
-        w: cellWidth(text) + BUTTON_CHROME,
-        node: (
-          <Button key={`tab-${tab.page}`} hotkey={tab.hotkey} onPress={() => ctx.go(tab.page)}>
-            {current ? (
-              <Text bold inverse color={ACCENT}>
-                {text}
-              </Text>
-            ) : (
-              <Text color={FRAME}>{text}</Text>
-            )}
-          </Button>
-        ),
+    const actions: { key: string; hotkey: string; label: string; run: () => void }[] = []
+    if (page === 'detail') actions.push({ key: 'back', hotkey: '0', label: '返回', run: () => ctx.go('now') })
+    if (page === 'fleetDetail') {
+      actions.push({ key: 'back', hotkey: '0', label: '返回', run: () => ctx.go('fleet') })
+      if (fleetSelected) {
+        const paneId = fleetSelected.paneId
+        actions.push({ key: 'jump', hotkey: 'g', label: '跳轉', run: () => ctx.jump(paneId) })
       }
-    })
-    const action = (key: string, hotkey: string, label: string, run: () => void) => {
-      const text = `${hotkey} ${label}`
-      buttons.push({
-        w: cellWidth(text) + BUTTON_CHROME,
-        node: (
-          <Button key={key} hotkey={hotkey} onPress={run}>
-            <Text color={FRAME}>{text}</Text>
-          </Button>
-        ),
-      })
     }
-    if (page === 'detail') action('back', '0', '返回', () => ctx.go('now'))
-    if (page === 'log') action('pause', 'p', ctx.paused ? '繼續' : '暫停', ctx.pause)
-
+    if (page === 'log') actions.push({ key: 'pause', hotkey: 'p', label: ctx.paused ? '繼續' : '暫停', run: ctx.pause })
+    const full = (hotkey: string, label: string) => `${hotkey} ${label}`
+    const tabText = (tab: (typeof TABS)[number], compact: boolean) =>
+      compact && tab.page !== page ? tab.hotkey : full(tab.hotkey, tab.label)
+    const actionText = (a: (typeof actions)[number], compact: boolean) => (compact ? a.hotkey : full(a.hotkey, a.label))
+    const widthOf = (tabsCompact: boolean, actionsCompact: boolean) =>
+      [...TABS.map(tab => tabText(tab, tabsCompact)), ...actions.map(a => actionText(a, actionsCompact))].reduce(
+        (n, text) => n + cellWidth(text) + BUTTON_CHROME,
+        0,
+      ) +
+      (TABS.length + actions.length - 1)
+    // too wide for every label: the tabs not shown keep only their key, then the actions too
+    const tabsCompact = widthOf(false, false) > cols
+    const actionsCompact = tabsCompact && widthOf(true, false) > cols
+    const nodes: RenderElement[] = TABS.map(tab => {
+      const current = tab.page === page
+      const text = tabText(tab, tabsCompact)
+      return (
+        <Button key={`tab-${tab.page}`} hotkey={tab.hotkey} onPress={() => ctx.go(tab.page)}>
+          {current ? (
+            <Text bold inverse color={ACCENT}>
+              {text}
+            </Text>
+          ) : (
+            <Text color={FRAME}>{text}</Text>
+          )}
+        </Button>
+      )
+    })
+    for (const a of actions) {
+      nodes.push(
+        <Button key={a.key} hotkey={a.hotkey} onPress={a.run}>
+          <Text color={FRAME}>{actionText(a, actionsCompact)}</Text>
+        </Button>,
+      )
+    }
     return {
       h: 1,
       node: (
         <Box flexDirection="row" gap={1}>
-          {buttons.map(b => b.node)}
+          {nodes}
         </Box>
       ),
     }
@@ -1030,6 +1117,183 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return cardRow([{ w: cols, color, lines }])
   }
 
+  // ---- 艦隊 ---------------------------------------------------------------
+
+  const suitIcon = (s: FleetSession): Seg =>
+    s.status === 'blocked'
+      ? { t: '!', color: ERROR, bold: true }
+      : s.status === 'working'
+        ? { t: ctx.frame, color: ACCENT }
+        : { t: '⣀', color: FRAME }
+
+  const ctxSeg = (pct: number | undefined): Seg =>
+    pct === undefined
+      ? sp(CTX_W)
+      : { t: padCells(`${pct}%`, CTX_W, 'right'), color: pct >= CONTEXT_ALERT ? ERROR : pct >= CONTEXT_WARN ? ACCENT : PRIMARY }
+
+  const suitRow = (s: FleetSession, n: number, width: number, maxBeat: number): Line => {
+    const isSelf = ctx.sessionId !== '' && s.sessionId === ctx.sessionId
+    const selfW = cellWidth(SELF_TEXT) + 1
+    const fixed = (f: SuitFit) =>
+      HOTKEY_W +
+      2 +
+      (f.self && isSelf ? selfW : 0) +
+      (f.ws ? WS_W + 1 : 0) +
+      (f.beats ? BEATS + 1 : 0) +
+      CTX_W +
+      1 +
+      (f.idle ? IDLE_W + 1 : 0)
+    const fit = SUIT_FITS.find(f => width - fixed(f) >= FLEET_TITLE_MIN) ?? SUIT_NARROWEST
+    const titleW = Math.max(1, width - fixed(fit))
+    const idle = s.status !== 'working' && s.lastAt !== undefined ? fmtAgo(view.now - s.lastAt) : ''
+    const titleSeg: Seg = { t: '', color: s.status === 'blocked' ? BRIGHT : PRIMARY, bold: s.status === 'blocked' }
+    const titleSegs: Seg[] =
+      fit.self && isSelf
+        ? [
+            { ...titleSeg, t: fitCells(s.title, titleW) },
+            sp(1),
+            { t: SELF_TEXT, color: FRAME, bold: true },
+            sp(titleW - cellWidth(fitCells(s.title, titleW))),
+          ]
+        : [{ ...titleSeg, t: padCells(s.title, titleW) }]
+    const rest: Seg[] = [
+      sp(1),
+      ...titleSegs,
+      ...(fit.ws ? [sp(1), { t: padCells(s.workspace, WS_W), color: FRAME }] : []),
+      ...(fit.beats
+        ? [sp(1), { t: beatLine(beatsOf(s.stamps, view.now), maxBeat), color: s.status === 'working' ? ACCENT : PRIMARY }]
+        : []),
+      sp(1),
+      ctxSeg(s.contextPct),
+      ...(fit.idle ? [sp(1), { t: padCells(idle, IDLE_W, 'right'), color: FRAME }] : []),
+    ]
+    const chip: Seg[] = [...(n > MAX_NUMBERED ? [{ t: padCells(String(n), HOTKEY_W), color: FRAME }] : []), suitIcon(s)]
+    return {
+      h: 1,
+      node: (
+        <Box flexDirection="row">
+          <Button
+            key={`suit-${n}`}
+            {...(n > MAX_NUMBERED ? {} : { hotkey: String(n) })}
+            plain
+            onPress={() => ctx.openFleet(s.paneId)}
+          >
+            {texts(chip)}
+          </Button>
+          {texts(clip(rest, Math.max(0, width - HOTKEY_W - 1)))}
+        </Box>
+      ),
+    }
+  }
+
+  const fmtReset = (ts: number): string => {
+    const hm = fmtClock(ts).slice(0, 5)
+    return ts - view.now < 86_400_000 ? hm : `${fmtDate(ts)} ${hm}`
+  }
+
+  const quotaLine = (label: string, w: QuotaWindow, q: FleetQuota): Seg[] => {
+    const pct = Math.max(0, Math.min(100, Math.round(w.usedPct)))
+    const fill = Math.round((pct / 100) * QUOTA_BAR)
+    const tone = pct >= CONTEXT_ALERT ? ERROR : pct >= CONTEXT_WARN ? ACCENT : PRIMARY
+    const stale = quotaStale(q, view.now)
+    const f = stale ? undefined : forecast(w, q.fetchedAt)
+    const tail: Seg[] = stale
+      ? [{ t: 'STALE', color: FRAME, bold: true }]
+      : f?.beforeReset
+        ? [
+            { t: `DEPLETED IN ~${fmtAgo(Math.max(0, f.depleteAt - view.now))}`, color: ERROR, bold: true },
+            { t: ` · RESET ${fmtReset(w.resetsAt)}`, color: FRAME },
+          ]
+        : [{ t: `RESET ${fmtReset(w.resetsAt)}`, color: FRAME }]
+    return [
+      { t: `${label} `, color: FRAME, bold: true },
+      { t: '█'.repeat(fill), color: tone },
+      { t: '░'.repeat(QUOTA_BAR - fill), color: MUTED },
+      { t: padCells(`${pct}%`, 5, 'right'), color: BRIGHT, bold: true },
+      sp(2),
+      ...tail,
+    ]
+  }
+
+  const powerBlock = (): Block => {
+    const q = fleetView.quota
+    const totals = fleetTotals(fleetView.sessions)
+    const lines: Line[] = [[title('POWER', PRIMARY)]]
+    if (q?.fiveHour) lines.push(quotaLine('5h', q.fiveHour, q))
+    if (q?.sevenDay) lines.push(quotaLine('7d', q.sevenDay, q))
+    // today's numbers wait for the first scan of the transcripts to catch up
+    lines.push(
+      fleetView.scanning
+        ? [
+            { t: 'TODAY ', color: FRAME, bold: true },
+            { t: 'SCANNING…', color: FRAME },
+          ]
+        : [
+            { t: 'TODAY ', color: FRAME, bold: true },
+            { t: `${fmtBig(totals.tokens)} tok`, color: BRIGHT, bold: true },
+            { t: ' · ', color: MUTED },
+            { t: fmtUsd(totals.cost), color: BRIGHT, bold: true },
+            ...(totals.top ? [{ t: ' · top: ', color: FRAME }, { t: totals.top, color: PRIMARY }] : []),
+          ],
+    )
+    return cardRow([{ w: cols, color: FRAME, lines }])
+  }
+
+  const fleetBlocks = (room: number): Block[] => {
+    if (!ctx.herdr) {
+      return [
+        cardRow([
+          {
+            w: cols,
+            color: FRAME,
+            lines: [[title('艦隊', PRIMARY)], [{ t: '需要 herdr：艦隊頁從 herdr 讀取所有 Claude session', color: FRAME }]],
+          },
+        ]),
+      ]
+    }
+    const out: Block[] = [powerBlock()]
+    const inner = cols - 4
+    const sec = fleetSections(fleetView.sessions)
+    const maxBeat = Math.max(0, ...fleetView.sessions.flatMap(s => beatsOf(s.stamps, view.now)))
+    const decom = decommissionCount(fleetView.sessions, view.now)
+    if (fleetView.sessions.length === 0) {
+      const empty = fleetView.at === 0 ? '掃描艦隊中…' : '艦隊目前沒有 Claude session'
+      out.push(cardRow([{ w: cols, color: FRAME, lines: [[{ t: empty, color: FRAME }]] }]))
+    }
+    let left = room - out.reduce((h, b) => h + b.h, 0) - (decom > 0 ? 1 : 0)
+    let n = 0
+    for (const x of FLEET_SECTIONS) {
+      const list = sec[x.key]
+      if (list.length === 0) continue
+      // a card is its border and title around its rows; standby gives way when rows run out
+      const fits = Math.max(1, left - 3)
+      const shown = x.key === 'idle' && list.length > fits ? list.slice(0, Math.max(0, fits - 1)) : list
+      const lines: Line[] = [[title(x.label, x.color)]]
+      for (const s of shown) {
+        n += 1
+        lines.push(suitRow(s, n, inner, maxBeat))
+      }
+      if (shown.length < list.length) {
+        lines.push([{ t: `… 還有 ${list.length - shown.length} 艘`, color: FRAME }])
+        n += list.length - shown.length
+      }
+      const block = cardRow([{ w: cols, color: x.color, lines }])
+      out.push(block)
+      left -= block.h
+    }
+    if (decom > 0) out.push({ h: 1, node: lineNode([{ t: `${decom} SUITS READY FOR DECOMMISSION`, color: ACCENT, bold: true }]) })
+    return out
+  }
+
+  const fleetDetailBlock = (s: FleetSession): Block =>
+    cardRow([
+      {
+        w: cols,
+        color: FRAME,
+        lines: [[suitIcon(s), sp(1), { t: s.title, color: PRIMARY, bold: true }], [FLEET_STATUS_TEXT[s.status]]],
+      },
+    ])
+
   // ---- 開機 ---------------------------------------------------------------
 
   const bootBlock = (stage: BootStage): Block => {
@@ -1094,6 +1358,10 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       cols - 4,
     )
     blocks.push(eventCard(head, own, Math.max(MIN_EVENT_ROWS + 3, left()), '這個 subagent 還沒有工具呼叫', true, false))
+  } else if (page === 'fleet') {
+    blocks.push(...fleetBlocks(left()))
+  } else if (page === 'fleetDetail' && fleetSelected) {
+    blocks.push(fleetDetailBlock(fleetSelected))
   } else {
     if (wide) {
       // main over model (the savings under its shares) beside the dispatch flow, one height

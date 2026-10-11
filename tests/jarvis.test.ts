@@ -1820,6 +1820,7 @@ describe('pages', () => {
       ['tab-now', 'n', 'n 現況'],
       ['tab-log', 'l', 'l 事件流'],
       ['tab-stats', 's', 's 統計'],
+      ['tab-fleet', 'f', 'f 艦隊'],
     ])
     // the page shown is the marked tab: its label in the accent gold, the rest in the frame teal
     expect((await ui.find({ key: 'tab-now' }))?.children).toEqual([
@@ -1941,6 +1942,7 @@ describe('subagent list and detail page', () => {
       ['tab-now', 'n'],
       ['tab-log', 'l'],
       ['tab-stats', 's'],
+      ['tab-fleet', 'f'],
       ['back', '0'],
     ])
     await ui.unmount()
