@@ -6,6 +6,7 @@ import type { FleetJumpError, JarvisAgent, JarvisPage, JarvisUi } from '../types
 import {
   ANIM_MS,
   IDLE_MS,
+  LIST_FAILS_MAX,
   SEEN_MS,
   SPINNER,
   addAgent,
@@ -67,18 +68,29 @@ const fleetCursor = atom({ plugin: 'jarvis', key: 'fleetCursor' } as const, {})
 // counting them in flight would hide a stuck subagent.
 const UNTRACKED = new Set(['Agent', 'Workflow'])
 
-// What the engine says of its agents, as reconcileAgents reads it; [] when it cannot say.
-async function engineAgents($: Pick<EngineInterface, 'agent'>): Promise<EngineAgent[]> {
+// What the engine says of its agents, as reconcileAgents reads it; undefined when it
+// cannot say (the listing failed or came back empty).
+async function engineAgents($: Pick<EngineInterface, 'agent'>): Promise<EngineAgent[] | undefined> {
   try {
-    return (await $.agent.list()).map(a => ({ id: a.id, status: a.status, type: a.type, description: a.description }))
+    const list = (await $.agent.list()).map(a => ({ id: a.id, status: a.status, type: a.type, description: a.description }))
+    return list.length === 0 ? undefined : list
   } catch {
-    return []
+    return undefined
   }
 }
 
-async function reconcile($: Pick<EngineInterface, 'agent' | 'state'>, now: number): Promise<void> {
+// `listing.fails` counts the listings in a row that said nothing.
+async function reconcile(
+  $: Pick<EngineInterface, 'agent' | 'state'>,
+  now: number,
+  listing: { fails: number },
+): Promise<void> {
   const info = await engineAgents($)
-  if (info.length === 0) return
+  if (info === undefined) {
+    listing.fails += 1
+    return
+  }
+  listing.fails = 0
   await update($, agents, list => {
     const out = reconcileAgents(list, info, now)
     return out === list ? list : [...out]
@@ -96,17 +108,19 @@ async function tickOnce(
   pace: (list: readonly JarvisAgent[], now: number) => void,
   slow: { at: number },
   booting: (now: number) => boolean,
+  listing: { fails: number },
 ): Promise<void> {
   try {
     const now = await $.clock.now()
     const due = now - slow.at >= IDLE_MS
     let list = await read($, agents)
     if (due && needsReconcile(list, now)) {
-      await reconcile($, now)
+      await reconcile($, now, listing)
       list = await read($, agents)
     }
-    if (runningOf(list).length > 0 && due && markStale(list, now) !== list) {
-      await update($, agents, l => [...markStale(l, now)])
+    const exempt = listing.fails < LIST_FAILS_MAX
+    if (runningOf(list).length > 0 && due && markStale(list, now, exempt) !== list) {
+      await update($, agents, l => [...markStale(l, now, exempt)])
       list = await read($, agents)
     }
     if (runningOf(list).length > 0 || booting(now)) await update($, tick, t => ({ n: t.n + 1, now }))
@@ -131,6 +145,9 @@ async function tickOnce(
 export const register: Register = on => {
   // A subagent can finish before its spawn has been recorded; park its turns here.
   const early = new Map<string, Completion[]>()
+  // ids the engine was asked about on a tool call and did not list: not asked again
+  const unknown = new Set<string>()
+  const listing = { fails: 0 }
   let timer: Timer | undefined
   let period = 0
   // when the pane was last drawn: the tick animates only a pane in view
@@ -189,7 +206,7 @@ export const register: Register = on => {
         timer?.cancel()
         period = ms
         timer = $.clock.every(ms, () =>
-          tickOnce($, reporter, (list, now) => setPace(tickMs(list, now, drawnAt, booting(now))), slow, booting),
+          tickOnce($, reporter, (list, now) => setPace(tickMs(list, now, drawnAt, booting(now))), slow, booting, listing),
         )
       } catch {
         // no live clock; the pane still shows what happened
@@ -373,8 +390,16 @@ export const register: Register = on => {
         }))
       } else {
         const known = (await read($, agents)).some(a => a.id === id)
-        if (!known) {
-          const info = (await engineAgents($)).find(a => a.id === id)
+        if (!known && !unknown.has(id)) {
+          const engineList = await engineAgents($)
+          const info = engineList?.find(a => a.id === id)
+          if (engineList !== undefined && info === undefined) {
+            unknown.add(id)
+            if (unknown.size > MAX_EARLY) {
+              const oldest = unknown.values().next().value
+              if (oldest !== undefined) unknown.delete(oldest)
+            }
+          }
           if (info) {
             await update($, agents, list =>
               list.some(a => a.id === id)
@@ -466,7 +491,7 @@ export const register: Register = on => {
           known = list.some(a => a.id === id)
           return known ? finishTurn(list, id, c, now) : list
         })
-        if (known) await reconcile($, now)
+        if (known) await reconcile($, now, listing)
         if (!known) {
           early.set(id, [...(early.get(id) ?? []), c])
           if (early.size > MAX_EARLY) {

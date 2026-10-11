@@ -25,6 +25,8 @@ export type JarvisAgent = {
   // brought back to running by the engine's view after its turn ended: the engine's view
   // also ends it
   revived?: boolean
+  // the engine has said it ended: its view is not asked for again
+  confirmed?: boolean
 }
 
 // One finished tool call, main loop or subagent. `ts` is when it started.

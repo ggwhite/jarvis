@@ -3853,6 +3853,32 @@ describe('background wait', () => {
     expect(reconcileAgents(list, [{ id: 'w1', status: 'completed' }], 5000)).toBe(list)
   })
 
+  test('a waiting or revived agent the engine no longer lists ends as done', () => {
+    const others = [{ id: 'other', status: 'running' }]
+    const waiting = reconcileAgents([base()], [{ id: 'w1', status: 'waiting' }], 5000)
+    const ended = reconcileAgents(waiting, others, 6000)
+    expect(ended[0]?.status).toBe('done')
+    expect(ended[0]?.waiting).toBeUndefined()
+    const revived = reconcileAgents([base()], [{ id: 'w1', status: 'running' }], 5000)
+    expect(reconcileAgents(revived, others, 6000)[0]?.status).toBe('done')
+  })
+
+  test('with no word from the engine, a waiting agent goes lost like any other', () => {
+    const waiting = reconcileAgents([base()], [{ id: 'w1', status: 'waiting' }], 5000)
+    const lost = markStale(waiting, 5000 + STALE_MS + 1, false)
+    expect(lost[0]?.status).toBe('stale')
+    expect(lost[0]?.waiting).toBeUndefined()
+    expect(needsReconcile(lost, 5000 + STALE_MS + 1)).toBe(false)
+  })
+
+  test('an ended agent the engine confirms is not asked of again', () => {
+    const confirmed = reconcileAgents([base()], [{ id: 'w1', status: 'completed' }], 2000)
+    expect(confirmed[0]?.status).toBe('done')
+    expect(needsReconcile(confirmed, 2000)).toBe(false)
+    expect(reconcileAgents(confirmed, [{ id: 'w1', status: 'idle' }], 3000)).toBe(confirmed)
+    expect(noteTool(confirmed, 'w1', 'Bash', 4000)[0]?.confirmed).toBeUndefined()
+  })
+
   test('reconcile is due while one waits or one finished in the last minute', () => {
     expect(needsReconcile([base({ endedAt: 1000 })], 1000 + RECONCILE_RECENT_MS)).toBe(true)
     expect(needsReconcile([base({ endedAt: 1000 })], 1000 + RECONCILE_RECENT_MS + 1)).toBe(false)
@@ -3910,5 +3936,75 @@ describe('background wait, wired', () => {
     await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'ghost' } as never)
     const lines = linesOf(await draw($, 40, 80)).join('\n')
     expect(lines.match(/woken/g)?.length ?? 0).toBe(1)
+  })
+
+  test('an engine list without a waiting agent ends its WAITING on the next tick', async ($, on) => {
+    const clock = engine(on, 'agent-1')
+    const engineRows = [{ id: 'agent-1', status: 'waiting' }]
+    listed(on, engineRows)
+    await start($)
+    await $.agent.spawn(spawnInput({ description: 'check', subagentType: 'verifier' }))
+    await $.turn.complete(complete('agent-1'))
+    engineRows[0] = { id: 'other', status: 'running' }
+    await clock.advance(1500)
+    const lines = linesOf(await draw($, 40, 80)).join('\n')
+    expect(lines).not.toContain('WAITING')
+    expect(lines).toContain('MISSION COMPLETE')
+  })
+
+  test('a listing that keeps failing lets a waiting agent go lost in time', async ($, on) => {
+    const clock = engine(on, 'agent-1')
+    const mode = { fail: false }
+    on('agent.list', async () => {
+      if (mode.fail) throw new Error('down')
+      return { value: [{ id: 'agent-1', status: 'waiting', type: 'verifier', description: 'check' }] as never }
+    })
+    await start($)
+    await $.agent.spawn(spawnInput({ description: 'check', subagentType: 'verifier' }))
+    await $.turn.complete(complete('agent-1'))
+    mode.fail = true
+    await clock.advance(STALE_MS + 60_000)
+    const lines = linesOf(await draw($, 40, 80)).join('\n')
+    expect(lines).not.toContain('WAITING')
+    expect(lines).toContain('SIGNAL LOST')
+  })
+
+  test('a listing that fails or comes back empty changes no agent', async ($, on) => {
+    const clock = engine(on)
+    let n = 0
+    on('agent.spawn', async () => ({ model: HAIKU, agentId: `w-${(n += 1)}` }))
+    const mode = { fail: true }
+    on('agent.list', async () => {
+      if (mode.fail) throw new Error('down')
+      return { value: [] as never }
+    })
+    await start($)
+    await $.agent.spawn(spawnInput({ description: 'first', subagentType: 'verifier', id: 'tu-1' }))
+    await $.agent.spawn(spawnInput({ description: 'second', subagentType: 'worker', id: 'tu-2' }))
+    await $.turn.complete(complete('w-1'))
+    await clock.advance(INIT_MS + 1500)
+    const failed = linesOf(await draw($, 40, 80)).join('\n')
+    expect(failed).toContain('MISSION COMPLETE')
+    expect(failed).toContain('ACTIVE')
+    mode.fail = false
+    await clock.advance(1500)
+    const empty = linesOf(await draw($, 40, 80)).join('\n')
+    expect(empty).toContain('MISSION COMPLETE')
+    expect(empty).toContain('ACTIVE')
+    expect(empty).not.toContain('WAITING')
+  })
+
+  test('a tool call from an id the engine does not have adds nothing and asks once', async ($, on) => {
+    engine(on)
+    let calls = 0
+    on('agent.list', async () => {
+      calls += 1
+      return { value: [{ id: 'other', status: 'running', type: 'worker', description: 'x' }] as never }
+    })
+    await start($)
+    await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'nobody' } as never)
+    await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'nobody' } as never)
+    expect(calls).toBe(1)
+    expect(linesOf(await draw($, 40, 80)).join('\n')).toContain('還沒有派工')
   })
 })

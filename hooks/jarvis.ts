@@ -274,7 +274,7 @@ export function noteTool(
 ): JarvisAgent[] {
   return list.map(a => {
     if (a.id !== id) return a
-    const { waiting: _w, ...rest } = a
+    const { waiting: _w, confirmed: _c, ...rest } = a
     if (a.status === 'running') return { ...rest, tool, lastSeenAt: now }
     if (a.status === 'stale') return { ...rest, tool, status: 'running', lastSeenAt: now }
     return { ...rest, tool, status: 'running', runStartedAt: now, lastSeenAt: now, endedAt: 0 }
@@ -291,7 +291,7 @@ export function finishTurn(
   return list.map(a => {
     if (a.id !== id) return a
     const u = c.usage
-    const { revived: _r, ...rest } = a
+    const { revived: _r, confirmed: _c, ...rest } = a
     return {
       ...rest,
       status: c.reason === 'answer' ? 'done' : 'failed',
@@ -309,20 +309,25 @@ export function finishTurn(
 }
 
 // A running subagent with no tool call or finished turn for STALE_MS is lost, unless the
-// engine says it waits on background work.
-// Returns the same array when nothing changed.
-export function markStale(list: readonly JarvisAgent[], now: number): readonly JarvisAgent[] {
-  if (!list.some(a => a.status === 'running' && a.waiting !== true && now - a.lastSeenAt > STALE_MS)) return list
-  return list.map(a =>
-    a.status === 'running' && a.waiting !== true && now - a.lastSeenAt > STALE_MS
-      ? { ...a, status: 'stale' as const, tool: '' }
-      : a,
-  )
+// engine says it waits on background work and the engine can still be asked
+// (`exemptWaiting`). Returns the same array when nothing changed.
+export function markStale(list: readonly JarvisAgent[], now: number, exemptWaiting = true): readonly JarvisAgent[] {
+  const lost = (a: JarvisAgent) =>
+    a.status === 'running' && (a.waiting !== true || !exemptWaiting) && now - a.lastSeenAt > STALE_MS
+  if (!list.some(lost)) return list
+  return list.map(a => {
+    if (!lost(a)) return a
+    const { waiting: _w, revived: _r, ...rest } = a
+    return { ...rest, status: 'stale' as const, tool: '' }
+  })
 }
 
 // How often the engine's own view of the agents is checked: while one waits, and for a
 // minute after one finished (it may be waiting on work of its own).
 export const RECONCILE_RECENT_MS = 60_000
+// After this many listings in a row that say nothing, a waiting agent loses its exemption
+// from going lost.
+export const LIST_FAILS_MAX = 30
 
 // An agent as `$.agent.list()` gives it, as much as the cockpit reads.
 export type EngineAgent = { id: string; status: string; type?: string; description?: string }
@@ -330,10 +335,12 @@ export type EngineAgent = { id: string; status: string; type?: string; descripti
 const ENGINE_LIVE = new Set(['pending', 'running', 'waiting'])
 const ENGINE_FAILED = new Set(['failed', 'killed'])
 
-// Brings each listed agent in line with what the engine says of it: one the engine still
-// runs or holds on its background work runs again (waiting marked; revived when it had
-// ended); a waiting or revived one the engine has ended is done or failed. One running in
-// its own turn is left to its turn.complete. Returns the same array when nothing changed.
+// Brings each agent in line with what the engine says of it: one the engine still runs or
+// holds on its background work runs again (waiting marked; revived when it had ended); a
+// waiting or revived one the engine has ended, or no longer lists, is done or failed; an
+// ended one the engine confirms ended is marked confirmed. One running in its own turn is
+// left to its turn.complete. `engine` is a listing that said something: never empty.
+// Returns the same array when nothing changed.
 export function reconcileAgents(
   list: readonly JarvisAgent[],
   engine: readonly EngineAgent[],
@@ -343,9 +350,8 @@ export function reconcileAgents(
   let changed = false
   const out = list.map(a => {
     const s = byId.get(a.id)
-    if (s === undefined) return a
     const waiting = s === 'waiting'
-    if (ENGINE_LIVE.has(s)) {
+    if (s !== undefined && ENGINE_LIVE.has(s)) {
       if (a.status === 'running' || a.status === 'stale') {
         if ((a.waiting === true) === waiting && a.status === 'running') return a
         changed = true
@@ -353,7 +359,7 @@ export function reconcileAgents(
         return { ...rest, status: 'running' as const, lastSeenAt: now, ...(waiting ? { waiting: true } : {}) }
       }
       changed = true
-      const { waiting: _w, ...rest } = a
+      const { waiting: _w, confirmed: _c, ...rest } = a
       return {
         ...rest,
         status: 'running' as const,
@@ -364,12 +370,17 @@ export function reconcileAgents(
         ...(waiting ? { waiting: true } : {}),
       }
     }
-    if (a.waiting !== true && a.revived !== true) return a
+    if (a.waiting !== true && a.revived !== true) {
+      if (s === undefined || a.confirmed === true || (a.status !== 'done' && a.status !== 'failed')) return a
+      changed = true
+      return { ...a, confirmed: true }
+    }
     changed = true
     const { waiting: _w, revived: _r, ...rest } = a
     return {
       ...rest,
-      status: ENGINE_FAILED.has(s) ? ('failed' as const) : ('done' as const),
+      ...(s === undefined ? {} : { confirmed: true }),
+      status: s !== undefined && ENGINE_FAILED.has(s) ? ('failed' as const) : ('done' as const),
       tool: '',
       lastSeenAt: now,
       endedAt: now,
@@ -380,13 +391,13 @@ export function reconcileAgents(
 }
 
 // Whether the engine's view is worth asking for: an agent waits or runs revived, or one
-// finished within RECONCILE_RECENT_MS.
+// finished within RECONCILE_RECENT_MS and the engine has not confirmed it ended.
 export function needsReconcile(list: readonly JarvisAgent[], now: number): boolean {
   return list.some(
     a =>
       a.waiting === true ||
       (a.status === 'running' && a.revived === true) ||
-      (a.status !== 'running' && a.endedAt > 0 && now - a.endedAt <= RECONCILE_RECENT_MS),
+      (a.status !== 'running' && a.confirmed !== true && a.endedAt > 0 && now - a.endedAt <= RECONCILE_RECENT_MS),
   )
 }
 
