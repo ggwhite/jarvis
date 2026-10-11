@@ -421,7 +421,8 @@ export const register: Register = on => {
           return rows
         })
         await update($, tick, t => ({ n: t.n + 1, now }))
-        await update($, suit, s => ({ ...s, deployedAt: now }))
+        // only a suit on show plays the deployment
+        if (suitTimer !== undefined) await update($, suit, s => ({ ...s, deployedAt: now }))
         pace?.(tickMs(await read($, agents), now, drawnAt))
       }
     } catch {

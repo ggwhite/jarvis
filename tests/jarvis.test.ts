@@ -3967,6 +3967,42 @@ describe('standby suit', () => {
     expect(findText(tree, /^MARK XLII · /)?.props?.['color']).toBe(THEME.frame)
   })
 
+  test('a spawn while the suit is on show: it stays 2 s over the running list, ◆ CREW DEPLOYED, then gives way', async ($, on) => {
+    const clock = engine(on, 'agent-1')
+    await start($)
+    expect(linesOf(await draw($, 50)).join('\n')).toContain(STANDBY)
+    await $.agent.spawn(spawnInput({ description: 'find files', subagentType: 'Explore' }))
+    await clock.advance(1000)
+    let text = linesOf(await draw($, 50)).join('\n')
+    expect(text).toContain('◆ CREW DEPLOYED')
+    expect(text).toContain('ALL CREW DOCKED, SIR.')
+    expect(text).toContain('find files')
+    expect(text).toContain('▶1 執行中')
+    await clock.advance(CREW_SHOW_MS - 1000)
+    text = linesOf(await draw($, 50)).join('\n')
+    expect(text).not.toContain(SUIT)
+    expect(text).toContain('find files')
+  })
+
+  test('a spawn while the suit is not on show plays nothing; short of rows the running list wins', async ($, on) => {
+    engineAll(on)
+    await start($)
+    // another page: back on the now page the running one stands alone
+    await press($, 'tab-log', 50)
+    await draw($, 50)
+    await $.agent.spawn(spawnIn('job 1', 'worker'))
+    await press($, 'tab-now', 50)
+    expect(linesOf(await draw($, 50)).join('\n')).not.toContain(SUIT)
+    // on show, but 20 running leave it no room: hidden at once, every one listed
+    for (let i = 2; i <= 20; i += 1) await $.agent.spawn(spawnIn(`job ${i}`, 'worker'))
+    for (let i = 1; i <= 20; i += 1) await $.turn.complete(complete(`agent-${i}`))
+    await draw($, 50)
+    for (let i = 21; i <= 40; i += 1) await $.agent.spawn(spawnIn(`job ${i}`, 'worker'))
+    const tree = await draw($, 50)
+    expect(linesOf(tree).join('\n')).not.toContain(SUIT)
+    for (let i = 21; i <= 40; i += 1) expect(findText(tree, new RegExp(`^job ${i}\\s*$`))).toBeDefined()
+  })
+
   test('the poses in turn under the suit: standby, wave, hover, repulsor, charge, one frame every 250 ms while drawn', async ($, on) => {
     const clock = engine(on, 'agent-1')
     await start($)
@@ -4017,9 +4053,11 @@ describe('standby suit', () => {
     base = frames.n
     await clock.advance(SUIT_TICK_MS * 8)
     expect(frames.n).toBe(base)
-    // a subagent running: no suit, no tick (its spawn writes once)
+    // a subagent running: no suit past its deployment, no tick
     await draw($, 50)
     await $.agent.spawn(spawnInput({ description: 'find files', subagentType: 'Explore' }))
+    await draw($, 50)
+    await clock.advance(CREW_SHOW_MS)
     await draw($, 50)
     base = frames.n
     await clock.advance(SUIT_TICK_MS * 8)

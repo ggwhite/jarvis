@@ -1369,8 +1369,9 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const total = eventRows(view.events).length
     const recentH = (n: number) => Math.max(1, n) + 3
     const least = Math.min(finishedUnits.length, MIN_FINISHED)
-    const suit =
-      view.running.length === 0 && suitFits && left() - listHeight(least) - suitH - flight.h >= 0 ? standbyBlock() : undefined
+    // a suit on show when a crew member deploys stays CREW_SHOW_MS more, if the running fit
+    const stays = view.running.length === 0 || crewDeployed(view.now, ctx.deployedAt)
+    const suit = stays && suitFits && left() - listHeight(least) - suitH - flight.h >= 0 ? standbyBlock() : undefined
     standby = suit !== undefined
     const room = left() - flight.h - (suit?.h ?? 0)
     let recent = Math.min(total, MIN_RECENT)
