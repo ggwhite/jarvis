@@ -83,6 +83,7 @@ import { register } from '../hooks/register'
 import { BIG_ROWS, BURN_RAMP, GAUGE_RAMP, mix } from '../hooks/fleetChart'
 import {
   CREW_SHOW_MS,
+  READOUT_MAX_W,
   SCAN_SIDE_MIN_COLS,
   SUIT_BLOCK_ROWS,
   SUIT_CANVAS_COLS,
@@ -4155,7 +4156,9 @@ describe('standby suit', () => {
     return reads
   }
 
-  for (const cols of [SCAN_SIDE_MIN_COLS, 80, 100]) {
+  // from here each side holds the widest readout whole: full labels, five-cell meters
+  const FULL_SIDE_COLS = SUIT_CANVAS_COLS + 4 + 2 * READOUT_MAX_W
+  for (const cols of [FULL_SIDE_COLS, 80, 100]) {
     test(`wide enough (${cols}): readouts either side of the suit, corners round it`, async ($, on) => {
       const clock = engine(on, 'agent-1')
       quotaFile(on, limits(9, 100))
@@ -4200,7 +4203,15 @@ describe('standby suit', () => {
     })
   }
 
-  for (const cols of [40, 64, 65, 72, 100]) {
+  // under the suit the full label and meter; beside it the first form that fits its side
+  const POWER_AT: [number, string][] = [
+    [40, 'POWER 5H ▰▰▰▰▰ 100%'],
+    [64, '5H ▰▰▰▰▰ 100%'],
+    [65, '5H ▰▰▰▰▰ 100%'],
+    [72, 'POWER 5H ▰▰▰▰ 100%'],
+    [100, 'POWER 5H ▰▰▰▰▰ 100%'],
+  ]
+  for (const [cols, power] of POWER_AT) {
     test(`readouts at ${cols} columns: 100% power never cut`, async ($, on) => {
       const clock = engine(on, 'agent-1')
       quotaFile(on, limits(100, 100))
@@ -4210,8 +4221,9 @@ describe('standby suit', () => {
       const tree = await draw($, 50, cols)
       const text = rowsOf(tree).join('\n')
       expect(text).toContain(STANDBY)
-      expect(text).toMatch(/POWER 5H ▰▰▰▰▰ 100%/)
-      expect(text).toMatch(/POWER 7D ▰▰▰▰▰ 100%/)
+      expect(text).toContain(power)
+      expect(text).toContain(power.replace('5H', '7D'))
+      if (!power.startsWith('POWER')) expect(text).not.toContain('POWER')
       expect(text).not.toContain('10…')
       expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
     })
@@ -4246,6 +4258,130 @@ describe('standby suit', () => {
     expect(linesOf(at).join('\n')).not.toContain(STANDBY)
     expect(paneRows(at)).toBeLessThanOrEqual(least - 1)
   })
+
+  // idle after two docked, power at 1% and 97%: six minutes up, the last return 1m50s ago
+  const twoDocked = async ($: Engine, on: On) => {
+    const clock = engineAll(on)
+    quotaFile(on, limits(1, 97))
+    await start($)
+    await clock.advance(250_000)
+    for (const d of ['one', 'two']) await $.agent.spawn(spawnIn(d, 'worker'))
+    for (const id of ['agent-1', 'agent-2']) await $.turn.complete(complete(id, { durationMs: 0 }))
+    await $.tool.call({ tool: 'Read', file_path: '/f/a.ts' })
+    await clock.advance(110_000)
+    // the quota read on the first draw, shown from the next
+    await draw($, 60, 80)
+    await clock.advance(10)
+  }
+  // the suit's rows as drawn: the canvas, a blank, its two lines
+  const suitRows = (rows: string[]) => {
+    const pose = rows.findIndex(l => l.includes('MARK XLII ·') || l.includes('◆ CREW DEPLOYED'))
+    return pose < 0 ? [] : rows.slice(pose - SUIT_CANVAS_ROWS - 1, pose + 2)
+  }
+
+  test('64 columns: the readouts either side of the suit in their short forms, none under it', async ($, on) => {
+    await twoDocked($, on)
+    const rows = rowsOf(await draw($, 60, 64))
+    const block = suitRows(rows)
+    expect(block).toHaveLength(SUIT_CANVAS_ROWS + 3)
+    // each side 14 cells, the left against the frame, the right from it
+    const side = Math.floor((64 - SUIT_CANVAS_COLS - 4) / 2)
+    const leftOf = (l: string) => [...l].slice(0, side).join('')
+    const rightOf = (l: string) => [...l].slice(side + SUIT_CANVAS_COLS + 4).join('')
+    expect(block.slice(1, 5).map(leftOf)).toEqual(
+      ['5H ▰▱▱▱▱ 1%', '7D ▰▰▰▰▰ 97%', 'CREW $0', 'UPTIME 6m'].map(t => t.padStart(side)),
+    )
+    expect(block.slice(1, 5).map(rightOf)).toEqual(
+      ['CREW 2 DOCKED', '0 ACTIVE', '0 FAIL', 'LAST 1m50s'].map(t => t.padEnd(64 - side - SUIT_CANVAS_COLS - 4)),
+    )
+    expect([block[0] ?? '', ...block.slice(5, SUIT_CANVAS_ROWS)].some(l => /POWER|5H|DOCKED|UPTIME|LAST/.test(l))).toBe(false)
+    // the two lines straight after the canvas, no readout row under them
+    const pose = rows.indexOf(block[SUIT_CANVAS_ROWS + 1] ?? '')
+    expect(rows[pose + 1]).toContain('ALL CREW DOCKED, SIR.')
+    expect(rows.slice(pose + 2).some(l => /POWER|ACTIVE|UPTIME/.test(l))).toBe(false)
+  })
+
+  for (const [cols, beside] of [[59, false], [60, true]] as const) {
+    test(`${cols} columns: the readouts ${beside ? 'beside' : 'under'} the suit`, async ($, on) => {
+      await twoDocked($, on)
+      const rows = rowsOf(await draw($, 60, cols))
+      const block = suitRows(rows)
+      expect(block).toHaveLength(SUIT_CANVAS_ROWS + 3)
+      expect(block.slice(0, SUIT_CANVAS_ROWS).some(l => l.includes('DOCKED'))).toBe(beside)
+      const pose = rows.indexOf(block[SUIT_CANVAS_ROWS + 1] ?? '')
+      const under = rows.slice(pose + 2, pose + 2 + SUIT_UNDER_ROWS)
+      if (beside) {
+        expect(under.some(l => /POWER|DOCKED|UPTIME/.test(l))).toBe(false)
+        expect(block[1]).toMatch(/^ *5H ▰▱▱▱▱ 1% {2}.* {2}2 DOCKED *$/)
+      } else {
+        expect(under[0]).toMatch(/^POWER 5H ▰▱▱▱▱ 1% +CREW 2 DOCKED$/)
+        expect(under[3]).toMatch(/^UPTIME 6m +LAST 1m50s$/)
+      }
+    })
+  }
+
+  // a theme color, or one on its way to bright: off the line by a rounding at most per channel
+  const rgb = (c: string) => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16))
+  const onTheme = (c: string): boolean => {
+    const z = rgb(c)
+    const y = rgb(THEME.bright)
+    return (Object.values(THEME) as string[]).some(a => {
+      const x = rgb(a)
+      const spans = x.map((v, i) => Math.abs((y[i] ?? v) - v))
+      const k = spans.indexOf(Math.max(...spans))
+      const t = (spans[k] ?? 0) === 0 ? 0 : ((z[k] ?? 0) - (x[k] ?? 0)) / ((y[k] ?? 0) - (x[k] ?? 0))
+      if (t < 0 || t > 1) return false
+      return Math.max(...z.map((v, i) => Math.abs(v - ((x[i] ?? 0) + ((y[i] ?? 0) - (x[i] ?? 0)) * t)))) <= 1
+    })
+  }
+  // the drawn rows as nodes, as rowsOf reads them
+  const rowNodesOf = (n: Node | string): (Node | string)[] =>
+    typeof n === 'string' || n.type === 'Text' || n.props?.flexDirection === 'row' ? [n] : (n.children ?? []).flatMap(rowNodesOf)
+  const colorsOf = (n: Node | string): string[] =>
+    typeof n === 'string'
+      ? []
+      : [
+          ...(['color', 'backgroundColor'] as const).flatMap(k => (typeof n.props?.[k] === 'string' ? [n.props[k] as string] : [])),
+          ...(n.children ?? []).flatMap(colorsOf),
+        ]
+
+  for (const cols of [40, 59, 60, 64, 72, 74, 100]) {
+    for (const h of [30, 49]) {
+      test(`${cols}×${h}: no row too wide or the pane too tall, no number cut, the suit on theme`, async ($, on) => {
+        await twoDocked($, on)
+        const tree = await draw($, h, cols)
+        const rows = rowsOf(tree)
+        expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
+        expect(paneRows(tree)).toBeLessThanOrEqual(h)
+        expect(rows.filter(l => /[\d$%]…|…[\d$%]/.test(l))).toEqual([])
+        const nodes = rowNodesOf(tree)
+        const block = suitRows(rows)
+        if (block.length === 0) return
+        const top = rows.indexOf(block[0] ?? '')
+        expect(block.join('\n')).not.toContain('…')
+        for (const c of nodes.slice(top, top + block.length).flatMap(colorsOf)) expect([c, onTheme(c)]).toEqual([c, true])
+      })
+    }
+  }
+
+  for (const cols of [60, 64]) {
+    test(`beside the suit (${cols}) the gate counts no readout rows`, async ($, on) => {
+      const clock = engine(on, 'agent-1')
+      quotaFile(on, limits(9, 96))
+      await start($)
+      await draw($, 60, cols)
+      await clock.advance(10)
+      // title, tabs, the empty list 4, in-flight 4, the suit alone
+      const least = 2 + 4 + 4 + SUIT_BLOCK_ROWS
+      let at = await draw($, least, cols)
+      expect(linesOf(at).join('\n')).toContain(STANDBY)
+      expect(rowsOf(at).join('\n')).toContain('7D ▰▰▰▰▰ 96%')
+      expect(paneRows(at)).toBeLessThanOrEqual(least)
+      at = await draw($, least - 1, cols)
+      expect(linesOf(at).join('\n')).not.toContain(STANDBY)
+      expect(paneRows(at)).toBeLessThanOrEqual(least - 1)
+    })
+  }
 
   test('no quota file: the left column has no power lines', async ($, on) => {
     const clock = engine(on, 'agent-1')

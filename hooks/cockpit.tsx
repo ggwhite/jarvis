@@ -26,6 +26,7 @@ import {
   SUIT_UNDER_ROWS,
   crewDeployed,
   readoutMeterW,
+  sideReadout,
   standbyReadouts,
   suitCells,
   suitFrame,
@@ -1258,15 +1259,15 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   const READOUT_COLOR: Record<Readout['tone'], string> = { primary: PRIMARY, bright: BRIGHT, error: ERROR, frame: FRAME }
 
-  // `LABEL ▰▱▱▱▱ value` in `width` cells: the label in frame, a meter when it has one, the
-  // value in its tone; short of room the meter gives way, never the value
-  const readoutSegs = (r: Readout | undefined, width: number): Seg[] => {
+  // `LABEL ▰▱▱▱▱ value` in the form given: the label in frame, a meter when it keeps one, the
+  // value in its tone
+  const readoutSegs = (r: Readout | undefined, form: (r: Readout) => { label: string; meterW: number }): Seg[] => {
     if (r === undefined) return []
     const color = READOUT_COLOR[r.tone]
-    const meterW = readoutMeterW(r, width)
+    const { label, meterW } = form(r)
     const lit = r.meter ? Math.min(meterW, Math.max(0, Math.ceil(r.meter.pct * meterW))) : 0
     return [
-      ...(r.label === '' ? [] : [{ t: r.label, color: FRAME }, sp(1)]),
+      ...(label === '' ? [] : [{ t: label, color: FRAME }, sp(1)]),
       ...(meterW > 0 ? [{ t: '▰'.repeat(lit), color }, { t: '▱'.repeat(meterW - lit), color: MUTED }, sp(1)] : []),
       { t: r.value, color },
     ]
@@ -1301,17 +1302,19 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     if (scanSide) {
       const side = Math.floor((cols - SCAN_FRAME_W) / 2)
       const rest = cols - SCAN_FRAME_W - side
-      // the readouts from the art's second row
+      // the readouts from the art's second row, each in the first form that fits its side
       art = sighted.map((row, i) => {
-        const l = clip(readoutSegs(r.left[i - 1], side), side)
-        const rt = clip(readoutSegs(r.right[i - 1], rest), rest)
+        const l = clip(readoutSegs(r.left[i - 1], x => sideReadout(x, side)), side)
+        const rt = clip(readoutSegs(r.right[i - 1], x => sideReadout(x, rest)), rest)
         return [sp(side - segsWidth(l)), ...l, ...row, ...rt, sp(rest - segsWidth(rt))]
       })
     } else {
       art = sighted.map(row => centered(row, cols))
+      // under the suit the full labels, the meter giving way a cell at a time
+      const full = (width: number) => (x: Readout) => ({ label: x.label, meterW: readoutMeterW(x, width) })
       under = Array.from({ length: SUIT_UNDER_ROWS }, (_, i) => {
-        const rt = readoutSegs(r.right[i], cols)
-        return leftRight(readoutSegs(r.left[i], cols - segsWidth(rt) - 1), rt, cols)
+        const rt = readoutSegs(r.right[i], full(cols))
+        return leftRight(readoutSegs(r.left[i], full(cols - segsWidth(rt) - 1)), rt, cols)
       })
     }
     const lines: Seg[][] = [

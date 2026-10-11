@@ -70,13 +70,19 @@ export function suitCells(): Cell[][] {
 export const POWER_METER_W = 5
 // The widest readout: `POWER 5H ▰▰▰▰▰ 100%`.
 export const READOUT_MAX_W = cellWidth('POWER 5H') + 1 + POWER_METER_W + 1 + cellWidth('100%')
-// From this many columns the readouts stand either side of the suit's sights, each side as
-// wide as the widest readout; below, under it.
-export const SCAN_SIDE_MIN_COLS = SUIT_CANVAS_COLS + 4 + 2 * READOUT_MAX_W
+// The narrowest side the readouts stand in beside the suit.
+export const READOUT_SIDE_MIN_W = 12
+// From this many columns the readouts stand either side of the suit's sights, each in the
+// first form that fits its side; below, under it.
+export const SCAN_SIDE_MIN_COLS = SUIT_CANVAS_COLS + 4 + 2 * READOUT_SIDE_MIN_W
+// The fewest cells a meter keeps beside the suit, or it goes.
+const SIDE_METER_MIN_W = 3
 // The rows the readouts take under the suit when they do not fit beside it.
 export const SUIT_UNDER_ROWS = 4
 
-export type Readout = { label: string; value: string; tone: 'primary' | 'bright' | 'error' | 'frame'; meter?: { pct: number } }
+// `short` is the label beside the suit when the full one does not fit: '' for none, left out
+// for the full one.
+export type Readout = { label: string; short?: string; value: string; tone: 'primary' | 'bright' | 'error' | 'frame'; meter?: { pct: number } }
 
 // How long the session has been up, as the statusline writes it: `45s`, `12m`, `7h32m`, `1d3h`.
 export function fmtUptime(ms: number): string {
@@ -97,6 +103,24 @@ export function readoutMeterW(r: Readout, width: number): number {
   return Math.max(0, Math.min(POWER_METER_W, width - bare - 1))
 }
 
+// The form a readout takes beside the suit in `width` cells, the first that fits: with a
+// meter, the full label and a meter of 3 to 5 cells, the short label and one, the short label
+// alone; without, the full label, then the short. Else the value alone, never cut.
+export function sideReadout(r: Readout, width: number): { label: string; meterW: number } {
+  const short = r.short ?? r.label
+  const forms: [string, boolean][] = r.meter ? [[r.label, true], [short, true], [short, false]] : [[r.label, false], [short, false]]
+  for (const [label, meter] of forms) {
+    const bare = (label === '' ? 0 : cellWidth(label) + 1) + cellWidth(r.value)
+    if (meter) {
+      const meterW = Math.min(POWER_METER_W, width - bare - 1)
+      if (meterW >= SIDE_METER_MIN_W) return { label, meterW }
+    } else if (bare <= width) {
+      return { label, meterW: 0 }
+    }
+  }
+  return { label: '', meterW: 0 }
+}
+
 const powerTone = (pct: number): Readout['tone'] => (pct >= 80 ? 'error' : pct >= 50 ? 'bright' : 'primary')
 
 // The scan station's readouts: power, crew spend and uptime on the left; the crew's count
@@ -113,15 +137,15 @@ export function standbyReadouts(input: {
   const left: Readout[] = []
   const q = input.quota
   if (q?.fiveHour) {
-    left.push({ label: 'POWER 5H', value: `${Math.round(q.fiveHour.usedPct)}%`, tone: powerTone(q.fiveHour.usedPct), meter: { pct: q.fiveHour.usedPct / 100 } })
+    left.push({ label: 'POWER 5H', short: '5H', value: `${Math.round(q.fiveHour.usedPct)}%`, tone: powerTone(q.fiveHour.usedPct), meter: { pct: q.fiveHour.usedPct / 100 } })
   }
   if (q?.sevenDay) {
-    left.push({ label: 'POWER 7D', value: `${Math.round(q.sevenDay.usedPct)}%`, tone: powerTone(q.sevenDay.usedPct), meter: { pct: q.sevenDay.usedPct / 100 } })
+    left.push({ label: 'POWER 7D', short: '7D', value: `${Math.round(q.sevenDay.usedPct)}%`, tone: powerTone(q.sevenDay.usedPct), meter: { pct: q.sevenDay.usedPct / 100 } })
   }
-  left.push({ label: 'CREW', value: fmtUsd(input.crewCost), tone: 'primary' })
-  left.push({ label: 'UPTIME', value: input.uptimeMs === undefined ? '--' : fmtUptime(input.uptimeMs), tone: 'primary' })
+  left.push({ label: 'CREW', short: '', value: fmtUsd(input.crewCost), tone: 'primary' })
+  left.push({ label: 'UPTIME', short: 'UP', value: input.uptimeMs === undefined ? '--' : fmtUptime(input.uptimeMs), tone: 'primary' })
   const right: Readout[] = [
-    { label: 'CREW', value: `${input.done} DOCKED`, tone: 'primary' },
+    { label: 'CREW', short: '', value: `${input.done} DOCKED`, tone: 'primary' },
     { label: '', value: `${input.active} ACTIVE`, tone: input.active > 0 ? 'bright' : 'frame' },
     { label: '', value: `${input.failed} FAIL`, tone: input.failed > 0 ? 'error' : 'frame' },
     { label: 'LAST', value: input.lastAgoMs === undefined ? '--' : fmtDur(input.lastAgoMs), tone: 'frame' },

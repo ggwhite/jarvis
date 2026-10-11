@@ -1,12 +1,13 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { THEME } from '../hooks/jarvis'
+import { THEME, cellWidth } from '../hooks/jarvis'
 import type { Cell } from '../hooks/fleetChart'
 import { mix } from '../hooks/fleetChart'
 import {
   CHARGE_MS,
   HOVER_MS,
   READOUT_MAX_W,
+  READOUT_SIDE_MIN_W,
   REPULSOR_MS,
   SCAN_SIDE_MIN_COLS,
   STANDBY_MS,
@@ -21,6 +22,7 @@ import {
   crewDeployed,
   fmtUptime,
   readoutMeterW,
+  sideReadout,
   standbyReadouts,
   suitCells,
   suitFrame,
@@ -105,6 +107,9 @@ describe('standby readouts', () => {
     expect(r.left[3]?.value).toBe('7h32m')
     expect(r.right.map(x => x.value)).toEqual(['50 DOCKED', '0 ACTIVE', '4 FAIL', '2m00s'])
     expect(r.right.map(x => x.label)).toEqual(['CREW', '', '', 'LAST'])
+    // the short labels beside the suit: none on the spend nor the crew, LAST as it is
+    expect(r.left.map(x => x.short ?? x.label)).toEqual(['5H', '7D', '', 'UP'])
+    expect(r.right.map(x => x.short ?? x.label)).toEqual(['', '', '', 'LAST'])
     expect(r.right[2]?.tone).toBe('error')
   })
 
@@ -320,6 +325,61 @@ describe('readout meter', () => {
     expect(readoutMeterW(power, 14)).toBe(0)
     expect(readoutMeterW({ label: 'CREW', value: '$1.00', tone: 'primary' }, 40)).toBe(0)
     expect(READOUT_MAX_W).toBe(19)
-    expect(SCAN_SIDE_MIN_COLS).toBe(SUIT_CANVAS_COLS + 4 + 2 * READOUT_MAX_W)
+  })
+})
+
+describe('readouts beside the suit', () => {
+  const power: Readout = { label: 'POWER 5H', short: '5H', value: '100%', tone: 'error', meter: { pct: 1 } }
+  // the cells a readout takes in the form it is given
+  const widthOf = (r: Readout, f: { label: string; meterW: number }) =>
+    (f.label === '' ? 0 : cellWidth(f.label) + 1) + (f.meterW > 0 ? f.meterW + 1 : 0) + cellWidth(r.value)
+
+  test('beside the suit from 60 columns: the frame and two sides of 12', () => {
+    expect(READOUT_SIDE_MIN_W).toBe(12)
+    expect(SCAN_SIDE_MIN_COLS).toBe(SUIT_CANVAS_COLS + 4 + 2 * READOUT_SIDE_MIN_W)
+    expect(SCAN_SIDE_MIN_COLS).toBe(60)
+  })
+
+  test('with a meter: full label and meter, short label and meter, short label alone, the value alone', () => {
+    expect(sideReadout(power, 40)).toEqual({ label: 'POWER 5H', meterW: 5 })
+    expect(sideReadout(power, 19)).toEqual({ label: 'POWER 5H', meterW: 5 })
+    expect(sideReadout(power, 17)).toEqual({ label: 'POWER 5H', meterW: 3 })
+    expect(sideReadout(power, 16)).toEqual({ label: '5H', meterW: 5 })
+    expect(sideReadout(power, 12)).toEqual({ label: '5H', meterW: 4 })
+    expect(sideReadout(power, 11)).toEqual({ label: '5H', meterW: 3 })
+    expect(sideReadout(power, 10)).toEqual({ label: '5H', meterW: 0 })
+    expect(sideReadout(power, 7)).toEqual({ label: '5H', meterW: 0 })
+    expect(sideReadout(power, 6)).toEqual({ label: '', meterW: 0 })
+    expect(sideReadout(power, 2)).toEqual({ label: '', meterW: 0 })
+  })
+
+  test('without a meter: full label, short label, the value alone', () => {
+    const up: Readout = { label: 'UPTIME', short: 'UP', value: '1d23h', tone: 'primary' }
+    expect(sideReadout(up, 12)).toEqual({ label: 'UPTIME', meterW: 0 })
+    expect(sideReadout(up, 11)).toEqual({ label: 'UP', meterW: 0 })
+    expect(sideReadout(up, 8)).toEqual({ label: 'UP', meterW: 0 })
+    expect(sideReadout(up, 7)).toEqual({ label: '', meterW: 0 })
+    // no short label: the full one, then the value alone
+    const last: Readout = { label: 'LAST', value: '1m50s', tone: 'frame' }
+    expect(sideReadout(last, 10)).toEqual({ label: 'LAST', meterW: 0 })
+    expect(sideReadout(last, 9)).toEqual({ label: '', meterW: 0 })
+    const spend: Readout = { label: 'CREW', short: '', value: '$123.45', tone: 'primary' }
+    expect(sideReadout(spend, 12)).toEqual({ label: 'CREW', meterW: 0 })
+    expect(sideReadout(spend, 11)).toEqual({ label: '', meterW: 0 })
+  })
+
+  test('at the narrowest side every value whole: 100%, $123.45, 1d23h', () => {
+    const r = standbyReadouts({
+      quota: { fiveHour: { usedPct: 100, resetsAt: 0, windowMin: 300 }, sevenDay: { usedPct: 100, resetsAt: 0, windowMin: 10080 }, fetchedAt: 0 },
+      crewCost: 123.45, uptimeMs: 47 * 3600_000, done: 2, active: 0, failed: 0, lastAgoMs: 110_000,
+    })
+    expect(r.left.map(x => x.value)).toEqual(['100%', '100%', '$123.45', '1d23h'])
+    for (const x of [...r.left, ...r.right]) {
+      const f = sideReadout(x, READOUT_SIDE_MIN_W)
+      expect([x.value, widthOf(x, f) <= READOUT_SIDE_MIN_W]).toEqual([x.value, true])
+    }
+    expect(sideReadout(r.left[0] as Readout, READOUT_SIDE_MIN_W)).toEqual({ label: '5H', meterW: 4 })
+    expect(sideReadout(r.left[2] as Readout, READOUT_SIDE_MIN_W)).toEqual({ label: 'CREW', meterW: 0 })
+    expect(sideReadout(r.left[3] as Readout, READOUT_SIDE_MIN_W)).toEqual({ label: 'UPTIME', meterW: 0 })
   })
 })
