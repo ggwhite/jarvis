@@ -4301,6 +4301,23 @@ describe('standby suit', () => {
     expect(reads.n).toBe(3)
   })
 
+  test('a session started again shows no power until it reads its own', async ($, on) => {
+    const clock = engine(on, 'agent-1')
+    const file = { text: limits(9, 96) as string | undefined }
+    mock.env(on, { HOME: QHOME })
+    on('fs.read', async (_$, e) => {
+      if (e.path !== `${QHOME}/${LIMITS_PATH}` || file.text === undefined) throw new Error('ENOENT')
+      return { value: file.text }
+    })
+    await start($)
+    await draw($, 45, 80)
+    await clock.advance(10)
+    expect(rowsOf(await draw($, 45, 80)).join('\n')).toContain('POWER 5H')
+    file.text = undefined
+    await start($)
+    expect(rowsOf(await draw($, 45, 80)).join('\n')).not.toContain('POWER')
+  })
+
   test('narrower than the canvas and its margin the suit is left out; no row overflows', async ($, on) => {
     engine(on, 'agent-1')
     expect(linesOf(await draw($, 50, SUIT_CANVAS_COLS + 4)).join('\n')).toContain(STANDBY)
@@ -4538,6 +4555,22 @@ describe('background wait', () => {
     expect(needsReconcile([base({ endedAt: 1000 })], 1000 + RECONCILE_RECENT_MS + 1)).toBe(false)
     expect(needsReconcile([base({ status: 'running', waiting: true, endedAt: 0 })], 10 * RECONCILE_RECENT_MS)).toBe(true)
   })
+
+  test('waiting only: an ended agent the engine still runs is left ended, one it waits on runs waiting', () => {
+    const list = [base()]
+    expect(reconcileAgents(list, [{ id: 'w1', status: 'running' }], 5000, true)).toBe(list)
+    expect(reconcileAgents(list, [{ id: 'w1', status: 'pending' }], 5000, true)).toBe(list)
+    const waiting = reconcileAgents(list, [{ id: 'w1', status: 'waiting' }], 5000, true)
+    expect(waiting[0]?.status).toBe('running')
+    expect(waiting[0]?.waiting).toBe(true)
+  })
+
+  test('only waiting subagents running: the tick idles', () => {
+    const waiting = base({ status: 'running', waiting: true, endedAt: 0 })
+    expect(tickMs([waiting], 1000, 1000)).toBe(IDLE_MS)
+    expect(tickMs([waiting, base({ id: 'w2', status: 'running', endedAt: 0 })], 1000, 1000)).toBe(ANIM_MS)
+    expect(tickMs([waiting], 1000, 1000, true)).toBe(ANIM_MS)
+  })
 })
 
 describe('background wait, wired', () => {
@@ -4557,17 +4590,91 @@ describe('background wait, wired', () => {
     expect(findText(await draw($, 40, 80), /WAITING/)?.props?.color).toBe(THEME.accent)
   })
 
-  test('a turn that ends while the engine still runs it shows it running, then complete on the next tick', async ($, on) => {
+  test('a turn that ends while the engine still says running shows complete at once and after the tick', async ($, on) => {
     const clock = engine(on, 'agent-1')
     const engineRows = [{ id: 'agent-1', status: 'running' }]
     listed(on, engineRows)
     await start($)
     await $.agent.spawn(spawnInput({ description: 'check', subagentType: 'verifier' }))
+    await clock.advance(INIT_MS + 1000)
     await $.turn.complete(complete('agent-1'))
-    expect(linesOf(await draw($, 40, 80)).join('\n')).not.toContain('MISSION COMPLETE')
+    const shown = async () => {
+      const lines = linesOf(await draw($, 40, 80)).join('\n')
+      expect(lines).toContain('MISSION COMPLETE')
+      expect(lines).not.toContain('INITIALIZING')
+      expect(lines).not.toContain('▶1 執行中')
+    }
+    await shown()
     engineRows[0] = { id: 'agent-1', status: 'completed' }
-    await clock.advance(1500)
-    expect(linesOf(await draw($, 40, 80)).join('\n')).toContain('MISSION COMPLETE')
+    await clock.advance(1200)
+    await shown()
+  })
+
+  test('a subagent waiting on its own background work past STUCK_MS is no stall', async ($, on) => {
+    const clock = engine(on, 'agent-1')
+    mock.env(on, HERDR)
+    const sent: string[] = []
+    on('process.run', async (_$, e) => {
+      sent.push(e.argv.join(' '))
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    })
+    listed(on, [{ id: 'agent-1', status: 'waiting' }])
+    await start($)
+    await $.agent.spawn(spawnInput({ description: 'check', subagentType: 'verifier' }))
+    await $.tool.call({ tool: 'Bash', command: 'make test &', agentId: 'agent-1' } as never)
+    await $.turn.complete(complete('agent-1'))
+    await clock.advance(6 * 60_000)
+    const lines = linesOf(await draw($, 40, 80)).join('\n')
+    expect(lines).toContain('WAITING')
+    expect(lines).not.toContain('STALL')
+    expect(sent.length).toBeGreaterThan(0)
+    expect(sent.some(s => s.includes('卡住'))).toBe(false)
+  })
+
+  test('one waiting beside one running: the engine is asked at most once a second', async ($, on) => {
+    const clock = engine(on)
+    let n = 0
+    on('agent.spawn', async () => ({ model: HAIKU, agentId: `agent-${(n += 1)}` }))
+    let calls = 0
+    on('agent.list', async () => {
+      calls += 1
+      return {
+        value: [
+          { id: 'agent-1', status: 'waiting', type: 'verifier', description: 'check' },
+          { id: 'agent-2', status: 'running', type: 'worker', description: 'build' },
+        ] as never,
+      }
+    })
+    const count = ticks(on)
+    await start($)
+    await $.agent.spawn(spawnInput({ description: 'check', subagentType: 'verifier', id: 'tu-1' }))
+    await $.agent.spawn(spawnInput({ description: 'build', subagentType: 'worker', id: 'tu-2' }))
+    await $.turn.complete(complete('agent-1'))
+    expect(linesOf(await draw($, 40, 80)).join('\n')).toContain('WAITING')
+    await clock.advance(2000)
+    calls = 0
+    count.n = 0
+    await clock.advance(1000)
+    // the tick animates all the while
+    expect(count.n).toBeGreaterThan(4)
+    expect(calls).toBeLessThanOrEqual(1)
+  })
+
+  test('only a waiting subagent: the tick stays idle however often the pane is drawn', async ($, on) => {
+    const clock = engine(on, 'agent-1')
+    listed(on, [{ id: 'agent-1', status: 'waiting' }])
+    const count = ticks(on)
+    await start($)
+    await $.agent.spawn(spawnInput({ description: 'check', subagentType: 'verifier' }))
+    await $.turn.complete(complete('agent-1'))
+    await draw($, 40, 80)
+    await clock.advance(2000)
+    count.n = 0
+    for (let i = 0; i < 6; i += 1) {
+      await draw($, 40, 80)
+      await clock.advance(500)
+    }
+    expect(count.n).toBeLessThanOrEqual(3)
   })
 
   test('the tick brings a waiting agent back to complete once the engine ends it', async ($, on) => {

@@ -86,11 +86,13 @@ async function engineAgents($: Pick<EngineInterface, 'agent'>): Promise<EngineAg
   }
 }
 
-// `listing.fails` counts the listings in a row that said nothing.
+// `listing.fails` counts the listings in a row that said nothing. `waitingOnly` as
+// reconcileAgents takes it.
 async function reconcile(
   $: Pick<EngineInterface, 'agent' | 'state'>,
   now: number,
   listing: { fails: number },
+  waitingOnly = false,
 ): Promise<void> {
   const info = await engineAgents($)
   if (info === undefined) {
@@ -99,7 +101,7 @@ async function reconcile(
   }
   listing.fails = 0
   await update($, agents, list => {
-    const out = reconcileAgents(list, info, now)
+    const out = reconcileAgents(list, info, now, waitingOnly)
     return out === list ? list : [...out]
   })
 }
@@ -107,7 +109,7 @@ async function reconcile(
 // The session's one tick, started at session.start: it counts the clock of running
 // rows and turns the spinners; at most once per IDLE_MS it also marks lost subagents
 // and feeds the Herdr row (`slow.at` is when it last did). It runs every ANIM_MS while
-// a subagent runs or the boot plays and the pane is in view, every IDLE_MS otherwise
+// a subagent runs (not waiting) or the boot plays and the pane is in view, every IDLE_MS otherwise
 // (`pace` picks); with nothing running and no boot it only reads state, so nothing redraws.
 async function tickOnce(
   $: Pick<EngineInterface, 'clock' | 'state' | 'agent'>,
@@ -350,6 +352,13 @@ export const register: Register = on => {
       }
     }
 
+    // the last session's quota read left behind; written only when there is one
+    try {
+      if ((await read($, standbyQuota)) !== null) await update($, standbyQuota, () => null)
+    } catch {
+      // the suit keeps what it showed
+    }
+
     suitOff()
     // the last session's frame and deployment left behind; written only when there are any
     try {
@@ -572,7 +581,8 @@ export const register: Register = on => {
           known = list.some(a => a.id === id)
           return known ? finishTurn(list, id, c, now) : list
         })
-        if (known) await reconcile($, now, listing)
+        // the engine has most likely not ended it yet: running is left to the tick
+        if (known) await reconcile($, now, listing, true)
         if (!known) {
           early.set(id, [...(early.get(id) ?? []), c])
           if (early.size > MAX_EARLY) {
@@ -628,10 +638,10 @@ export const register: Register = on => {
     // played once: the first drawing that finds the boot over ends it
     const boot = bootAt === undefined ? undefined : bootStage(now - bootAt)
     if (boot === undefined) bootAt = undefined
-    // a pane in view with a squad member running, or booting, animates at once, not at
-    // the next idle tick
+    // a pane in view with a squad member running (not waiting), or booting, animates at
+    // once, not at the next idle tick
     drawnAt = now
-    if (view.running.length > 0 || boot !== undefined) pace?.(ANIM_MS)
+    if (view.running.some(a => a.waiting !== true) || boot !== undefined) pace?.(ANIM_MS)
     const shown = await read($, ui)
     if (shown.page === 'fleet' || shown.page === 'fleetDetail') fleetOn?.(now)
     const quota = await read($, standbyQuota)

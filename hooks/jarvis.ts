@@ -340,11 +340,13 @@ const ENGINE_FAILED = new Set(['failed', 'killed'])
 // waiting or revived one the engine has ended, or no longer lists, is done or failed; an
 // ended one the engine confirms ended is marked confirmed. One running in its own turn is
 // left to its turn.complete. `engine` is a listing that said something: never empty.
-// Returns the same array when nothing changed.
+// `waitingOnly`: an ended one the engine still runs is left ended, only one it waits on runs
+// again. Returns the same array when nothing changed.
 export function reconcileAgents(
   list: readonly JarvisAgent[],
   engine: readonly EngineAgent[],
   now: number,
+  waitingOnly = false,
 ): readonly JarvisAgent[] {
   const byId = new Map(engine.map(e => [e.id, e.status] as const))
   let changed = false
@@ -358,6 +360,7 @@ export function reconcileAgents(
         const { waiting: _w, ...rest } = a
         return { ...rest, status: 'running' as const, lastSeenAt: now, ...(waiting ? { waiting: true } : {}) }
       }
+      if (waitingOnly && !waiting) return a
       changed = true
       const { waiting: _w, confirmed: _c, ...rest } = a
       return {
@@ -809,10 +812,10 @@ export function lockOf(events: readonly JarvisEvent[], actor: string, now: numbe
   return undefined
 }
 
-// The tick period: ANIM_MS while any squad member runs (initializing ones included) or
-// the boot plays, and the pane was drawn within SEEN_MS of `now`, else IDLE_MS.
+// The tick period: ANIM_MS while any squad member runs (initializing ones included, waiting
+// ones not) or the boot plays, and the pane was drawn within SEEN_MS of `now`, else IDLE_MS.
 export function tickMs(agents: readonly JarvisAgent[], now: number, drawnAt: number, booting = false): number {
-  return (runningOf(agents).length > 0 || booting) && now - drawnAt <= SEEN_MS ? ANIM_MS : IDLE_MS
+  return (runningOf(agents).some(a => a.waiting !== true) || booting) && now - drawnAt <= SEEN_MS ? ANIM_MS : IDLE_MS
 }
 
 export type JarvisState = {
@@ -822,9 +825,12 @@ export type JarvisState = {
   inflight?: readonly JarvisInflight[]
 }
 
-// When the latest running thing began: the main turn, or a running subagent.
+// When the latest running thing began: the main turn, or a running subagent not waiting
+// on its own background work.
 export function activeSinceOf(state: JarvisState): number | undefined {
-  const starts = runningOf(state.agents).map(a => a.runStartedAt)
+  const starts = runningOf(state.agents)
+    .filter(a => a.waiting !== true)
+    .map(a => a.runStartedAt)
   if (state.main.isRunning) starts.push(state.main.runSince)
   return starts.length === 0 ? undefined : Math.max(...starts)
 }
