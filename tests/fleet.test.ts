@@ -31,6 +31,8 @@ import {
   utf8Len,
   wrapCells,
 } from '../hooks/fleet'
+import { EMPTY_FLEET, MAX_READS, PANE_LIST, TAIL_BYTES, focusArgv, refreshFleet, withJump } from '../hooks/fleetSource'
+import type { FleetIo, RunOut } from '../hooks/fleetSource'
 
 // ---- fixtures：結構照 herdr 0.9.1 與 Claude Code 的真實輸出，內容全是假的 ----
 
@@ -115,6 +117,70 @@ const limitsJson = (used7d: number, fetchedAtMs = T0) =>
     sevenDay: { usedPercentage: used7d, resetsAt: RESET, windowMinutes: 10080 },
     fetchedAtMs,
   })
+
+const HOME = '/home/u'
+const pathOf = (cwd: string, id: string) => transcriptPath(HOME, cwd, id)
+const subOf = (cwd: string, id: string, name: string) => `${HOME}/.claude/projects/${projectDir(cwd)}/${id}/subagents/${name}`
+
+const enc = new TextEncoder()
+const dec = new TextDecoder()
+
+// `tail -c N path` and `tail -c +K path` over `content`, cut at `cap` bytes as the
+// engine cuts a run's stdout at 4 MiB
+const fakeTail = (content: string, argv: readonly string[], cap = Infinity): RunOut => {
+  const bytes = enc.encode(content)
+  const n = argv[2] ?? ''
+  let slice = n.startsWith('+') ? bytes.slice(Number(n.slice(1)) - 1) : bytes.slice(Math.max(0, bytes.length - Number(n)))
+  const truncated = slice.length > cap
+  if (truncated) slice = slice.slice(0, cap)
+  return { exitCode: 0, stdout: dec.decode(slice), stderr: '', truncated }
+}
+
+type World = {
+  panes: unknown[]
+  files: Record<string, string>
+  mtime?: Record<string, number>
+  herdr?: boolean
+  quota?: string
+  cap?: number
+  // `herdr agent focus` answers exit 1, `no such pane`
+  focusFails?: boolean
+  calls: string[][]
+}
+
+const fakeIo = (w: World): FleetIo => ({
+  home: HOME,
+  run: async argv => {
+    w.calls.push([...argv])
+    const ok = (stdout: string): RunOut => ({ exitCode: 0, stdout, stderr: '', truncated: false })
+    if (argv[0] === 'herdr' && argv[1] === 'pane') {
+      return w.herdr === false ? { exitCode: 1, stdout: '', stderr: 'no server', truncated: false } : ok(paneJson(w.panes))
+    }
+    if (argv[0] === 'herdr' && argv[1] === 'workspace') return ok(workspaceJson)
+    if (argv[0] === 'herdr' && argv[1] === 'agent' && w.focusFails) {
+      return { exitCode: 1, stdout: '', stderr: 'no such pane', truncated: false }
+    }
+    if (argv[0] === 'tail') {
+      const c = w.files[argv[3] ?? '']
+      return c === undefined ? { exitCode: 1, stdout: '', stderr: 'no file', truncated: false } : fakeTail(c, argv, w.cap)
+    }
+    return ok('')
+  },
+  stat: async path => {
+    const c = w.files[path]
+    return c === undefined ? undefined : { size: utf8Len(c), mtimeMs: w.mtime?.[path] ?? 1 }
+  },
+  read: async path => (path === `${HOME}/.claude/herdr-usagebar/claude-limits-latest.json` ? w.quota : undefined),
+  // a folder exists while some file is in it
+  list: async dir => {
+    const prefix = `${dir}/`
+    const inside = Object.keys(w.files).filter(p => p.startsWith(prefix) && !p.slice(prefix.length).includes('/'))
+    if (inside.length === 0) return undefined
+    return inside.map(p => ({ name: p.slice(prefix.length), kind: 'file', size: utf8Len(w.files[p] ?? ''), mtimeMs: w.mtime?.[p] ?? 1 }))
+  },
+})
+
+const tails = (w: World) => w.calls.filter(c => c[0] === 'tail').length
 
 describe('fleet paths and panes', () => {
   test('a cwd maps to its projects folder, every non alphanumeric a dash', () => {
@@ -351,5 +417,216 @@ describe('fleet order and readouts', () => {
     expect(wrapCells('一二三四五', 4, 2)).toEqual(['一二', '三…'])
     expect(wrapCells('', 4, 2)).toEqual([])
     expect(wrapCells('abc', 0, 2)).toEqual([])
+  })
+})
+
+describe('fleet refresh', () => {
+  const alpha = pathOf('/srv/alpha', 'sess-a')
+  const alphaLog = jsonl(
+    human(T0 - 10 * MIN, 'SECRET-PROMPT'),
+    reply(T0 - 9 * MIN, 'm1', [thinking], use(100, 50)),
+    reply(T0 - 9 * MIN, 'm1', [toolUse('Bash')], use(100, 50)),
+    reply(T0 - 2 * MIN, 'm2', [text('SECRET-REPLY')], use(10, 5)),
+  )
+
+  test('a refresh lists every claude pane with its tail, today and the quota', async () => {
+    const w: World = {
+      panes: [
+        pane({ agent_status: 'blocked' }),
+        pane({ pane_id: 'w2:p2', label: 'Bravo build', agent_status: 'working', workspace_id: 'w2', agent_session: undefined }),
+        pane({ pane_id: 'w2:p3', agent: 'codex' }),
+      ],
+      files: { [alpha]: alphaLog },
+      quota: limitsJson(92),
+      calls: [],
+    }
+    const { view, cursor } = await refreshFleet(fakeIo(w), EMPTY_FLEET, {}, T0)
+    expect(view.linkLost).toBe(false)
+    expect(view.scanning).toBe(false)
+    expect(view.at).toBe(T0)
+    expect(view.sessions.map(s => s.paneId)).toEqual(['w1:p1', 'w2:p2'])
+    const a = view.sessions[0]
+    expect([a?.status, a?.lastUser, a?.lastReply, a?.tools, a?.todayTokens]).toEqual(['blocked', 'SECRET-PROMPT', 'SECRET-REPLY', 1, 165])
+    expect(view.sessions[1]?.lastUser).toBeUndefined()
+    expect(view.quota?.sevenDay?.usedPct).toBe(92)
+    expect(cursor[alpha]?.offset).toBe(utf8Len(alphaLog))
+    expect(w.calls.some(c => c[0] === 'tail' && c[2] === String(TAIL_BYTES))).toBe(true)
+  })
+
+  test('an unchanged transcript is not read again', async () => {
+    const w: World = { panes: [pane()], files: { [alpha]: alphaLog }, calls: [] }
+    const io = fakeIo(w)
+    const first = await refreshFleet(io, EMPTY_FLEET, {}, T0)
+    const before = tails(w)
+    const second = await refreshFleet(io, first.view, first.cursor, T0 + 5000)
+    expect(tails(w)).toBe(before)
+    expect(second.view.sessions[0]?.todayTokens).toBe(165)
+    expect(second.view.sessions[0]?.lastReply).toBe('SECRET-REPLY')
+  })
+
+  test('herdr down keeps the last fleet, flagged lost, the cursor untouched', async () => {
+    const w: World = { panes: [pane()], files: { [alpha]: alphaLog }, calls: [] }
+    const first = await refreshFleet(fakeIo(w), EMPTY_FLEET, {}, T0)
+    w.herdr = false
+    const lost = await refreshFleet(fakeIo(w), first.view, first.cursor, T0 + 5000)
+    expect(lost.view.linkLost).toBe(true)
+    expect(lost.view.sessions).toEqual(first.view.sessions)
+    expect(lost.cursor).toBe(first.cursor)
+  })
+
+  test('a first scan cut at the output limit resumes where complete lines end, counting nothing twice', async () => {
+    const lines: string[] = []
+    for (let i = 0; i < 40; i += 1) {
+      lines.push(reply(T0 - 50 * MIN + i * MIN, `m${i}`, [thinking], use(10, 1)))
+      lines.push(reply(T0 - 50 * MIN + i * MIN, `m${i}`, [toolUse('Read')], use(10, 1)))
+    }
+    const big = jsonl(...lines)
+    const w: World = { panes: [pane()], files: { [alpha]: big }, cap: 700, calls: [] }
+    const io = fakeIo(w)
+    let state = await refreshFleet(io, EMPTY_FLEET, {}, T0)
+    expect(state.view.scanning).toBe(true)
+    for (let i = 0; i < 200 && (state.cursor[alpha]?.offset ?? 0) < utf8Len(big); i += 1) {
+      state = await refreshFleet(io, state.view, state.cursor, T0)
+    }
+    expect(state.cursor[alpha]?.offset).toBe(utf8Len(big))
+    expect(state.view.sessions[0]?.todayTokens).toBe(40 * 11)
+    // the round that got there still had its tail cut; the next reads nothing
+    expect(state.view.scanning).toBe(true)
+    const before = tails(w)
+    state = await refreshFleet(io, state.view, state.cursor, T0)
+    expect(tails(w)).toBe(before)
+    expect(state.view.scanning).toBe(false)
+  })
+
+  test('reads stop at MAX_READS; the rest wait for the next refresh', async () => {
+    const ids = ['s1', 's2', 's3', 's4', 's5', 's6']
+    const files = Object.fromEntries(ids.map(id => [pathOf('/srv/alpha', id), alphaLog]))
+    const w: World = {
+      panes: ids.map((id, i) => pane({ pane_id: `w1:p${i}`, agent_session: { value: id } })),
+      files,
+      calls: [],
+    }
+    const io = fakeIo(w)
+    const first = await refreshFleet(io, EMPTY_FLEET, {}, T0)
+    expect(tails(w)).toBeLessThanOrEqual(MAX_READS)
+    expect(first.view.sessions.filter(s => s.lastReply !== undefined).length).toBeLessThan(ids.length)
+    expect(first.view.scanning).toBe(true)
+    const second = await refreshFleet(io, first.view, first.cursor, T0 + 5000)
+    expect(second.view.sessions.every(s => s.lastReply === 'SECRET-REPLY')).toBe(true)
+    expect(second.view.scanning).toBe(false)
+  })
+
+  test('a refresh that spends every read keeps scanning on for one more look', async () => {
+    const ids = ['s1', 's2', 's3', 's4']
+    const files = Object.fromEntries(ids.map(id => [pathOf('/srv/alpha', id), alphaLog]))
+    const w: World = { panes: ids.map((id, i) => pane({ pane_id: `w1:p${i}`, agent_session: { value: id } })), files, calls: [] }
+    const io = fakeIo(w)
+    const first = await refreshFleet(io, EMPTY_FLEET, {}, T0)
+    expect(tails(w)).toBe(MAX_READS)
+    expect(first.view.sessions.every(s => s.lastReply === 'SECRET-REPLY')).toBe(true)
+    expect(first.view.scanning).toBe(true)
+    const second = await refreshFleet(io, first.view, first.cursor, T0 + 5000)
+    expect([tails(w), second.view.scanning]).toEqual([MAX_READS, false])
+  })
+
+  test('scanning holds before the first refresh and while herdr is lost', async () => {
+    expect(EMPTY_FLEET.scanning).toBe(true)
+    const w: World = { panes: [pane()], files: { [alpha]: alphaLog }, herdr: false, calls: [] }
+    const lost = await refreshFleet(fakeIo(w), EMPTY_FLEET, {}, T0)
+    expect([lost.view.linkLost, lost.view.scanning]).toEqual([true, true])
+  })
+
+  test('a missing transcript shows the pane from herdr alone', async () => {
+    const w: World = { panes: [pane({ agent_status: 'working' }), pane({ pane_id: 'w1:p2', agent_session: { value: 'sess-b' } })], files: { [alpha]: alphaLog }, calls: [] }
+    const { view } = await refreshFleet(fakeIo(w), EMPTY_FLEET, {}, T0)
+    const b = view.sessions.find(s => s.paneId === 'w1:p2')
+    expect([b?.title, b?.status, b?.lastReply, b?.todayTokens]).toEqual(['Alpha review', 'idle', undefined, 0])
+    expect(view.sessions.find(s => s.paneId === 'w1:p1')?.lastReply).toBe('SECRET-REPLY')
+  })
+
+  test('a new day starts today at zero without reading an unchanged file', async () => {
+    const sub = subOf('/srv/alpha', 'sess-a', 'agent-x.jsonl')
+    const w: World = { panes: [pane()], files: { [alpha]: alphaLog, [sub]: jsonl(reply(T0 - MIN, 's1', [text('x')], use(1, 1))) }, calls: [] }
+    const io = fakeIo(w)
+    const first = await refreshFleet(io, EMPTY_FLEET, {}, T0)
+    const before = tails(w)
+    const tomorrow = T0 + 24 * 60 * MIN
+    const next = await refreshFleet(io, first.view, first.cursor, tomorrow)
+    expect(tails(w)).toBe(before)
+    expect(next.view.sessions[0]?.todayTokens).toBe(0)
+    expect(next.cursor[alpha]?.day).toBe(dayKey(tomorrow))
+    expect(next.cursor[sub]?.day).toBe(dayKey(tomorrow))
+  })
+
+  test('a shrunk transcript is counted again from the start', async () => {
+    const w: World = { panes: [pane()], files: { [alpha]: alphaLog }, mtime: { [alpha]: 1 }, calls: [] }
+    const io = fakeIo(w)
+    const first = await refreshFleet(io, EMPTY_FLEET, {}, T0)
+    w.files[alpha] = jsonl(reply(T0 - MIN, 'n1', [text('fresh')], use(1, 1)))
+    w.mtime = { [alpha]: 2 }
+    const next = await refreshFleet(io, first.view, first.cursor, T0 + 5000)
+    expect(next.view.sessions[0]?.todayTokens).toBe(2)
+    expect(next.view.sessions[0]?.lastReply).toBe('fresh')
+  })
+
+  test('today counts the subagents of a session, each read again only when it grew', async () => {
+    const sub = subOf('/srv/alpha', 'sess-a', 'agent-x.jsonl')
+    const subLog = jsonl(reply(T0 - 3 * MIN, 's1', [text('SUB-REPLY')], use(20, 7)))
+    const w: World = { panes: [pane()], files: { [alpha]: alphaLog, [sub]: subLog }, calls: [] }
+    const io = fakeIo(w)
+    const first = await refreshFleet(io, EMPTY_FLEET, {}, T0)
+    expect(first.view.sessions[0]?.todayTokens).toBe(165 + 27)
+    expect(first.view.sessions[0]?.lastReply).toBe('SECRET-REPLY')
+    expect(first.view.scanning).toBe(false)
+    expect(first.cursor[sub]?.offset).toBe(utf8Len(subLog))
+    expect(w.calls.filter(c => c[0] === 'tail' && c[3] === sub).map(c => c[2])).toEqual(['+1'])
+
+    const before = tails(w)
+    const second = await refreshFleet(io, first.view, first.cursor, T0 + 5000)
+    expect(tails(w)).toBe(before)
+    expect(second.view.sessions[0]?.todayTokens).toBe(192)
+
+    w.files[sub] = subLog + jsonl(reply(T0 - MIN, 's2', [text('more')], use(3, 3)))
+    w.mtime = { [sub]: 2 }
+    const third = await refreshFleet(io, second.view, second.cursor, T0 + 10_000)
+    expect(third.view.sessions[0]?.todayTokens).toBe(198)
+    expect(w.calls.filter(c => c[0] === 'tail' && c[3] === sub).map(c => c[2])).toEqual(['+1', `+${utf8Len(subLog) + 1}`])
+  })
+
+  test('a subagent waiting on MAX_READS keeps scanning on', async () => {
+    const ids = ['s1', 's2', 's3', 's4']
+    const files: Record<string, string> = {}
+    for (const id of ids) {
+      files[pathOf('/srv/alpha', id)] = alphaLog
+      files[subOf('/srv/alpha', id, 'agent-a.jsonl')] = jsonl(reply(T0 - MIN, `${id}-a`, [text('x')], use(1, 1)))
+    }
+    const w: World = { panes: ids.map((id, i) => pane({ pane_id: `w1:p${i}`, agent_session: { value: id } })), files, calls: [] }
+    const io = fakeIo(w)
+    const first = await refreshFleet(io, EMPTY_FLEET, {}, T0)
+    expect(tails(w)).toBeLessThanOrEqual(MAX_READS)
+    expect(first.view.scanning).toBe(true)
+    let state = first
+    for (let i = 0; i < 5 && state.view.scanning; i += 1) state = await refreshFleet(io, state.view, state.cursor, T0)
+    expect(state.view.scanning).toBe(false)
+    expect(state.view.sessions.map(s => s.todayTokens)).toEqual([167, 167, 167, 167])
+  })
+
+  test('no subagents folder is no subagents', async () => {
+    const w: World = { panes: [pane()], files: { [alpha]: alphaLog }, calls: [] }
+    const { view } = await refreshFleet(fakeIo(w), EMPTY_FLEET, {}, T0)
+    expect([view.sessions[0]?.todayTokens, view.scanning]).toEqual([165, false])
+  })
+
+  test('jump: herdr focuses the pane; an error is kept per pane until cleared', () => {
+    expect(focusArgv('w1:p1')).toEqual(['herdr', 'agent', 'focus', 'w1:p1'])
+    const err = withJump(EMPTY_FLEET, { paneId: 'w1:p1', text: 'x' })
+    expect(err.jumpError).toEqual({ paneId: 'w1:p1', text: 'x' })
+    expect(withJump(err, undefined).jumpError).toBeUndefined()
+  })
+
+  test('the herdr pane list is the first command of a refresh', async () => {
+    const w: World = { panes: [], files: {}, calls: [] }
+    await refreshFleet(fakeIo(w), EMPTY_FLEET, {}, T0)
+    expect(w.calls[0]).toEqual([...PANE_LIST])
   })
 })
