@@ -156,10 +156,6 @@ export function partsRingPixels(spec: RingSpec, parts: readonly RingPart[]): Pix
   return px
 }
 
-export function partsGaugeCells(spec: RingSpec, parts: readonly RingPart[], overlay: readonly Overlay[]): Cell[][] {
-  return setOverlay(pixelsToCells(partsRingPixels(spec, parts)), overlay)
-}
-
 const EIGHTHS = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█']
 
 // A bar `width` cells long filled to `pct` in eighths of a cell, each cell colored by how

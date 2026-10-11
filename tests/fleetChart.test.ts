@@ -15,7 +15,6 @@ import {
   gaugeBar,
   gaugeCells,
   mix,
-  partsGaugeCells,
   partsRingPixels,
   pick,
   pixelsToCells,
@@ -197,15 +196,6 @@ describe('parts ring', () => {
     ])
     expect(px[0]?.[3]).toBe('#111111') // straight up: the turn starts
     expect(px[5]?.[3]).toBe('#222222') // straight down: half a turn
-  })
-
-  test('partsGaugeCells sets each overlay centered on its row', () => {
-    const cells = partsGaugeCells(RING_BIG, [{ share: 1, color: '#111111' }], [
-      { row: 3, text: '42%', color: THEME.bright, bold: true },
-    ])
-    const row = cells[3] ?? []
-    expect(row.map(c => c.ch).join('').includes('42%')).toBe(true)
-    expect(row.find(c => c.ch === '4')).toMatchObject({ fg: THEME.bright, bold: true })
   })
 })
 
