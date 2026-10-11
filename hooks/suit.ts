@@ -382,17 +382,24 @@ export function crewDeployed(now: number, deployedAt: number | undefined): boole
 
 // The standby suit at frame `tick`: the poses in turn, the scan line a pixel row lower each
 // frame, the eyes and palms flashing just after a spawn; `resting`, standing by with no scan
-// line whatever the tick. Nothing but the tick and the times decide it.
+// line whatever the tick; `still`, standing by at the start of its breath whatever the tick,
+// the times or a spawn. Nothing but the tick and the times decide it.
 export function suitFrame(
   tick: number,
-  opts: { busy: boolean; deployedAt?: number; now: number; resting?: boolean },
+  opts: { busy: boolean; deployedAt?: number; now: number; resting?: boolean; still?: boolean },
 ): { cells: Cell[][]; pose: Pose } {
   const f = Number.isFinite(tick) ? Math.max(0, Math.floor(tick)) : 0
-  const { i, t } = opts.resting ? { i: 0, t: 0 } : poseAt(f)
+  const { i, t } = opts.resting || opts.still ? { i: 0, t: 0 } : poseAt(f)
   const at = POSES[i] ?? POSES[0]
   const pose = at?.pose ?? 'STANDBY'
-  const { sprite, dy, beam } = opts.resting ? resting(opts.now, opts.busy) : at ? at.shot(t, opts.busy) : standby(t, opts.busy)
-  const since = opts.deployedAt === undefined ? -1 : opts.now - opts.deployedAt
+  const { sprite, dy, beam } = opts.still
+    ? standbyAt(0, false, false)
+    : opts.resting
+      ? resting(opts.now, opts.busy)
+      : at
+        ? at.shot(t, opts.busy)
+        : standby(t, opts.busy)
+  const since = opts.deployedAt === undefined || opts.still ? -1 : opts.now - opts.deployedAt
   const flash = since >= 0 && since < CREW_FLASH_FRAMES * SUIT_TICK_MS
   const lit = pose === 'CHARGE' && t === ticksOf(CHARGE_MS) - 1
   const px: Pixels = Array.from({ length: CANVAS_PX }, () => Array<string | undefined>(SUIT_CANVAS_COLS).fill(undefined))
@@ -410,7 +417,7 @@ export function suitFrame(
     const [r, c] = rc(k)
     plot(r + OY, c + OX, color)
   }
-  const scan = opts.resting ? undefined : px[f % CANVAS_PX]
+  const scan = opts.resting || opts.still ? undefined : px[f % CANVAS_PX]
   if (scan) scan.forEach((color, x) => (scan[x] = color === undefined ? undefined : mix(color, THEME.bright, SCAN_MIX)))
   const cells = pixelsToCells(px).map(row => row.map(c => (c.ch === '█' && c.fg ? { ch: '▀', fg: c.fg, bg: c.fg } : c)))
   return { cells, pose }

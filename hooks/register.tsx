@@ -31,7 +31,7 @@ import { drawCockpit } from './cockpit'
 import { RUN_TIMEOUT_MS, createReporter, jarvisText, inHerdr } from './herdr'
 import type { Reporter } from './herdr'
 import { parseQuota } from './fleet'
-import { SUIT_REST_TICK_MS, SUIT_TICK_MS } from './suit'
+import { SUIT_REST_TICK_MS } from './suit'
 import { EMPTY_FLEET, FLEET_MS, FLEET_RUN_TIMEOUT_MS, LIMITS_PATH, focusArgv, refreshFleet, withJump } from './fleetSource'
 import type { FleetIo } from './fleetSource'
 
@@ -361,10 +361,10 @@ export const register: Register = on => {
     }
 
     suitOff()
-    // the last session's frame and deployment left behind; written only when there are any
+    // the last session's frame, deployment and hold left behind; written only when there are any
     try {
       const last = await read($, suit)
-      if (last.n !== 0 || last.deployedAt !== undefined) await update($, suit, () => ({ n: 0 }))
+      if (last.n !== 0 || last.deployedAt !== undefined || last.paused === true) await update($, suit, () => ({ n: 0 }))
     } catch {
       // the suit keeps its frame
     }
@@ -651,14 +651,21 @@ export const register: Register = on => {
     if (shown.page === 'fleet' || shown.page === 'fleetDetail') fleetOn?.(now)
     const quota = await read($, standbyQuota)
     const frame = await read($, suit)
-    // the suit animates and reads the quota only while it is drawn
-    const onStandby = (drawn: boolean, ms = SUIT_TICK_MS) => {
-      if (!drawn) {
-        suitOff()
-        return
-      }
-      suitOn?.(now, ms)
-      quotaOn?.(now)
+    // the suit animates only while it is drawn and not held still, and reads the quota while drawn
+    const onStandby = (drawn: boolean, ms?: number) => {
+      if (!drawn || ms === undefined) suitOff()
+      else suitOn?.(now, ms)
+      if (drawn) quotaOn?.(now)
+    }
+    // a press holds the suit still or plays it; the drawing it brings stops or starts the timer
+    const toggleSuit = () => {
+      void (async () => {
+        try {
+          await update($, suit, x => ({ ...x, paused: x.paused !== true }))
+        } catch {
+          // the suit stays as it was
+        }
+      })()
     }
     let sessionId = ''
     try {
@@ -703,6 +710,8 @@ export const register: Register = on => {
       ...(sessionStartedAt === undefined ? {} : { startedAt: sessionStartedAt }),
       suitTick: frame.n,
       ...(frame.deployedAt === undefined ? {} : { deployedAt: frame.deployedAt }),
+      suitPaused: frame.paused === true,
+      toggleSuit,
       onStandby,
     })
   })

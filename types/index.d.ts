@@ -68,8 +68,9 @@ export type JarvisMain = {
 
 export type JarvisTick = { n: number; now: number }
 
-// The standby suit's frame count, and when a crew member was last deployed.
-export type JarvisSuit = { n: number; deployedAt?: number }
+// The standby suit's frame count, when a crew member was last deployed, and whether a press
+// holds it still.
+export type JarvisSuit = { n: number; deployedAt?: number; paused?: boolean }
 
 // ---- 艦隊 ----
 

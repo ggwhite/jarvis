@@ -357,6 +357,20 @@ describe('suit frames', () => {
     // nothing known: awake
     expect(at(600_000)).toBe(false)
   })
+
+  test('held still: STANDBY whatever the tick, the time or a spawn; no scan line, no blink, no breath', () => {
+    const still = (tick: number, over: Partial<{ busy: boolean; deployedAt: number; now: number; resting: boolean }> = {}) =>
+      suitFrame(tick, { busy: false, now: 0, still: true, ...over })
+    const first = still(0)
+    expect(first.pose).toBe('STANDBY')
+    // the reactor at accent, the eyes their own colors
+    expect(at(first.cells, 18, 10)).toBe(THEME.accent)
+    expect([at(first.cells, 8, 5), at(first.cells, 8, 8)]).toEqual([THEME.accent, THEME.bright])
+    // every frame of the turn, the scan line's every row and the blink's frame among them
+    for (let tick = 1; tick < CYCLE; tick += 1) expect([tick, still(tick)]).toEqual([tick, first])
+    for (const now of [500, 1000, 2000, 2500, 62_000]) expect([now, still(0, { now, resting: true })]).toEqual([now, first])
+    expect(still(3, { busy: true, now: 100, deployedAt: 0 })).toEqual(first)
+  })
 })
 
 describe('readout meter', () => {

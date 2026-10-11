@@ -3867,9 +3867,10 @@ describe('stats HUD', () => {
   })
 })
 
-// rows the pane draws: a card its own height, a row its tallest, a column the sum
+// rows the pane draws: a card its own height, a row its tallest, a column the sum; a Button's
+// texts on one row
 const paneRowsOf = (n: Node | string): number => {
-  if (typeof n === 'string' || n.type === 'Text') return 1
+  if (typeof n === 'string' || n.type === 'Text' || n.type === 'Button') return 1
   const h = Number(n.props?.['height'])
   if (Number.isFinite(h) && h > 0) return h
   const kids = (n.children ?? []).map(paneRowsOf)
@@ -4671,6 +4672,248 @@ describe('standby suit', () => {
     expect(short).not.toMatch(/[▀▄]/)
     expect(linesOf(await draw($, 20, 27)).join('\n')).not.toMatch(/[▀▄]/)
   })
+
+  // ---- held still by a press ----------------------------------------------
+
+  const PAUSED = 'MARK XLII · PAUSED'
+  const buttonsOf = (n: Node | string, out: Node[] = []): Node[] => {
+    if (typeof n === 'string') return out
+    if (n.type === 'Button') out.push(n)
+    for (const k of n.children ?? []) buttonsOf(k, out)
+    return out
+  }
+  const keyOf = (b: Node) => String(b.props?.['key'] ?? '')
+  // the suit's rows, each a Button
+  const suitButtons = (tree: Node) => buttonsOf(tree).filter(b => /^suit-row-\d+$/.test(keyOf(b)))
+  const pButtons = (tree: Node) => buttonsOf(tree).filter(b => b.props?.['hotkey'] === 'p')
+  // the suit's frame as drawn: its rows' texts and colors
+  const artOf = (tree: Node) => JSON.stringify(suitButtons(tree).map(b => b.children))
+  const opener = (on: On) => {
+    on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+    on('command.run', async () => ({}))
+  }
+  const openPane = ($: Engine) =>
+    $.command.run({
+      command: 'jarvis',
+      args: '',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: true, columns: 100 },
+    })
+
+  test('each row of the suit a plain Button, the readouts beside it not; p on the line under it alone', async ($, on) => {
+    const clock = engine(on, 'agent-1')
+    quotaFile(on, limits(9, 96))
+    await start($)
+    await draw($, 50)
+    await clock.advance(10_000)
+    const tree = await draw($, 50)
+    const rows = suitButtons(tree)
+    expect(rows).toHaveLength(SUIT_CANVAS_ROWS)
+    expect(new Set(rows.map(keyOf)).size).toBe(SUIT_CANVAS_ROWS)
+    for (const b of rows) {
+      expect([keyOf(b), b.props?.['plain'], b.props?.['hotkey']]).toEqual([keyOf(b), true, undefined])
+      expect((b.children ?? []).every(k => typeof k === 'string' || k.type === 'Text')).toBe(true)
+      // the canvas in its sights, corners and all, and nothing of the readouts
+      expect(cellWidth(textOf(b))).toBe(SUIT_CANVAS_COLS + 4)
+    }
+    expect(textOf(rows[0] ?? '')).toMatch(/^⌜ [\s\S]* ⌝$/)
+    expect(textOf(rows.at(-1) ?? '')).toMatch(/^⌞ [\s\S]* ⌟$/)
+    expect(rows.map(b => textOf(b)).join('\n')).not.toMatch(/5H|7D|CREW|UP|DOCKED|ACTIVE|FAIL|LAST/)
+    expect(rowsOf(tree).join('\n')).toContain('POWER 5H')
+    // the line under the suit the one p, as it read
+    const p = pButtons(tree)
+    expect(p).toHaveLength(1)
+    expect([textOf(p[0] ?? ''), p[0]?.props?.['plain']]).toEqual([STANDBY, true])
+    expect(findText(tree, /^MARK XLII · STANDBY$/)?.props?.['color']).toBe(THEME.frame)
+    // none where the suit is not drawn
+    for (const [tab, h] of [['tab-now', 10], ['tab-stats', 50], ['tab-fleet', 50], ['tab-log', 50]] as const) {
+      await press($, tab, h)
+      const at = await draw($, h)
+      expect([tab, suitButtons(at).length]).toEqual([tab, 0])
+      expect([tab, pButtons(at).map(keyOf)]).toEqual([tab, tab === 'tab-log' ? ['pause'] : []])
+    }
+  })
+
+  test('a press on the suit, or p, holds it still under MARK XLII · PAUSED; again, it plays', async ($, on) => {
+    const clock = engine(on)
+    await start($)
+    await draw($, 50)
+    await clock.advance(10_000)
+    await draw($, 50)
+    await press($, `suit-row-${SUIT_CANVAS_ROWS / 2}`, 50)
+    let tree = await draw($, 50)
+    expect(linesOf(tree).join('\n')).not.toContain(STANDBY)
+    expect(await poseOf($)).toBe(PAUSED)
+    expect(findText(tree, /^MARK XLII · PAUSED$/)?.props?.['color']).toBe(THEME.frame)
+    expect(textOf(pButtons(tree)[0] ?? '')).toBe(PAUSED)
+    await hotkey($, 'p', 50)
+    expect(await poseOf($)).toBe(STANDBY)
+    await hotkey($, 'p', 50)
+    expect(await poseOf($)).toBe(PAUSED)
+    await press($, 'suit-row-0', 50)
+    tree = await draw($, 50)
+    expect(linesOf(tree).join('\n')).not.toContain('PAUSED')
+    expect(await poseOf($)).toBe(STANDBY)
+  })
+
+  test('held still: one frame however long, no suit timer, its writes stopped at the press; played, 250 ms again', async ($, on) => {
+    // the suit's periods asked of the clock, beneath the mod and above the clock
+    const periods: number[] = []
+    on('clock.every', { ms: SUIT_TICK_MS }, async (_$, e, next) => {
+      periods.push(e.ms)
+      return next(e)
+    })
+    const clock = engine(on)
+    const frames = suitWrites(on)
+    await start($)
+    await clock.advance(10_000)
+    await draw($, 50)
+    let base = frames.n
+    await clock.advance(1000)
+    expect(frames.n - base).toBe(4)
+    expect(periods.filter(ms => ms === SUIT_TICK_MS).length).toBeGreaterThan(0)
+    await press($, 'suit-row-3', 50)
+    // the timer gone with the drawing the press brings
+    base = frames.n
+    await clock.advance(1000)
+    expect(frames.n).toBe(base)
+    const still = artOf(await draw($, 50))
+    periods.length = 0
+    for (let i = 0; i < 20; i += 1) {
+      await clock.advance(SUIT_TICK_MS)
+      const tree = await draw($, 50)
+      expect([i, artOf(tree)]).toEqual([i, still])
+      expect(linesOf(tree).join('\n')).toContain(PAUSED)
+    }
+    expect(frames.n).toBe(base)
+    expect(periods.filter(ms => ms === SUIT_TICK_MS)).toEqual([])
+    // played: the turn again, a frame every 250 ms
+    await hotkey($, 'p', 50)
+    await draw($, 50)
+    base = frames.n
+    await clock.advance(1000)
+    expect(frames.n - base).toBe(4)
+    expect(periods.filter(ms => ms === SUIT_TICK_MS).length).toBeGreaterThan(0)
+    expect(artOf(await draw($, 50))).not.toBe(still)
+  })
+
+  test('held still past a minute: no frames; played, it rests at a frame a second', async ($, on) => {
+    const clock = engine(on)
+    const frames = suitWrites(on)
+    await start($)
+    await clock.advance(10_000)
+    await draw($, 50)
+    await press($, 'suit-row-3', 50)
+    const base = frames.n
+    for (let i = 0; i < 60; i += 1) {
+      await clock.advance(1000)
+      await draw($, 50)
+    }
+    expect(frames.n).toBe(base)
+    expect(await poseOf($)).toBe(PAUSED)
+    await hotkey($, 'p', 50)
+    expect(await poseOf($)).toBe(STANDBY)
+    const played = frames.n
+    await clock.advance(3000)
+    expect(frames.n - played).toBe(3)
+  })
+
+  test('held still, the power lines still read: the quota file at most once in 30 s while drawn', async ($, on) => {
+    const clock = engine(on)
+    const reads = quotaFile(on, limits(9, 96))
+    await start($)
+    await draw($, 50)
+    await clock.advance(10)
+    await press($, 'suit-row-3', 50)
+    const base = reads.n
+    for (let i = 0; i < 4; i += 1) {
+      await clock.advance(15_000)
+      await draw($, 50)
+    }
+    await clock.advance(10)
+    expect(reads.n - base).toBe(2)
+    expect(await poseOf($)).toBe(PAUSED)
+  })
+
+  test('held still, a deployment plays nothing: no ◆ CREW DEPLOYED, no flash', async ($, on) => {
+    const clock = engineAll(on)
+    await start($)
+    await clock.advance(10_000)
+    await draw($, 50)
+    // deployed just before the press: the press still holds it
+    await $.agent.spawn(spawnIn('quick look', 'Explore'))
+    await $.turn.complete(complete('agent-1'))
+    expect(linesOf(await draw($, 50)).join('\n')).toContain('◆ CREW DEPLOYED')
+    await press($, 'suit-row-3', 50)
+    const tree = await draw($, 50)
+    expect(linesOf(tree).join('\n')).not.toContain('CREW DEPLOYED')
+    expect(await poseOf($)).toBe(PAUSED)
+    const still = artOf(tree)
+    await clock.advance(CREW_SHOW_MS)
+    expect(artOf(await draw($, 50))).toBe(still)
+    // deployed while held
+    await $.agent.spawn(spawnIn('second look', 'Explore'))
+    await $.turn.complete(complete('agent-2'))
+    const after = await draw($, 50)
+    expect(linesOf(after).join('\n')).not.toContain('CREW DEPLOYED')
+    expect(artOf(after)).toBe(still)
+  })
+
+  test('the hold kept with the pane closed and opened again; a session started again plays', async ($, on) => {
+    const clock = engine(on)
+    opener(on)
+    await start($)
+    await clock.advance(10_000)
+    await draw($, 50)
+    await press($, 'suit-row-3', 50)
+    await openPane($)
+    await clock.advance(BOOT_MS + 1000)
+    expect(await poseOf($)).toBe(PAUSED)
+    await start($)
+    const text = linesOf(await draw($, 50)).join('\n')
+    expect(text).not.toContain('PAUSED')
+    expect(text).toContain(STANDBY)
+  })
+
+  test('p on the log page pauses the stream, not the suit', async ($, on) => {
+    engineAll(on)
+    await start($)
+    await press($, 'tab-log', 50)
+    await hotkey($, 'p', 50)
+    expect(linesOf(await draw($, 50)).join('\n')).toContain('已暫停')
+    await press($, 'tab-now', 50)
+    expect(await poseOf($)).toBe(STANDBY)
+  })
+
+  for (const cols of [40, 60, 64, 74, 100]) {
+    test(`${cols} columns held still: no row too wide, the readouts where they were, the suit on theme`, async ($, on) => {
+      await twoDocked($, on)
+      const playing = rowsOf(await draw($, 60, cols))
+      await press($, 'suit-row-3', 60, cols)
+      const tree = await draw($, 60, cols)
+      const rows = rowsOf(tree)
+      expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
+      const block = suitRows(rows)
+      const was = suitRows(playing)
+      expect(block).toHaveLength(SUIT_CANVAS_ROWS + 3)
+      expect(block[SUIT_CANVAS_ROWS + 1]?.trim()).toBe(PAUSED)
+      // the readouts beside the canvas, or under the two lines, as they were
+      const side = cols >= SCAN_SIDE_MIN_COLS ? Math.floor((cols - SUIT_CANVAS_COLS - 4) / 2) : 0
+      const besides = (l: string) => [[...l].slice(0, side).join(''), [...l].slice(side + SUIT_CANVAS_COLS + 4).join('')]
+      expect(block.slice(0, SUIT_CANVAS_ROWS).map(besides)).toEqual(was.slice(0, SUIT_CANVAS_ROWS).map(besides))
+      const under = (l: string[]) => l.slice(l.indexOf(block.at(-1) ?? ''), l.indexOf(block.at(-1) ?? '') + 1 + SUIT_UNDER_ROWS)
+      expect(under(rows)).toEqual(under(playing))
+      // the line under the suit centered with its p, the pane's width
+      const pRow = rowNodesOf(tree).find(n => typeof n !== 'string' && pButtons(n).length > 0)
+      expect(rowWidths(pRow ?? '')).toEqual([cols])
+      // the Buttons bring no color of their own
+      for (const b of [...suitButtons(tree), ...pButtons(tree)]) {
+        expect(Object.keys(b.props ?? {}).filter(k => /color/i.test(k))).toEqual([])
+      }
+      const top = rows.indexOf(block[0] ?? '')
+      for (const c of rowNodesOf(tree).slice(top, top + block.length).flatMap(colorsOf)) expect([c, onTheme(c)]).toEqual([c, true])
+    })
+  }
 })
 
 describe('now page height order', () => {

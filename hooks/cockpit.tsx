@@ -147,7 +147,10 @@ export type Ctx = {
   // the standby suit's frame, and when a crew member was last deployed
   suitTick?: number
   deployedAt?: number
-  // told each drawing whether the standby suit was drawn, and drawn, its frame time
+  // the standby suit held still by a press, and the press that holds or plays it
+  suitPaused?: boolean
+  toggleSuit?: () => void
+  // told each drawing whether the standby suit was drawn, and drawn and playing, its frame time
   onStandby?: (drawn: boolean, periodMs?: number) => void
 }
 
@@ -1269,6 +1272,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   // a main-loop call out quickens the suit's breath and keeps it awake
   const suitBusy = view.inflight.some(f => f.actor === MAIN_ACTOR)
+  const suitPaused = ctx.suitPaused === true
   const suitRests = suitResting({
     now: view.now,
     busy: suitBusy,
@@ -1318,10 +1322,13 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       busy: suitBusy,
       now,
       resting: suitRests,
+      still: suitPaused,
       ...(ctx.deployedAt === undefined ? {} : { deployedAt: ctx.deployedAt }),
     })
     const sighted = sightedArt(frame.cells)
-    let art: Seg[][]
+    // each row of the suit, corners and all, a press that holds or plays it; beside it what
+    // the row holds either side
+    let art: { pre: Seg[]; suit: Seg[]; post: Seg[] }[]
     let under: Seg[][] = []
     if (scanSide) {
       const side = Math.floor((cols - SCAN_FRAME_W) / 2)
@@ -1330,10 +1337,11 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       art = sighted.map((row, i) => {
         const l = clip(readoutSegs(r.left[i - 1], x => sideReadout(x, side)), side)
         const rt = clip(readoutSegs(r.right[i - 1], x => sideReadout(x, rest)), rest)
-        return [sp(side - segsWidth(l)), ...l, ...row, ...rt, sp(rest - segsWidth(rt))]
+        return { pre: [sp(side - segsWidth(l)), ...l], suit: row, post: [...rt, sp(rest - segsWidth(rt))] }
       })
     } else {
-      art = sighted.map(row => centered(row, cols))
+      const side = Math.floor((cols - SCAN_FRAME_W) / 2)
+      art = sighted.map(row => ({ pre: [sp(side)], suit: row, post: [sp(cols - SCAN_FRAME_W - side)] }))
       // under the suit the full labels, the meter giving way a cell at a time
       const full = (width: number) => (x: Readout) => ({ label: x.label, meterW: readoutMeterW(x, width) })
       under = Array.from({ length: SUIT_UNDER_ROWS }, (_, i) => {
@@ -1341,13 +1349,38 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         return leftRight(readoutSegs(r.left[i], full(cols - segsWidth(rt) - 1)), rt, cols)
       })
     }
+    const toggle = () => ctx.toggleSuit?.()
+    const artNodes = art.map(({ pre, suit, post }, i) => (
+      <Box flexDirection="row">
+        {texts(pre)}
+        <Button key={`suit-row-${i}`} plain onPress={toggle}>
+          {texts(suit)}
+        </Button>
+        {texts(post)}
+      </Box>
+    ))
+    // the line under the suit, its p drawn before it, centered as one
+    const mark = clip(
+      [
+        suitPaused
+          ? { t: 'MARK XLII · PAUSED', color: FRAME }
+          : crewDeployed(now, ctx.deployedAt)
+            ? { t: '◆ CREW DEPLOYED', color: ACCENT }
+            : { t: `MARK XLII · ${frame.pose}`, color: FRAME },
+      ],
+      cols - HOTKEY_W,
+    )
+    const markGap = cols - HOTKEY_W - segsWidth(mark)
+    const markNode = (
+      <Box flexDirection="row">
+        {texts([sp(Math.floor(markGap / 2))])}
+        <Button key="suit-mark" plain hotkey="p" onPress={toggle}>
+          {texts(mark)}
+        </Button>
+        {texts([sp(markGap - Math.floor(markGap / 2))])}
+      </Box>
+    )
     const lines: Seg[][] = [
-      ...art,
-      BLANK,
-      centered(
-        [crewDeployed(now, ctx.deployedAt) ? { t: '◆ CREW DEPLOYED', color: ACCENT } : { t: `MARK XLII · ${frame.pose}`, color: FRAME }],
-        cols,
-      ),
       centered(
         [
           {
@@ -1364,7 +1397,17 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       ),
       ...under,
     ]
-    return { h: lines.length, node: <Box flexDirection="column">{lines.map(lineNode)}</Box> }
+    return {
+      h: artNodes.length + 2 + lines.length,
+      node: (
+        <Box flexDirection="column">
+          {artNodes}
+          {lineNode(BLANK)}
+          {markNode}
+          {lines.map(lineNode)}
+        </Box>
+      ),
+    }
   }
 
   // ---- 開機 ---------------------------------------------------------------
@@ -1469,7 +1512,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     }
   }
 
-  ctx.onStandby?.(standby, suitRests ? SUIT_REST_TICK_MS : SUIT_TICK_MS)
+  // held still, the suit asks for no frames
+  ctx.onStandby?.(standby, suitPaused ? undefined : suitRests ? SUIT_REST_TICK_MS : SUIT_TICK_MS)
 
   return (
     <Box flexDirection="column">
