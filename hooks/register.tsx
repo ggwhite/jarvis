@@ -31,6 +31,7 @@ import { drawCockpit } from './cockpit'
 import { RUN_TIMEOUT_MS, createReporter, jarvisText, inHerdr } from './herdr'
 import type { Reporter } from './herdr'
 import { parseQuota } from './fleet'
+import { SUIT_TICK_MS } from './suit'
 import { EMPTY_FLEET, FLEET_MS, FLEET_RUN_TIMEOUT_MS, LIMITS_PATH, focusArgv, refreshFleet, withJump } from './fleetSource'
 import type { FleetIo } from './fleetSource'
 
@@ -68,6 +69,7 @@ const eventTotal = atom({ plugin: 'jarvis', key: 'eventTotal' } as const, 0)
 const fleet = atom({ plugin: 'jarvis', key: 'fleet' } as const, EMPTY_FLEET)
 const fleetCursor = atom({ plugin: 'jarvis', key: 'fleetCursor' } as const, {})
 const standbyQuota = atom({ plugin: 'jarvis', key: 'standbyQuota' } as const, null as FleetQuota | null)
+const suit = atom({ plugin: 'jarvis', key: 'suit' } as const, { n: 0 })
 
 // Tool calls that last as long as the agents they start, whose own calls are tracked:
 // counting them in flight would hide a stuck subagent.
@@ -176,6 +178,15 @@ export const register: Register = on => {
   // the standby suit's quota read, when it last asked for one; set at session.start
   let quotaReadAt = -Infinity
   let quotaOn: ((now: number) => void) | undefined
+  // the standby suit's frames: one every SUIT_TICK_MS while the now page shows it, drawn
+  // within SEEN_MS; set at session.start
+  let suitTimer: Timer | undefined
+  let suitSeenAt = -Infinity
+  let suitOn: ((now: number) => void) | undefined
+  const suitOff = () => {
+    suitTimer?.cancel()
+    suitTimer = undefined
+  }
 
   on('session.start', async ($, e, next) => {
     unknown.clear()
@@ -339,6 +350,29 @@ export const register: Register = on => {
       }
     }
 
+    suitOff()
+    suitOn = (now: number) => {
+      suitSeenAt = now
+      if (suitTimer !== undefined) return
+      try {
+        suitTimer = $.clock.every(SUIT_TICK_MS, async () => {
+          try {
+            // a drawing without the suit stops it at once; one not drawn again, here
+            if ((await $.clock.now()) - suitSeenAt > SEEN_MS) {
+              suitOff()
+              return
+            }
+            await update($, suit, s => ({ ...s, n: s.n + 1 }))
+          } catch {
+            // the suit holds its frame
+          }
+        })
+      } catch {
+        // no live clock: the suit stands still
+        suitTimer = undefined
+      }
+    }
+
     try {
       await update($, inflight, () => [])
     } catch {
@@ -387,6 +421,7 @@ export const register: Register = on => {
           return rows
         })
         await update($, tick, t => ({ n: t.n + 1, now }))
+        await update($, suit, s => ({ ...s, deployedAt: now }))
         pace?.(tickMs(await read($, agents), now, drawnAt))
       }
     } catch {
@@ -591,8 +626,17 @@ export const register: Register = on => {
     if (view.running.length > 0 || boot !== undefined) pace?.(ANIM_MS)
     const shown = await read($, ui)
     if (shown.page === 'fleet' || shown.page === 'fleetDetail') fleetOn?.(now)
-    if (shown.page === 'now' && view.running.length === 0) quotaOn?.(now)
     const quota = await read($, standbyQuota)
+    const frame = await read($, suit)
+    // the suit animates and reads the quota only while it is drawn
+    const onStandby = (drawn: boolean) => {
+      if (!drawn) {
+        suitOff()
+        return
+      }
+      suitOn?.(now)
+      quotaOn?.(now)
+    }
     let sessionId = ''
     try {
       sessionId = await $.session.id()
@@ -634,6 +678,9 @@ export const register: Register = on => {
       jump: (paneId: string) => fleetJump?.(paneId),
       ...(quota ? { quota } : {}),
       ...(sessionStartedAt === undefined ? {} : { startedAt: sessionStartedAt }),
+      suitTick: frame.n,
+      ...(frame.deployedAt === undefined ? {} : { deployedAt: frame.deployedAt }),
+      onStandby,
     })
   })
 }

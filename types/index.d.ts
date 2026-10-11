@@ -68,6 +68,9 @@ export type JarvisMain = {
 
 export type JarvisTick = { n: number; now: number }
 
+// The standby suit's frame count, and when a crew member was last deployed.
+export type JarvisSuit = { n: number; deployedAt?: number }
+
 // ---- 艦隊 ----
 
 // How herdr reports a Claude session: waiting on the person (blocked), working, or the rest.
@@ -177,6 +180,7 @@ declare module 'claude-code' {
       fleetCursor: FleetCursor
       // the usagebar cache as the standby suit last read it; null when it was not there
       standbyQuota: FleetQuota | null
+      suit: JarvisSuit
     }
   }
 }
