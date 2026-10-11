@@ -65,23 +65,24 @@ export async function refreshFleet(
   let reads = 0
   let behind = false
 
-  // the bytes of `path` after `file`'s offset counted into today; behind when the read
-  // stopped short of `size`
-  const countRest = async (path: string, file: FleetFile, size: number): Promise<FleetFile> => {
-    if (file.offset >= size) return file
-    if (reads >= MAX_READS) {
-      behind = true
-      return file
-    }
+  // the bytes of `path` after `file`'s offset counted into today; done when they reach `size`
+  const countRest = async (path: string, file: FleetFile, size: number): Promise<{ file: FleetFile; done: boolean }> => {
+    if (file.offset >= size) return { file, done: true }
+    if (reads >= MAX_READS) return { file, done: false }
     const chunk = await io.run(['tail', '-c', `+${file.offset + 1}`, path])
     reads += 1
-    let counted = file
-    if (chunk?.exitCode === 0) {
-      const { rows, bytes } = splitLines(chunk.stdout, false)
-      counted = addToday(file, rows, bytes, now)
-    }
-    if (chunk?.exitCode !== 0 || chunk.truncated || counted.offset < size) behind = true
-    return counted
+    if (chunk?.exitCode !== 0) return { file, done: false }
+    const { rows, bytes } = splitLines(chunk.stdout, false)
+    const counted = addToday(file, rows, bytes, now)
+    return { file: counted, done: !chunk.truncated && counted.offset >= size }
+  }
+
+  // a file read to its end is caught up for today; one not yet caught up today keeps the
+  // scan going, while one that was only lags
+  const settle = (file: FleetFile, done: boolean): FleetFile => {
+    if (done) return { ...file, caughtUpDay: today }
+    if (file.caughtUpDay !== today) behind = true
+    return file
   }
 
   // a file whose size and time have not changed since `file`; a new day zeroes its count
@@ -90,52 +91,70 @@ export async function refreshFleet(
     return file.day === today ? file : { ...file, day: today, tokens: 0, cost: 0 }
   }
 
+  // every file of the fleet first, then the reads handed out the longest unread first
+  type Job = { path: string; size: number; mtimeMs: number; main: boolean }
+  const jobs: Job[] = []
+  const plans: { base: FleetSession; path?: string; subs: string[] }[] = []
   for (const p of panes) {
     const base: FleetSession = { ...p, stamps: [], tools: 0, todayTokens: 0, todayCost: 0 }
     if (p.sessionId === '' || p.cwd === '') {
-      sessions.push(base)
+      plans.push({ base, subs: [] })
       continue
     }
     const path = transcriptPath(io.home, p.cwd, p.sessionId)
     const st = await io.stat(path)
-    let file: FleetFile | undefined = cursor[path]
-    if (st) {
-      const same = unchanged(file, st)
-      if (same) {
-        file = same
-      } else if (reads < MAX_READS) {
-        const snap = await io.run(['tail', '-c', String(TAIL_BYTES), path])
-        reads += 1
-        if (snap?.exitCode !== 0 || snap.truncated) behind = true
-        const tail = snap?.exitCode === 0 ? tailOf(splitLines(snap.stdout, st.size > TAIL_BYTES).rows, now) : (file?.tail ?? EMPTY_TAIL)
-        const counted = await countRest(path, resumeFrom(file, st.size, now) ?? freshFile(now), st.size)
-        file = { ...counted, size: st.size, mtimeMs: st.mtimeMs, tail }
-      } else {
-        behind = true
-      }
-    }
-    if (file) next[path] = file
-
-    let tokens = file && file.day === today ? file.tokens : 0
-    let cost = file && file.day === today ? file.cost : 0
+    if (st) jobs.push({ path, size: st.size, mtimeMs: st.mtimeMs, main: true })
+    else if (cursor[path]) next[path] = cursor[path]
     const dir = subagentDir(io.home, p.cwd, p.sessionId)
+    const subs: string[] = []
     for (const e of (await io.list(dir)) ?? []) {
       if (e.kind !== 'file' || !e.name.endsWith('.jsonl')) continue
       const subPath = `${dir}/${e.name}`
-      let sub: FleetFile | undefined = unchanged(cursor[subPath], e)
-      if (!sub) {
-        const counted = await countRest(subPath, resumeFrom(cursor[subPath], e.size, now) ?? freshFile(now), e.size)
-        sub = { ...counted, size: e.size, mtimeMs: e.mtimeMs }
+      subs.push(subPath)
+      jobs.push({ path: subPath, size: e.size, mtimeMs: e.mtimeMs, main: false })
+    }
+    plans.push({ base, path, subs })
+  }
+
+  const readAt = (j: Job) => cursor[j.path]?.readAt ?? 0
+  for (const j of [...jobs].sort((x, y) => readAt(x) - readAt(y))) {
+    const old = cursor[j.path]
+    const same = unchanged(old, j)
+    if (same) {
+      next[j.path] = settle(same, true)
+    } else if (j.main) {
+      if (reads >= MAX_READS) {
+        if (old) next[j.path] = old
+        if (old?.caughtUpDay !== today) behind = true
+        continue
       }
-      next[subPath] = sub
-      if (sub.day === today) {
+      const snap = await io.run(['tail', '-c', String(TAIL_BYTES), j.path])
+      reads += 1
+      const tail = snap?.exitCode === 0 ? tailOf(splitLines(snap.stdout, j.size > TAIL_BYTES).rows, now) : (old?.tail ?? EMPTY_TAIL)
+      const rest = await countRest(j.path, resumeFrom(old, j.size, now) ?? freshFile(now), j.size)
+      const file = { ...rest.file, size: j.size, mtimeMs: j.mtimeMs, tail, readAt: now }
+      next[j.path] = settle(file, snap?.exitCode === 0 && !snap.truncated && rest.done)
+    } else {
+      const before = reads
+      const rest = await countRest(j.path, resumeFrom(old, j.size, now) ?? freshFile(now), j.size)
+      const file = { ...rest.file, size: j.size, mtimeMs: j.mtimeMs, ...(reads > before ? { readAt: now } : {}) }
+      next[j.path] = settle(file, rest.done)
+    }
+  }
+
+  for (const { base, path, subs } of plans) {
+    const file = path === undefined ? undefined : next[path]
+    let tokens = file && file.day === today ? file.tokens : 0
+    let cost = file && file.day === today ? file.cost : 0
+    for (const subPath of subs) {
+      const sub = next[subPath]
+      if (sub && sub.day === today) {
         tokens += sub.tokens
         cost += sub.cost
       }
     }
     sessions.push(file ? { ...base, ...file.tail, todayTokens: tokens, todayCost: cost } : { ...base, todayTokens: tokens, todayCost: cost })
   }
-  if (reads >= MAX_READS) behind = true
 
   const quota = parseQuota(await io.read(`${io.home}/${LIMITS_PATH}`))
   return {

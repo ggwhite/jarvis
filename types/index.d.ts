@@ -122,6 +122,10 @@ export type FleetFile = {
   // the last assistant message counted: its lines repeat its usage
   lastMsgId: string
   tail: FleetTail
+  // the day the file was last read to its end: until then it is still being scanned
+  caughtUpDay?: string
+  // when it was last read: the longest unread is read first
+  readAt?: number
 }
 
 export type FleetCursor = Record<string, FleetFile>

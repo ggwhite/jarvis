@@ -516,17 +516,89 @@ describe('fleet refresh', () => {
     expect(second.view.scanning).toBe(false)
   })
 
-  test('a refresh that spends every read keeps scanning on for one more look', async () => {
+  test('a refresh that spends every read, each file read to its end, is done scanning', async () => {
     const ids = ['s1', 's2', 's3', 's4']
     const files = Object.fromEntries(ids.map(id => [pathOf('/srv/alpha', id), alphaLog]))
     const w: World = { panes: ids.map((id, i) => pane({ pane_id: `w1:p${i}`, agent_session: { value: id } })), files, calls: [] }
-    const io = fakeIo(w)
-    const first = await refreshFleet(io, EMPTY_FLEET, {}, T0)
+    const first = await refreshFleet(fakeIo(w), EMPTY_FLEET, {}, T0)
     expect(tails(w)).toBe(MAX_READS)
     expect(first.view.sessions.every(s => s.lastReply === 'SECRET-REPLY')).toBe(true)
-    expect(first.view.scanning).toBe(true)
-    const second = await refreshFleet(io, first.view, first.cursor, T0 + 5000)
-    expect([tails(w), second.view.scanning]).toEqual([MAX_READS, false])
+    expect(first.view.scanning).toBe(false)
+  })
+
+  describe('scanning is today\'s first catch-up, not a busy fleet', () => {
+    const ids = ['s1', 's2', 's3', 's4', 's5', 's6']
+    const busy = (): World => ({
+      panes: ids.map((id, i) => pane({ pane_id: `w1:p${i}`, agent_session: { value: id } })),
+      files: Object.fromEntries(ids.map(id => [pathOf('/srv/alpha', id), alphaLog])),
+      mtime: {},
+      calls: [],
+    })
+    // every session speaks again: each file needs its tail and its new bytes, 12 reads a round
+    const speak = (w: World, at: number, round: number) => {
+      for (const id of ids) {
+        const p = pathOf('/srv/alpha', id)
+        w.files[p] = (w.files[p] ?? '') + jsonl(reply(at - MIN, `${id}-r${round}`, [text(`r${round}`)], use(1, 1)))
+        ;(w.mtime ??= {})[p] = round + 1
+      }
+    }
+
+    test('six busy sessions: once every file caught up, scanning stays off though each round runs out of reads', async () => {
+      const w = busy()
+      const io = fakeIo(w)
+      let state = await refreshFleet(io, EMPTY_FLEET, {}, T0)
+      expect(state.view.scanning).toBe(true)
+      const seen: boolean[] = []
+      for (let r = 1; r <= 6; r += 1) {
+        speak(w, T0, r)
+        const before = tails(w)
+        state = await refreshFleet(io, state.view, state.cursor, T0 + r * 5000)
+        expect(tails(w) - before).toBe(MAX_READS)
+        seen.push(state.view.scanning)
+      }
+      expect(ids.every(id => state.cursor[pathOf('/srv/alpha', id)]?.caughtUpDay === dayKey(T0))).toBe(true)
+      expect(seen.slice(-3)).toEqual([false, false, false])
+    })
+
+    test('six busy sessions: the longest unread is read first, so every one is brought up to date in three rounds', async () => {
+      const w = busy()
+      const io = fakeIo(w)
+      let state = await refreshFleet(io, EMPTY_FLEET, {}, T0)
+      for (let r = 1; r <= 3; r += 1) {
+        speak(w, T0, r)
+        state = await refreshFleet(io, state.view, state.cursor, T0 + r * 5000)
+      }
+      expect(state.view.sessions.map(s => s.paneId)).toEqual(ids.map((_, i) => `w1:p${i}`))
+      expect(state.view.sessions.every(s => /^r[123]$/.test(s.lastReply ?? ''))).toBe(true)
+      expect(state.view.sessions.every(s => s.todayTokens > 165)).toBe(true)
+    })
+
+    test('a new day scans again until each file has caught up that day', async () => {
+      const w = busy()
+      const io = fakeIo(w)
+      let state = await refreshFleet(io, EMPTY_FLEET, {}, T0)
+      for (let r = 1; r <= 3; r += 1) state = await refreshFleet(io, state.view, state.cursor, T0 + r * 5000)
+      expect(state.view.scanning).toBe(false)
+      const tomorrow = T0 + 24 * 60 * MIN
+      speak(w, tomorrow, 9)
+      state = await refreshFleet(io, state.view, state.cursor, tomorrow)
+      expect(state.view.scanning).toBe(true)
+    })
+
+    test('a large file cut at the output limit scans until it is read to its end', async () => {
+      const lines: string[] = []
+      for (let i = 0; i < 40; i += 1) lines.push(reply(T0 - 50 * MIN + i * MIN, `m${i}`, [text('x')], use(10, 1)))
+      const big = jsonl(...lines)
+      const w: World = { panes: [pane()], files: { [alpha]: big }, cap: 700, calls: [] }
+      const io = fakeIo(w)
+      let state = await refreshFleet(io, EMPTY_FLEET, {}, T0)
+      while ((state.cursor[alpha]?.offset ?? 0) < utf8Len(big)) {
+        expect(state.view.scanning).toBe(true)
+        state = await refreshFleet(io, state.view, state.cursor, T0)
+      }
+      state = await refreshFleet(io, state.view, state.cursor, T0)
+      expect(state.view.scanning).toBe(false)
+    })
   })
 
   test('scanning holds before the first refresh and while herdr is lost', async () => {
