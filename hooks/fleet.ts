@@ -122,6 +122,17 @@ export function dayStart(ts: number): number {
 export const BEATS = 12
 export const BEAT_MS = 5 * 60 * 1000
 
+// Today by the hour: the burn chart's 24 local hours.
+export const HOURS = 24
+export function emptyHours(): number[] {
+  return Array.from({ length: HOURS }, () => 0)
+}
+
+const answersTool = (row: Record<string, unknown>): boolean => {
+  const c = msgOf(row)?.['content']
+  return Array.isArray(c) && c.some(b => obj(b)?.['type'] === 'tool_result')
+}
+
 // shared by every file not yet read: frozen, stamps too, so none can write into another's
 export const EMPTY_TAIL: FleetTail = Object.freeze({ stamps: Object.freeze([]) as unknown as number[], tools: 0 })
 
@@ -154,6 +165,8 @@ export function tailOf(rows: Record<string, unknown>[], now: number): FleetTail 
   let lastReply: string | undefined
   let model: string | undefined
   let lastAt: number | undefined
+  let tool: string | undefined
+  let runSince: number | undefined
   let tools = 0
   const stamps: number[] = []
   const seen = new Set<string>()
@@ -167,6 +180,10 @@ export function tailOf(rows: Record<string, unknown>[], now: number): FleetTail 
     } else if (isHumanPrompt(row)) {
       lastUser = str(msgOf(row)?.['content'])
       spoke(t)
+      if (t !== undefined) runSince = t
+      tool = undefined
+    } else if (row['type'] === 'user') {
+      if (answersTool(row)) tool = undefined
     } else if (row['type'] === 'assistant') {
       const m = msgOf(row)
       if (!m) continue
@@ -175,7 +192,10 @@ export function tailOf(rows: Record<string, unknown>[], now: number): FleetTail 
       const said = replyText(m['content'])
       if (said !== '') lastReply = said
       const content = Array.isArray(m['content']) ? m['content'] : []
-      tools += content.filter(b => obj(b)?.['type'] === 'tool_use').length
+      const uses = content.filter(b => obj(b)?.['type'] === 'tool_use')
+      tools += uses.length
+      const called = str(obj(uses.at(-1))?.['name'])
+      if (called !== '') tool = called
       spoke(t)
       // one API message is written over several lines: its time counts once
       const id = str(m['id'])
@@ -190,6 +210,8 @@ export function tailOf(rows: Record<string, unknown>[], now: number): FleetTail 
     ...(lastReply === undefined ? {} : { lastReply }),
     ...(model === undefined ? {} : { model }),
     ...(lastAt === undefined ? {} : { lastAt }),
+    ...(tool === undefined ? {} : { tool }),
+    ...(runSince === undefined ? {} : { runSince }),
     stamps,
     tools,
   }
@@ -212,7 +234,7 @@ export function usageOf(message: Record<string, unknown>): { tokens: number; cos
 }
 
 export function freshFile(now: number): FleetFile {
-  return { size: 0, mtimeMs: 0, offset: 0, day: dayKey(now), tokens: 0, cost: 0, lastMsgId: '', tail: EMPTY_TAIL }
+  return { size: 0, mtimeMs: 0, offset: 0, day: dayKey(now), tokens: 0, cost: 0, lastMsgId: '', tail: EMPTY_TAIL, hourly: emptyHours() }
 }
 
 // Where today's count of a file goes on while it only grew: as it was on the same day,
@@ -221,7 +243,7 @@ export function freshFile(now: number): FleetFile {
 export function resumeFrom(file: FleetFile | undefined, size: number, now: number): FleetFile | undefined {
   if (!file || size < file.offset) return undefined
   const today = dayKey(now)
-  return file.day === today ? file : { ...file, day: today, tokens: 0, cost: 0 }
+  return file.day === today ? file : { ...file, day: today, tokens: 0, cost: 0, hourly: emptyHours() }
 }
 
 // Adds the assistant messages of `rows` sent today, each message once though its lines
@@ -229,6 +251,7 @@ export function resumeFrom(file: FleetFile | undefined, size: number, now: numbe
 export function addToday(file: FleetFile, rows: Record<string, unknown>[], bytes: number, now: number): FleetFile {
   const today = dayKey(now)
   let { tokens, cost, lastMsgId } = file
+  const hourly = file.hourly && file.hourly.length === HOURS ? [...file.hourly] : emptyHours()
   for (const row of rows) {
     if (row['type'] !== 'assistant') continue
     const m = msgOf(row)
@@ -241,8 +264,10 @@ export function addToday(file: FleetFile, rows: Record<string, unknown>[], bytes
     const u = usageOf(m)
     tokens += u.tokens
     cost += u.cost
+    const h = new Date(t).getHours()
+    hourly[h] = (hourly[h] ?? 0) + u.tokens
   }
-  return { ...file, offset: file.offset + bytes, tokens, cost, lastMsgId }
+  return { ...file, offset: file.offset + bytes, tokens, cost, lastMsgId, hourly }
 }
 
 export const STALE_QUOTA_MS = 15 * 60 * 1000

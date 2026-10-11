@@ -16,6 +16,7 @@ import {
   contextPctOf,
   dayKey,
   decommissionCount,
+  emptyHours,
   fleetSections,
   fleetStatus,
   fleetTotals,
@@ -1301,4 +1302,71 @@ describe('fleet detail page', () => {
       expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
     })
   }
+})
+
+describe('fleet dashboard data', () => {
+  test('the tail keeps the tool in flight until its result comes back', () => {
+    const asked = rowsOf(human(T0 - 5 * MIN, 'go'), reply(T0 - 4 * MIN, 'd1', [toolUse('Bash')]))
+    expect(tailOf(asked, T0).tool).toBe('Bash')
+    const answered = rowsOf(human(T0 - 5 * MIN, 'go'), reply(T0 - 4 * MIN, 'd1', [toolUse('Bash')]), toolResult(T0 - 3 * MIN))
+    expect(tailOf(answered, T0).tool).toBeUndefined()
+    const next = rowsOf(
+      reply(T0 - 4 * MIN, 'd1', [toolUse('Bash')]),
+      toolResult(T0 - 3 * MIN),
+      reply(T0 - 2 * MIN, 'd2', [toolUse('Read'), toolUse('Grep')]),
+    )
+    expect(tailOf(next, T0).tool).toBe('Grep')
+  })
+
+  test('the run starts at the last prompt the person typed; tool results and reminders do not count', () => {
+    const rows = rowsOf(human(T0 - 9 * MIN, 'first'), human(T0 - 5 * MIN, 'second'), meta(T0 - 4 * MIN, 'reminder'), toolResult(T0 - 3 * MIN))
+    expect(tailOf(rows, T0).runSince).toBe(T0 - 5 * MIN)
+    expect(tailOf(rowsOf(reply(T0 - MIN, 'x', [text('hi')])), T0).runSince).toBeUndefined()
+  })
+
+  test('today by the hour: each message once in its local hour, yesterday left out', () => {
+    const at9 = new Date(2026, 9, 11, 9, 30).getTime()
+    const at14 = new Date(2026, 9, 11, 14, 10).getTime()
+    const rows = rowsOf(
+      reply(at9, 'h1', [thinking], use(10, 5)),
+      reply(at9, 'h1', [text('a')], use(10, 5)),
+      reply(at14, 'h2', [text('b')], use(100, 20)),
+      reply(YESTERDAY, 'h0', [text('old')], use(999, 999)),
+    )
+    const f = addToday(freshFile(T0), rows, 0, T0)
+    expect(f.hourly).toHaveLength(24)
+    expect(f.hourly?.[9]).toBe(15)
+    expect(f.hourly?.[14]).toBe(120)
+    expect((f.hourly ?? []).reduce((a, b) => a + b, 0)).toBe(f.tokens)
+  })
+
+  test('a new day zeroes the hours with the count', () => {
+    const f = addToday(freshFile(T0), rowsOf(reply(T0 - MIN, 'z', [text('a')], use(10, 5))), 10, T0)
+    expect(f.hourly?.[14]).toBe(15)
+    const next = resumeFrom(f, 20, T0 + 24 * 60 * MIN)
+    expect(next?.hourly).toEqual(emptyHours())
+    expect(next?.tokens).toBe(0)
+  })
+
+  test('a refresh adds every hour of the fleet: main transcripts and subagents, old files nothing', async () => {
+    const a = pathOf('/srv/alpha', 'sess-a')
+    const sub = subOf('/srv/alpha', 'sess-a', 'agent-x.jsonl')
+    const b = pathOf('/srv/bravo', 'sess-b')
+    const w: World = {
+      panes: [pane(), pane({ pane_id: 'w2:p2', agent_session: { value: 'sess-b' }, cwd: '/srv/bravo' })],
+      files: {
+        [a]: jsonl(reply(T0 - 9 * MIN, 'm1', [toolUse('Bash')], use(100, 50))),
+        [sub]: jsonl(reply(T0 - 3 * MIN, 's1', [text('y')], use(20, 7))),
+        [b]: jsonl(reply(YESTERDAY, 'old', [text('z')], use(500, 500))),
+      },
+      mtime: { [b]: YESTERDAY },
+      calls: [],
+    }
+    const { view } = await refreshFleet(fakeIo(w), EMPTY_FLEET, {}, T0)
+    expect(view.hourly).toHaveLength(24)
+    expect(view.hourly[14]).toBe(150 + 27)
+    expect(view.hourly.reduce((x, y) => x + y, 0)).toBe(177)
+    expect(view.sessions[0]?.tool).toBe('Bash')
+    expect(EMPTY_FLEET.hourly).toEqual(emptyHours())
+  })
 })

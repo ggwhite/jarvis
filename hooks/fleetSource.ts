@@ -1,5 +1,5 @@
 import type { FleetCursor, FleetFile, FleetJumpError, FleetSession, FleetView } from '../types'
-import { EMPTY_TAIL, addToday, dayKey, dayStart, freshFile, parsePanes, parseQuota, projectDir, resumeFrom, splitLines, tailOf, transcriptPath } from './fleet'
+import { EMPTY_TAIL, addToday, dayKey, dayStart, emptyHours, freshFile, parsePanes, parseQuota, projectDir, resumeFrom, splitLines, tailOf, transcriptPath } from './fleet'
 
 // How often the fleet page asks herdr and the transcripts, while it is in view.
 export const FLEET_MS = 5000
@@ -28,7 +28,7 @@ export type FleetIo = {
   list: (dir: string) => Promise<FleetEntry[] | undefined>
 }
 
-export const EMPTY_FLEET: FleetView = { at: 0, sessions: [], linkLost: false, scanning: true }
+export const EMPTY_FLEET: FleetView = { at: 0, sessions: [], linkLost: false, scanning: true, hourly: emptyHours() }
 
 export function focusArgv(paneId: string): string[] {
   return ['herdr', 'agent', 'focus', paneId]
@@ -89,7 +89,7 @@ export async function refreshFleet(
   // a file whose size and time have not changed since `file`; a new day zeroes its count
   const unchanged = (file: FleetFile | undefined, st: { size: number; mtimeMs: number }): FleetFile | undefined => {
     if (!file || file.offset !== st.size || file.mtimeMs !== st.mtimeMs) return undefined
-    return file.day === today ? file : { ...file, day: today, tokens: 0, cost: 0 }
+    return file.day === today ? file : { ...file, day: today, tokens: 0, cost: 0, hourly: emptyHours() }
   }
 
   // every file of the fleet first, then the reads handed out the longest unread first
@@ -134,7 +134,7 @@ export async function refreshFleet(
     // last written before today and not yet seen today: read to its end, nothing counted
     const quiet: FleetFile | undefined =
       j.mtimeMs < midnight && old?.day !== today
-        ? { ...(old ?? freshFile(now)), offset: j.size, size: j.size, mtimeMs: j.mtimeMs, day: today, tokens: 0, cost: 0 }
+        ? { ...(old ?? freshFile(now)), offset: j.size, size: j.size, mtimeMs: j.mtimeMs, day: today, tokens: 0, cost: 0, hourly: emptyHours() }
         : undefined
     if (same) {
       next[j.path] = settle(same, true)
@@ -165,11 +165,24 @@ export async function refreshFleet(
     }
   }
 
+  const hourly = emptyHours()
+  const counted = new Set<string>()
+  const addHours = (p: string | undefined) => {
+    if (p === undefined || counted.has(p)) return
+    counted.add(p)
+    const f = next[p]
+    if (!f || f.day !== today || !f.hourly) return
+    f.hourly.forEach((v, i) => {
+      hourly[i] = (hourly[i] ?? 0) + v
+    })
+  }
   for (const { base, path, subs } of plans) {
+    addHours(path)
     const file = path === undefined ? undefined : next[path]
     let tokens = file && file.day === today ? file.tokens : 0
     let cost = file && file.day === today ? file.cost : 0
     for (const subPath of subs) {
+      addHours(subPath)
       const sub = next[subPath]
       if (sub && sub.day === today) {
         tokens += sub.tokens
@@ -186,6 +199,7 @@ export async function refreshFleet(
       sessions,
       linkLost: false,
       scanning: behind,
+      hourly,
       ...(quota ? { quota } : {}),
       ...(prev.jumpError ? { jumpError: prev.jumpError } : {}),
     },

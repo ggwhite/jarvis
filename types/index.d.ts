@@ -74,6 +74,10 @@ export type FleetTail = {
   lastAt?: number
   stamps: number[]
   tools: number
+  // the tool called last and not yet answered by its result
+  tool?: string
+  // when the person last typed a prompt: the run so far
+  runSince?: number
 }
 
 // One Claude session of the fleet: its herdr pane, its tail and today's use.
@@ -108,6 +112,8 @@ export type FleetView = {
   linkLost: boolean
   // today's first scan of the transcripts has not finished
   scanning: boolean
+  // today's input + output tokens of the whole fleet by local hour, 0 to 23
+  hourly: number[]
   jumpError?: FleetJumpError
 }
 
@@ -126,6 +132,8 @@ export type FleetFile = {
   caughtUpDay?: string
   // when it was last read: the longest unread is read first
   readAt?: number
+  // today's input + output tokens of this file by local hour
+  hourly?: number[]
 }
 
 export type FleetCursor = Record<string, FleetFile>
