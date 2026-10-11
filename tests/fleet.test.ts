@@ -1369,4 +1369,28 @@ describe('fleet dashboard data', () => {
     expect(view.sessions[0]?.tool).toBe('Bash')
     expect(EMPTY_FLEET.hourly).toEqual(emptyHours())
   })
+
+  test('an unchanged file past midnight starts the new day with empty hours', async () => {
+    const a = pathOf('/srv/alpha', 'sess-a')
+    const w: World = { panes: [pane()], files: { [a]: jsonl(reply(T0 - MIN, 'u1', [text('x')], use(10, 5))) }, calls: [] }
+    const io = fakeIo(w)
+    const first = await refreshFleet(io, EMPTY_FLEET, {}, T0)
+    expect(first.view.hourly[14]).toBe(15)
+    const next = await refreshFleet(io, first.view, first.cursor, T0 + 24 * 60 * MIN)
+    expect(next.cursor[a]?.hourly).toEqual(emptyHours())
+    expect(next.view.hourly).toEqual(emptyHours())
+  })
+
+  test('a file last written yesterday counts no hours today, whatever its cursor held', async () => {
+    const a = pathOf('/srv/alpha', 'sess-a')
+    const w: World = { panes: [pane()], files: { [a]: jsonl(reply(YESTERDAY - 60 * MIN, 'y1', [text('x')], use(10, 5))) }, mtime: { [a]: YESTERDAY }, calls: [] }
+    const io = fakeIo(w)
+    const first = await refreshFleet(io, EMPTY_FLEET, {}, YESTERDAY)
+    expect(first.view.hourly[21]).toBe(15)
+    w.files[a] = jsonl(reply(YESTERDAY - 60 * MIN, 'y1', [text('x')], use(10, 5)), reply(YESTERDAY + 30 * MIN, 'y2', [text('y')], use(20, 7)))
+    w.mtime = { [a]: YESTERDAY + 30 * MIN }
+    const next = await refreshFleet(io, first.view, first.cursor, T0)
+    expect(next.cursor[a]?.hourly).toEqual(emptyHours())
+    expect(next.view.hourly).toEqual(emptyHours())
+  })
 })
