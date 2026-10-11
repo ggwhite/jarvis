@@ -983,7 +983,10 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   // ---- 進行中 -------------------------------------------------------------
 
-  const inflightBlock = (): Block => {
+  const idleFlight: Line[] = [[{ t: '目前沒有執行中的工具呼叫', color: FRAME }]]
+
+  // at most `cap` rows of calls, those that do not fit folded into `… 還有 N 個`
+  const inflightBlock = (cap = Infinity): Block => {
     const inner = cols - 4
     const list = view.inflight
     const color = list.length > 0 ? FLIGHT_COLOR : IDLE_COLOR
@@ -1009,7 +1012,11 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       ]
     }
     const body: Line[] =
-      list.length === 0 ? [[{ t: '目前沒有執行中的工具呼叫', color: FRAME }]] : list.map(line)
+      list.length === 0
+        ? idleFlight
+        : list.length > cap
+          ? [...list.slice(0, cap - 1).map(line), [{ t: `… 還有 ${list.length - cap + 1} 個`, color: FRAME }]]
+          : list.map(line)
     return cardRow([{ w: cols, color, lines: [head, ...body] }])
   }
 
@@ -1380,15 +1387,18 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     // in MIN_FINISHED's order: every running subagent and the least finished, whatever the
     // room; the suit when nothing runs and it fits; the in-flight card; the recent events'
     // least or no card; then the rows left over, finished subagents first, then events
-    const flight = inflightBlock()
+    // the suit makes room for the in-flight card at its idle height and caps it there while
+    // drawn: calls coming and going neither take the suit away nor stop its tick
+    const capped = inflightBlock(idleFlight.length)
     // event rows: a dated rule takes a row like an event
     const total = eventRows(view.events).length
     const recentH = (n: number) => Math.max(1, n) + 3
     const least = Math.min(finishedUnits.length, MIN_FINISHED)
     // a suit on show when a crew member deploys stays CREW_SHOW_MS more, if the running fit
     const stays = view.running.length === 0 || crewDeployed(view.now, ctx.deployedAt)
-    const suit = stays && suitFits && left() - listHeight(least) - suitH - flight.h >= 0 ? standbyBlock() : undefined
+    const suit = stays && suitFits && left() - listHeight(least) - suitH - capped.h >= 0 ? standbyBlock() : undefined
     standby = suit !== undefined
+    const flight = suit ? capped : inflightBlock()
     const room = left() - flight.h - (suit?.h ?? 0)
     let recent = Math.min(total, MIN_RECENT)
     const withRecent = room - listHeight(least) >= recentH(recent)

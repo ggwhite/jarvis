@@ -4131,6 +4131,61 @@ describe('standby suit', () => {
     expect(linesOf(await draw($, least + 3)).join('\n')).not.toContain('最近事件')
   })
 
+  test('calls coming and going keep the suit: the in-flight card capped at its idle height, the rest folded', async ($, on) => {
+    const clock = mock.clock(on, { now: 0 })
+    on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+    const gates: Array<() => void> = []
+    on('tool.call', async () => {
+      await new Promise<void>(r => gates.push(r))
+      return { result: {} } as never
+    })
+    const frames = { n: 0 }
+    on('state.set', { plugin: 'jarvis', key: 'suit' }, async (_$, e, next) => {
+      frames.n += 1
+      return next(e)
+    })
+    await start($)
+    const least = 2 + 4 + SUIT_BLOCK_ROWS + 4
+    // the in-flight card: its rows inside the frame, and its height
+    const flightCard = (n: Node | string): Node | undefined => {
+      if (typeof n === 'string') return undefined
+      if (Number(n.props?.['height']) > 0 && n.props?.['borderStyle'] && textOf(n).includes('進行中')) return n
+      for (const k of n.children ?? []) {
+        const hit = flightCard(k)
+        if (hit) return hit
+      }
+      return undefined
+    }
+    // drawn at the least rows, within them, and its tick still running
+    const suitHolds = async () => {
+      const tree = await draw($, least)
+      const text = linesOf(tree).join('\n')
+      expect(text).toContain(SUIT)
+      expect(paneRows(tree)).toBeLessThanOrEqual(least)
+      const card = flightCard(tree)
+      expect(card).toBeDefined()
+      expect(linesOf(card ?? '').length).toBeLessThanOrEqual(Number(card?.props?.['height']) - 2)
+      const base = frames.n
+      await clock.advance(SUIT_TICK_MS)
+      expect(frames.n - base).toBe(1)
+      return text
+    }
+    expect(await suitHolds()).toContain('目前沒有執行中的工具呼叫')
+    const calls = ['/a.ts', '/b.ts', '/c.ts'].map(p => $.tool.call({ tool: 'Read', file_path: p }))
+    while (gates.length < 3) await clock.advance(0)
+    const busy = await suitHolds()
+    expect(busy).toContain('… 還有 3 個')
+    expect(findText(await draw($, least), /^… 還有 3 個$/)?.props?.['color']).toBe(THEME.frame)
+    // no suit: the card as it was, every call listed
+    const bare = linesOf(await draw($, least - 1)).join('\n')
+    expect(bare).not.toContain(SUIT)
+    expect(bare).not.toContain('還有')
+    for (const f of ['a.ts', 'b.ts', 'c.ts']) expect(bare).toContain(f)
+    gates.splice(0).forEach(r => r())
+    await Promise.all(calls)
+    expect(await suitHolds()).toContain('目前沒有執行中的工具呼叫')
+  })
+
   // one string per drawn row, the texts of a row Box joined as drawn
   const rowsOf = (n: Node | string): string[] =>
     typeof n === 'string' || n.type === 'Text' || n.props?.flexDirection === 'row'
