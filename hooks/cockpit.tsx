@@ -16,6 +16,7 @@ import type { Cell, Overlay, RingPart } from './fleetChart'
 import { idlePerRow, planFleet } from './fleetLayout'
 import type { FleetPlan, GaugeForm } from './fleetLayout'
 import { FAIL_WARN, planStats, roleBeats, successRate } from './statsView'
+import { SUIT_BLOCK_ROWS, SUIT_COLS, SUIT_ROWS, suitCells } from './suit'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
 import type { CardLines } from './fleetCards'
 import {
@@ -61,6 +62,13 @@ const ROLE_EXTRA_W = 12
 // the recent events; rows left over go to the finished ones first, then the events.
 export const MIN_FINISHED = 3
 export const MIN_RECENT = 3
+// The standby suit is drawn only with this many cells beside it, and only while the
+// subagent card keeps this many rows of its own below it.
+const SUIT_MARGIN = 4
+const SUIT_MIN_LIST = 3
+// The boot's rows below the title with the suit: a blank, the suit and a blank, ONLINE
+// and the loading two.
+const BOOT_SUIT_H = 1 + SUIT_ROWS + 1 + 3
 // From this many columns a model badge carries its version: `[Sonnet 5.5]`.
 export const BADGE_FULL_COLS = 90
 // Cells a plain Button's hotkey takes before its label: `1: `.
@@ -1178,10 +1186,28 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return card(spec, heightOf(spec))
   }
 
+  // ---- 待機戰甲 -----------------------------------------------------------
+
+  const suitFits = cols >= SUIT_COLS + SUIT_MARGIN
+
+  const suitArt = (): Seg[][] => suitCells().map(r => centered(cellsToSegs(r), cols))
+
+  // the suit at rest over its two lines: standing by, and whether any order ever came
+  const standbyBlock = (): Block => {
+    const lines: Seg[][] = [
+      ...suitArt(),
+      BLANK,
+      centered([{ t: 'MARK XLII · STANDBY', color: FRAME }], cols),
+      centered([{ t: view.sections.length === 0 ? 'AWAITING ORDERS, SIR.' : 'ALL CREW DOCKED, SIR.', color: PRIMARY }], cols),
+    ]
+    return { h: lines.length, node: <Box flexDirection="column">{lines.map(lineNode)}</Box> }
+  }
+
   // ---- 開機 ---------------------------------------------------------------
 
   const bootBlock = (stage: BootStage): Block => {
-    const lines: Seg[][] = [BLANK, centered([{ t: 'J.A.R.V.I.S. ONLINE', color: BRIGHT, bold: true }], cols)]
+    const art = suitFits && rows >= 1 + BOOT_SUIT_H ? [...suitArt(), BLANK] : []
+    const lines: Seg[][] = [BLANK, ...art, centered([{ t: 'J.A.R.V.I.S. ONLINE', color: BRIGHT, bold: true }], cols)]
     if (stage.phase === 'loading') {
       const barW = Math.max(4, Math.min(24, cols - 8))
       const fill = Math.round((stage.pct / 100) * barW)
@@ -1214,12 +1240,19 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     // event rows: a dated rule takes a row like an event
     const total = eventRows(view.events).length
     const recentH = (n: number) => Math.max(1, n) + 3
-    const room = left() - flight.h
+    // the suit at rest over the subagent card, when nothing runs and the card keeps its rows
+    const suit =
+      view.running.length === 0 &&
+      suitFits &&
+      left() - flight.h - SUIT_BLOCK_ROWS - recentH(Math.min(total, MIN_RECENT)) - 3 >= SUIT_MIN_LIST
+        ? standbyBlock()
+        : undefined
+    const room = left() - flight.h - (suit?.h ?? 0)
     let shown = Math.min(finishedUnits.length, MIN_FINISHED)
     let recent = Math.min(total, MIN_RECENT)
     while (shown < finishedUnits.length && listHeight(shown + 1) + recentH(recent) <= room) shown += 1
     recent = Math.max(recent, Math.min(total, room - listHeight(shown) - 3))
-    blocks.push(agentBlock(shown, room - recentH(recent)), flight)
+    blocks.push(...(suit ? [suit] : []), agentBlock(shown, room - recentH(recent)), flight)
     blocks.push(eventCard([title('最近事件', PRIMARY)], view.events, recentH(recent), '還沒有工具呼叫', false))
   } else if (page === 'log') {
     const total = view.events.length

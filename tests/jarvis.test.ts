@@ -76,6 +76,7 @@ import {
 } from '../hooks/herdr'
 import { register } from '../hooks/register'
 import { BURN_RAMP, GAUGE_RAMP } from '../hooks/fleetChart'
+import { SUIT_BLOCK_ROWS } from '../hooks/suit'
 
 const near = (got: number | undefined, want: number, digits: number) =>
   expect(got !== undefined && Math.abs(got - want) < 10 ** -digits).toBe(true)
@@ -2373,8 +2374,9 @@ describe('beauty pass 2', () => {
     let tree = await draw($, 50, 80)
     expect(findAllText(tree, /^job \d+\s*$/)).toHaveLength(10)
     expect(findText(tree, /^… 還有/)).toBeUndefined()
-    // 50 rows: title 1, tab 1, list 3 + 10 (one section: no header), in flight 4, events 3 + n
-    expect(events(tree)).toBe(50 - 2 - 13 - 4 - 3)
+    // 50 rows: title 1, tab 1, the standby suit over the list, list 3 + 10 (one section: no
+    // header), in flight 4, events 3 + n
+    expect(events(tree)).toBe(50 - 2 - SUIT_BLOCK_ROWS - 13 - 4 - 3)
 
     // short: the list gives way first, the events keep their least
     tree = await draw($, 22, 80)
@@ -2828,10 +2830,10 @@ describe('HUD pages', () => {
     // nothing was dropped: the count is whole
     expect(findText(tree, /^40\/200 則$/)).toBeDefined()
 
-    // the now page: 50 rows less title, tab, the empty list (4), in flight (4), the card's
-    // frame and title (3) and the rule itself
+    // the now page: 50 rows and the standby suit's less title, tab, the empty list (4), in
+    // flight (4), the card's frame and title (3) and the rule itself
     await press($, 'tab-now')
-    tree = await draw($, 50, 100)
+    tree = await draw($, 50 + SUIT_BLOCK_ROWS, 100)
     expect(findAllText(tree, date)).toHaveLength(1)
     expect(findAllText(tree, /^[on]\d+\.ts\s*$/)).toHaveLength(50 - 2 - 4 - 4 - 3 - 1)
     // room for all: every event and the rule, the oldest not pushed out by the rule
@@ -3648,5 +3650,101 @@ describe('stats dashboard', () => {
         if (rows >= 24) expect([cols, rows, paneRows(tree) <= rows]).toEqual([cols, rows, true])
       }
     }
+  })
+})
+
+describe('standby suit', () => {
+  const STANDBY = 'MARK XLII · STANDBY'
+  const lineOf = (lines: string[], text: string) => lines.findIndex(l => l.includes(text))
+
+  test('nothing ever dispatched: the suit over the subagent card, awaiting orders', async ($, on) => {
+    engine(on, 'agent-1')
+    const tree = await draw($, 50)
+    const lines = linesOf(tree)
+    expect(lineOf(lines, STANDBY)).toBeGreaterThan(0)
+    expect(lineOf(lines, 'AWAITING ORDERS, SIR.')).toBe(lineOf(lines, STANDBY) + 1)
+    expect(lines.join('\n')).not.toContain('ALL CREW DOCKED')
+    // 14 rows of art, a blank row, then the text; the subagent card below
+    const art = lines.slice(lineOf(lines, STANDBY) - 15, lineOf(lines, STANDBY) - 1)
+    expect(art.every(l => /[▀▄]/.test(l))).toBe(true)
+    expect(lines[lineOf(lines, STANDBY) - 1]?.trim()).toBe('')
+    expect(lineOf(lines, '子代理')).toBeGreaterThan(lineOf(lines, 'AWAITING ORDERS'))
+    expect(lines.join('\n')).toContain('還沒有派工')
+    // centered in the 80 cells: the helmet's top 12 pixels wide, its sides 16 wide
+    const flat = (n: Node | string): string[] =>
+      typeof n === 'string' || n.type === 'Text' || n.props?.flexDirection === 'row'
+        ? [textOf(n)]
+        : (n.children ?? []).flatMap(flat)
+    const rowsDrawn = flat(tree)
+    const top = rowsDrawn[rowsDrawn.findIndex(l => l.includes(STANDBY)) - 15] ?? ''
+    expect(top.length - top.trimStart().length).toBe(Math.floor((80 - 24) / 2) + 4)
+    expect(cellWidth(top)).toBe(80)
+    expect(findText(tree, /^MARK XLII · STANDBY$/)?.props?.['color']).toBe(THEME.frame)
+    expect(findText(tree, /^AWAITING ORDERS, SIR\.$/)?.props?.['color']).toBe(THEME.primary)
+  })
+
+  test('crew docked after a dispatch; none while a subagent runs', async ($, on) => {
+    engine(on, 'agent-1')
+    await $.agent.spawn(spawnInput({ description: 'find files', subagentType: 'Explore' }))
+    let text = linesOf(await draw($, 50)).join('\n')
+    expect(text).not.toContain(STANDBY)
+    expect(text).toContain('find files')
+
+    await $.turn.complete(complete('agent-1'))
+    const tree = await draw($, 50)
+    const lines = linesOf(tree)
+    expect(lineOf(lines, 'ALL CREW DOCKED, SIR.')).toBe(lineOf(lines, STANDBY) + 1)
+    expect(lines.join('\n')).not.toContain('AWAITING ORDERS')
+    expect(lineOf(lines, 'find files')).toBeGreaterThan(lineOf(lines, STANDBY))
+    expect(findText(tree, /^ALL CREW DOCKED, SIR\.$/)?.props?.['color']).toBe(THEME.primary)
+    // the number key still opens it
+    await hotkey($, '1', 50)
+    text = linesOf(await draw($, 50)).join('\n')
+    expect(text).toContain('類型')
+    expect(text).not.toContain(STANDBY)
+  })
+
+  test('short of rows for three rows of the subagent card the suit is left out', async ($, on) => {
+    engine(on, 'agent-1')
+    // title, tabs, in-flight card 4, recent events 4, the subagent card's border and title 3
+    expect(linesOf(await draw($, 2 + 4 + 4 + 3 + 3 + 17)).join('\n')).toContain(STANDBY)
+    const text = linesOf(await draw($, 2 + 4 + 4 + 3 + 3 + 17 - 1)).join('\n')
+    expect(text).not.toContain(STANDBY)
+    expect(text).toContain('還沒有派工')
+    expect(text).toContain('最近事件')
+  })
+
+  test('narrower than the art and its margin the suit is left out; no row overflows', async ($, on) => {
+    engine(on, 'agent-1')
+    expect(linesOf(await draw($, 50, 28)).join('\n')).toContain(STANDBY)
+    expect(linesOf(await draw($, 50, 27)).join('\n')).not.toContain(STANDBY)
+    for (const cols of [40, 65, 100]) {
+      const tree = await draw($, 50, cols)
+      expect(linesOf(tree).join('\n')).toContain(STANDBY)
+      expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
+    }
+  })
+
+  test('boot: the suit over ONLINE when there is room', async ($, on) => {
+    engineAll(on)
+    on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+    on('command.run', async () => ({}))
+    await start($)
+    await $.command.run({
+      command: 'jarvis',
+      args: '',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: true, columns: 100 },
+    })
+    const lines = linesOf(await draw($, 20))
+    const online = lineOf(lines, 'J.A.R.V.I.S. ONLINE')
+    const art = lines.slice(0, online).filter(l => /[▀▄]/.test(l))
+    expect(art).toHaveLength(14)
+    expect(lines.join('\n')).not.toContain(STANDBY)
+    expect(Math.max(...rowWidths(await draw($, 20, 40)))).toBeLessThanOrEqual(40)
+    const short = linesOf(await draw($, 19)).join('\n')
+    expect(short).toContain('J.A.R.V.I.S. ONLINE')
+    expect(short).not.toMatch(/[▀▄]/)
+    expect(linesOf(await draw($, 20, 27)).join('\n')).not.toMatch(/[▀▄]/)
   })
 })
