@@ -11,9 +11,11 @@ import type {
   QuotaWindow,
 } from '../types'
 import { fleetSections, fmtAgo, fmtBig, wrapCells } from './fleet'
-import { burnChart, cellsToSegs } from './fleetChart'
+import { BURN_RAMP, RING_BIG, RING_SMALL, brailleLine, burnChart, cellsToSegs, gaugeBar, gaugeCells, partsGaugeCells, rampBar } from './fleetChart'
+import type { Cell, Overlay, RingPart } from './fleetChart'
 import { idlePerRow, planFleet } from './fleetLayout'
-import type { FleetPlan } from './fleetLayout'
+import type { FleetPlan, GaugeForm } from './fleetLayout'
+import { FAIL_WARN, planStats, roleBeats, successRate } from './statsView'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
 import type { CardLines } from './fleetCards'
 import {
@@ -25,7 +27,6 @@ import {
   MAX_NUMBERED,
   SLOW_MS,
   THEME,
-  barLen,
   cellWidth,
   elapsedMs,
   eventRows,
@@ -54,8 +55,11 @@ export const WIDE_COLS = 120
 // Below this the stats page stacks the model and savings cards.
 export const TINY_COLS = 64
 export const MIN_EVENT_ROWS = 4
-// Cells in the main chain bar: full at CHAIN_WARN calls.
-const CHAIN_BAR = 16
+// The dispatch card draws each role's last hour once its inside is this wide.
+export const BEATS_MIN_INNER = 56
+// The braille line a role gets, and the room after its counts.
+const ROLE_BEAT_W = 10
+const ROLE_EXTRA_W = 12
 // The least the now page gives the finished subagents (a workflow run is one unit) and
 // the recent events; rows left over go to the finished ones first, then the events.
 export const MIN_FINISHED = 3
@@ -275,56 +279,11 @@ export function eventDuration(ms: number): Seg {
   return { t: fmtMs(ms), color: ms > SLOW_MS ? ACCENT : FRAME }
 }
 
-// How a role box shows its counts: `執行中 1 · 完成 3` on one line, the two on two
-// lines, or `▶1 ✓ 3`. A ✓ or ✗ is followed by a space, never set against a digit: a
-// terminal font that draws it from a fallback leaves a gap after it.
-export type RoleFormat = 'full' | 'two' | 'compact'
-
-export type RoleLayout = {
-  // boxes per row, and each box's outer width in a row
-  perRow: number
-  widths: number[]
-  format: RoleFormat
-  // false only when even one box to a row cannot hold the text: the text is then cut
-  fits: boolean
-}
-
-export const roleName = (r: RoleStat): string => (r.failed > 0 ? `${r.label} ✗ ${r.failed}` : r.label)
-
-export function roleStatLines(r: RoleStat, format: RoleFormat): string[] {
-  if (format === 'full') return [`執行中 ${r.running} · 完成 ${r.done}`]
-  if (format === 'two') return [`執行中 ${r.running}`, `完成 ${r.done}`]
-  return [`▶${r.running} ✓ ${r.done}`]
-}
-
-// The fewest rows of role boxes, `inner` cells across, whose text fits each box inside
-// its border; the full line keeps a cell of room either side.
-export function roleLayout(roles: readonly RoleStat[], inner: number): RoleLayout {
-  const count = Math.max(1, roles.length)
-  const need = (format: RoleFormat) =>
-    Math.max(
-      0,
-      ...roles.map(r =>
-        Math.max(cellWidth(roleName(r)), ...roleStatLines(r, format).map(cellWidth)) + (format === 'full' ? 2 : 0),
-      ),
-    )
-  for (let rows = 1; rows <= count; rows += 1) {
-    const perRow = Math.ceil(count / rows)
-    const widths = splitCols(inner, perRow)
-    const boxInner = Math.min(...widths) - 2
-    for (const format of ['full', 'two', 'compact'] as const) {
-      if (need(format) <= boxInner) return { perRow, widths, format, fits: true }
-    }
-  }
-  return { perRow: 1, widths: [inner], format: 'compact', fits: false }
-}
-
 export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const { Box, Text, Button } = ui
   const cols = ctx.cols
   // a room the surface could not measure is drawn as if 40 rows tall
   const rows = Number.isFinite(ctx.rows) && ctx.rows > 0 ? Math.min(ctx.rows, MAX_ROWS) : 40
-  const wide = cols >= WIDE_COLS
 
   const style = (s: Seg) => ({
     ...(s.color ? { color: s.color } : {}),
@@ -366,20 +325,6 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const top = Math.floor(extra / 2)
     const blank = (n: number): Line[] => Array.from({ length: n }, () => BLANK)
     return { ...spec, lines: [...(head ? [head] : []), ...blank(top), ...rest, ...blank(extra - top)] }
-  }
-
-  // Cards stacked in one column `height` rows tall: the last one takes the rows left over.
-  const column = (specs: CardSpec[], height: number): RenderElement => {
-    const used = specs.slice(0, -1).reduce((n, x) => n + heightOf(x), 0)
-    return (
-      <Box flexDirection="column">
-        {specs.map((x, i) => {
-          const last = i === specs.length - 1
-          const spec = last ? stretched(x, height - used) : x
-          return card(spec, heightOf(spec)).node
-        })}
-      </Box>
-    )
   }
 
   // Cards on one row, as tall as the tallest; `center` sets each one's body in its middle.
@@ -581,191 +526,157 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return card({ w: cols, color: EVENT_COLOR, lines: [head, ...body] }, fill ? Math.max(room, body.length + 3) : body.length + 3)
   }
 
-  // ---- 主線 -------------------------------------------------------------
+  // ---- 統計 ---------------------------------------------------------------
 
   const m = view.main
   const warn = m.chain >= CHAIN_WARN
+  const rate = successRate(m.ok, m.fail)
+  const failHigh = rate !== undefined && 1 - rate >= FAIL_WARN
+  const pctText = rate === undefined ? '--' : `${Math.round(rate * 100)}%`
+  const statsRoles = view.dispatch.filter(
+    r => (r.role !== 'other' && r.role !== 'workflow') || r.running + r.done + r.failed > 0,
+  )
+  const sum = view.summary
+  const savedPct = sum.savedPct === undefined ? undefined : Math.round(sum.savedPct)
 
-  const mainSpec = (w: number): CardSpec => {
+  const chartLine = (cells: readonly Cell[]): Seg[] => cellsToSegs(cells)
+
+  // The ring's rows with lines of text two cells to its right, as many rows as the taller.
+  const ringBlock = (cells: Cell[][], text: Seg[][], inner: number): Seg[][] => {
+    const ringW = cells[0]?.length ?? 0
+    return Array.from({ length: Math.max(cells.length, text.length) }, (_, i) => {
+      const row = cells[i]
+      return [...(row ? chartLine(row) : [sp(ringW)]), sp(2), ...clip(text[i] ?? [], Math.max(0, inner - ringW - 2))]
+    })
+  }
+
+  const mainStatsSpec = (w: number, gauge: GaugeForm): CardSpec => {
     const inner = w - 4
     const family = nameFamilyOf(m.model)
-    const head: Seg[] = [title('主線', PRIMARY)]
-    if (m.model !== '') {
-      head.push({ t: ` · ${shortModel(m.model)}`, color: family ? FAMILY_COLOR[family] : FRAME })
-    }
+    const head: Seg[] = [title('MAIN LINE', PRIMARY)]
+    if (m.model !== '') head.push({ t: ` · ${shortModel(m.model)}`, color: family ? FAMILY_COLOR[family] : FRAME })
     const state: Seg = m.isRunning ? { t: '● 執行中', color: PRIMARY } : { t: '○ 閒置', color: FRAME }
-
-    const labelW = 8
-    const barW = Math.max(4, Math.min(CHAIN_BAR, inner - labelW - 1 - 1 - 5))
-    const fill = Math.min(barW, Math.round((Math.min(m.chain, CHAIN_WARN) / CHAIN_WARN) * barW))
-    const barColor = warn ? ERROR : PRIMARY
+    const rateSeg: Seg = { t: pctText, color: failHigh ? ERROR : BRIGHT, bold: true }
+    const counts: Seg[] = [
+      { t: 'OK ', color: FRAME },
+      { t: String(m.ok), color: PRIMARY, bold: true },
+      { t: ' · ', color: MUTED },
+      { t: 'FAIL ', color: FRAME },
+      { t: String(m.fail), color: m.fail > 0 ? ERROR : FRAME, bold: m.fail > 0 },
+    ]
+    const lit = Math.min(m.chain, CHAIN_WARN)
     const chain: Seg[] = [
-      { t: padCells('連續呼叫', labelW), color: FRAME },
-      sp(1),
-      { t: '█'.repeat(fill), color: barColor },
-      { t: '░'.repeat(barW - fill), color: MUTED },
-      sp(1),
-      warn
-        ? { t: `${m.chain}/${CHAIN_WARN}`, color: ERROR, bold: true }
-        : { t: `${m.chain}/${CHAIN_WARN}`, color: PRIMARY },
+      { t: 'CHAIN ', color: FRAME },
+      { t: '▰'.repeat(lit), color: warn ? ERROR : ACCENT },
+      { t: '▱'.repeat(CHAIN_WARN - lit), color: MUTED },
+      { t: ` ${m.chain}/${CHAIN_WARN}`, color: warn ? ERROR : PRIMARY, bold: warn },
     ]
-
-    const scale = Math.max(m.ok, m.fail, 1)
-    const outW = Math.max(4, Math.min(24, inner - labelW - 1 - 1 - 4))
-    const outcome = (label: string, n: number, color: string): Seg[] => [
-      { t: padCells(label, labelW), color },
-      sp(1),
-      { t: '█'.repeat(barLen(n, scale, outW)), color },
-      sp(1),
-      { t: String(n), color: BRIGHT, bold: true },
-    ]
-
     const last: Seg[] =
       m.lastTool === ''
-        ? [{ t: padCells('最近', labelW), color: FRAME }, sp(1), { t: '—', color: FRAME }]
+        ? [{ t: 'LAST ', color: FRAME }, { t: '--', color: FRAME }]
         : [
-            { t: padCells('最近', labelW), color: FRAME },
-            sp(1),
+            { t: 'LAST ', color: FRAME },
             { t: m.lastTool, color: TOOL_COLOR, bold: true },
             { t: m.lastDesc === '' ? '' : ` ${m.lastDesc}`, color: PRIMARY },
           ]
-
-    return {
-      w,
-      color: FRAME,
-      // the wide card sits beside the taller dispatch flow and spaces its parts out
-      lines: wide
-        ? [leftRight(head, [state], inner), BLANK, chain, BLANK, outcome('成功', m.ok, PRIMARY), outcome('失敗', m.fail, ERROR), BLANK, last]
-        : [leftRight(head, [state], inner), chain, outcome('成功', m.ok, PRIMARY), outcome('失敗', m.fail, ERROR), last],
+    const headLine = leftRight(head, [state], inner)
+    if (gauge === 'bar') {
+      const barW = Math.max(4, inner - cellWidth('SUCCESS ') - 1 - cellWidth(pctText))
+      const bar: Seg[] = [{ t: 'SUCCESS ', color: FRAME }, ...chartLine(gaugeBar(barW, rate ?? 0, failHigh)), sp(1), rateSeg]
+      return { w, color: FRAME, lines: [headLine, bar, counts, chain, last] }
     }
+    const success: Seg[] = [{ t: 'SUCCESS ', color: FRAME }, rateSeg]
+    const overlay: Overlay[] = gauge === 'big' ? [{ row: 3, text: pctText, color: failHigh ? ERROR : BRIGHT, bold: true }] : []
+    const cells = gaugeCells(gauge === 'big' ? RING_BIG : RING_SMALL, rate ?? 0, failHigh, overlay)
+    return { w, color: FRAME, lines: [headLine, ...ringBlock(cells, [success, counts, chain, last], inner)] }
   }
 
-  // ---- 派工流程 ---------------------------------------------------------
-
-  // `extra`: rows to grow by, kept as even space above and below the flow; an odd row
-  // lengthens the arrow from the main session.
-  const dispatchSpec = (w: number, extra = 0): CardSpec => {
+  // `cut`: rows for the roles, the last one saying how many more there are.
+  const dispatchStatsSpec = (w: number, cut: number | undefined): CardSpec => {
     const inner = w - 4
-    const roles = view.dispatch.filter(
-      r => (r.role !== 'other' && r.role !== 'workflow') || r.running + r.done + r.failed > 0,
-    )
-    const layout = roleLayout(roles, inner)
-    const boxH = 2 + 1 + (layout.format === 'two' ? 2 : 1)
-
-    const box = (r: RoleStat, bw: number) => {
+    const showBeats = inner >= BEATS_MIN_INNER
+    const beats = showBeats ? roleBeats(view.events, [...view.running, ...view.stale, ...view.finished], view.now) : new Map()
+    const nameW = Math.max(4, ...statsRoles.map(r => cellWidth(r.label)))
+    const numW = Math.max(1, ...statsRoles.map(r => String(r.done).length))
+    const maxDone = Math.max(1, ...statsRoles.map(r => r.done))
+    const barW = Math.max(3, inner - (2 + nameW + 1 + 1 + numW + 1 + ROLE_EXTRA_W + (showBeats ? 2 + ROLE_BEAT_W : 0)))
+    const extras = (r: RoleStat): Seg[] => {
+      const parts: Seg[] = []
+      if (r.running > 0) parts.push({ t: `▶${r.running}`, color: ACCENT, bold: true })
+      if (r.failed > 0) parts.push({ t: `${parts.length > 0 ? ' ' : ''}FAIL ${r.failed}`, color: ERROR })
+      const shown = clip(parts, ROLE_EXTRA_W)
+      return [...shown, sp(ROLE_EXTRA_W - segsWidth(shown))]
+    }
+    const row = (r: RoleStat): Seg[] => {
       const active = r.running > 0
-      const iw = bw - 2
-      const tone: Partial<Seg> = active ? { color: ACCENT, bold: true } : { color: FRAME }
-      const name: Seg[] = [{ t: r.label, bold: true, color: ROLE_COLOR[r.role] }]
-      if (r.failed > 0) name.push({ t: ` ✗ ${r.failed}`, color: ERROR })
-      const stats = roleStatLines(r, layout.format)
-      const stat: Seg[][] =
-        layout.format === 'two'
-          ? [
-              [{ t: stats[0] ?? '', ...tone }],
-              [{ t: stats[1] ?? '', color: r.done > 0 ? PRIMARY : FRAME }],
-            ]
-          : [[{ t: stats[0] ?? '', ...tone }]]
-      return (
-        <Box
-          key={`role-${r.role}`}
-          flexDirection="column"
-          width={bw}
-          height={boxH}
-          borderStyle="round"
-          borderColor={active ? ACCENT : MUTED}
-        >
-          {[name, ...stat].map(l => lineNode(centered(l, iw)))}
-        </Box>
-      )
+      const segs: Seg[] = [
+        active ? { t: '◆', color: ACCENT, bold: true } : { t: '◇', color: FRAME },
+        sp(1),
+        { t: padCells(r.label, nameW), color: ROLE_COLOR[r.role], bold: true },
+        sp(1),
+        ...chartLine(rampBar(barW, r.done / maxDone, BURN_RAMP)),
+        sp(1),
+        { t: padCells(String(r.done), numW, 'right'), color: r.done > 0 ? BRIGHT : FRAME, bold: r.done > 0 },
+        sp(1),
+        ...extras(r),
+      ]
+      if (showBeats) segs.push(sp(2), { t: brailleLine(beats.get(r.role) ?? [], ROLE_BEAT_W), color: active ? ACCENT : FRAME })
+      return segs
     }
-
-    const boxRows: RoleStat[][] = []
-    for (let i = 0; i < roles.length; i += layout.perRow) boxRows.push(roles.slice(i, i + layout.perRow))
-    const roleRows = {
-      h: boxH * boxRows.length,
-      node: (
-        <Box flexDirection="column">
-          {boxRows.map(row => (
-            <Box flexDirection="row" gap={1}>
-              {row.map((r, i) => box(r, layout.widths[i] ?? 4))}
-            </Box>
-          ))}
-        </Box>
-      ),
-    }
-
-    const arrow = centered([{ t: '▼', color: ACCENT }], inner)
-    const top = centered(
-      [{ t: m.model === '' ? '主 session' : `主 session · ${shortModel(m.model)}`, color: PRIMARY, bold: true }],
-      inner,
-    )
-    return {
-      w,
-      color: ACCENT,
-      lines: [
-        [title('派工流程', ACCENT)],
-        ...Array.from({ length: Math.floor(extra / 2) }, () => BLANK),
-        top,
-        ...(extra % 2 === 1 ? [centered([{ t: '│', color: ACCENT }], inner)] : []),
-        arrow,
-        roleRows,
-        arrow,
-        centered([{ t: '回主線', color: PRIMARY, bold: true }], inner),
-        ...Array.from({ length: Math.floor(extra / 2) }, () => BLANK),
-      ],
-    }
+    const shown = cut === undefined ? statsRoles : statsRoles.slice(0, Math.max(0, cut - 1))
+    const more: Seg[][] = cut === undefined ? [] : [[{ t: `… 還有 ${statsRoles.length - shown.length} 種`, color: FRAME }]]
+    return { w, color: ACCENT, lines: [[title('DISPATCH', ACCENT)], ...shown.map(row), ...more] }
   }
 
-  // ---- 模型、省錢 ---------------------------------------------------------
-
-  const sum = view.summary
-  const savedPct = sum.savedPct === undefined ? undefined : Math.round(sum.savedPct)
-  const savedBig: Seg =
-    savedPct === undefined
-      ? { t: '未計價', color: FRAME, bold: true }
-      : savedPct >= 0
-        ? { t: `省${savedPct}%`, color: BRIGHT, bold: true }
-        : { t: `多花${-savedPct}%`, color: ERROR, bold: true }
-  const savedSub: Seg =
-    savedPct === undefined
-      ? { t: '沒有可計價的模型', color: FRAME }
-      : { t: `≈${fmtUsd(sum.cost)} vs Opus ${fmtUsd(sum.opusCost)}`, color: PRIMARY }
-
-  // The shares with each family's dispatch count, a rule, then the savings: one line, or
-  // two when the figures do not fit beside the verdict.
-  const modelSpec = (w: number): CardSpec => {
+  const modelsStatsSpec = (w: number, gauge: GaugeForm): CardSpec => {
     const inner = w - 4
-    const labelW = 7
-    const pctW = 4
-    const countOf = (r: ModelShare) => `×${r.count}`
-    const countW = Math.max(0, ...view.models.map(r => cellWidth(countOf(r))))
-    const barW = Math.max(3, inner - labelW - countW - 2 - pctW)
-    const row = (r: ModelShare): Seg[] => {
-      const color = r.family ? FAMILY_COLOR[r.family] : FRAME
-      const head: Seg[] = [{ t: padCells(r.label, labelW), color }, { t: padCells(countOf(r), countW), color: FRAME }, sp(1)]
-      if (!r.family) return [...head, { t: '未計價', color: FRAME }]
-      const len = Math.max(1, barLen(r.share, 1, barW))
-      return [
-        ...head,
-        { t: '█'.repeat(len), color },
-        { t: '░'.repeat(barW - len), color: MUTED },
-        { t: padCells(shareLabel(r.share), pctW + 1, 'right'), color: PRIMARY },
-      ]
+    const head: Seg[] = [title('MODELS', PRIMARY)]
+    const verdict: Seg[] =
+      savedPct === undefined
+        ? [{ t: 'UNPRICED', color: FRAME, bold: true }]
+        : savedPct >= 0
+          ? [{ t: 'SAVED ', color: ACCENT, bold: true }, { t: `${savedPct}%`, color: BRIGHT, bold: true }]
+          : [{ t: 'OVER ', color: ERROR, bold: true }, { t: `${-savedPct}%`, color: ERROR, bold: true }]
+    const figures: Seg[] =
+      savedPct === undefined
+        ? [{ t: '沒有可計價的模型', color: FRAME }]
+        : [{ t: `≈${fmtUsd(sum.cost)} vs Opus ${fmtUsd(sum.opusCost)}`, color: PRIMARY }]
+    if (view.models.length === 0) return { w, color: FRAME, lines: [head, [{ t: '還沒有 subagent', color: FRAME }], verdict, figures] }
+    const colorOf = (r: ModelShare) => (r.family ? FAMILY_COLOR[r.family] : FRAME)
+    const labelW = Math.max(4, ...view.models.map(r => cellWidth(r.label)))
+    const countW = Math.max(0, ...view.models.map(r => cellWidth(`×${r.count}`)))
+    const shareW = 4
+    const share = (r: ModelShare): Seg =>
+      r.family ? { t: padCells(shareLabel(r.share), shareW, 'right'), color: PRIMARY } : { t: '未計價', color: FRAME }
+    if (gauge === 'bar') {
+      const barW = Math.max(3, inner - labelW - 1 - 1 - shareW - 1 - countW)
+      const rows = view.models.map((r): Seg[] => [
+        { t: padCells(r.label, labelW), color: colorOf(r), bold: true },
+        sp(1),
+        ...(r.family
+          ? chartLine(rampBar(barW, Math.max(r.share, 1 / (barW * 8)), [colorOf(r)]))
+          : [{ t: ' '.repeat(barW) }]),
+        sp(1),
+        share(r),
+        sp(1),
+        { t: padCells(`×${r.count}`, countW), color: FRAME },
+      ])
+      return { w, color: FRAME, lines: [head, ...rows, verdict, figures] }
     }
-    const body: Seg[][] =
-      view.models.length === 0 ? [[{ t: '還沒有 subagent', color: FRAME }]] : view.models.map(row)
-    const verdict: Seg[] = [title('省錢', ACCENT), sp(2), savedBig]
-    const figures: Seg[] = [savedSub]
-    const savings: Seg[][] =
-      segsWidth(verdict) + 1 + segsWidth(figures) <= inner
-        ? [leftRight(verdict, figures, inner)]
-        : [verdict, leftRight([], figures, inner)]
-    return {
-      w,
-      color: FRAME,
-      lines: [[title('模型', PRIMARY)], ...body, [{ t: '─'.repeat(inner), color: FRAME }], ...savings],
-    }
+    const parts: RingPart[] = view.models.filter(r => r.family).map(r => ({ share: r.share, color: colorOf(r) }))
+    const cells = partsGaugeCells(gauge === 'big' ? RING_BIG : RING_SMALL, parts, [])
+    const text: Seg[][] = [
+      ...view.models.map((r): Seg[] => [
+        { t: padCells(r.label, labelW), color: colorOf(r), bold: true },
+        sp(1),
+        share(r),
+        sp(1),
+        { t: `×${r.count}`, color: FRAME },
+      ]),
+      verdict,
+      figures,
+    ]
+    return { w, color: FRAME, lines: [head, ...ringBlock(cells, text, inner)] }
   }
 
   // ---- 子代理清單 ---------------------------------------------------------
@@ -1329,27 +1240,20 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   } else if (page === 'fleetDetail' && fleetSelected) {
     blocks.push(fleetDetailBlock(fleetSelected))
   } else {
-    if (wide) {
-      // main over model (the savings under its shares) beside the dispatch flow, one height
-      const side = Math.max(44, Math.min(64, cols - 115))
-      const leftSpecs = [mainSpec(side), modelSpec(side)]
-      const leftH = leftSpecs.reduce((n, x) => n + heightOf(x), 0)
-      const flow = dispatchSpec(cols - side - 1)
-      const right = dispatchSpec(cols - side - 1, Math.max(0, leftH - heightOf(flow)))
-      const tall = Math.max(leftH, heightOf(right))
-      blocks.push({
-        h: tall,
-        node: (
-          <Box flexDirection="row" gap={1}>
-            {column(leftSpecs, tall)}
-            {column([right], tall)}
-          </Box>
-        ),
-      })
+    const hint = view.summary.groups.length === 0
+    const plan = planStats({ cols, room: left() - (hint ? 1 : 0), roles: statsRoles.length, models: view.models.length })
+    const dispatchCard = dispatchStatsSpec(cols, plan.roleCut)
+    if (plan.mode === 'wide') {
+      const [lw = cols, rw = cols] = splitCols(cols, 2)
+      blocks.push(cardRow([mainStatsSpec(lw, plan.gauge), modelsStatsSpec(rw, plan.gauge)]), cardRow([dispatchCard]))
     } else {
-      blocks.push(cardRow([mainSpec(cols)]), cardRow([dispatchSpec(cols)]), cardRow([modelSpec(cols)]))
+      blocks.push(
+        cardRow([mainStatsSpec(cols, plan.gauge)]),
+        cardRow([dispatchCard]),
+        cardRow([modelsStatsSpec(cols, plan.gauge)]),
+      )
     }
-    if (view.summary.groups.length === 0) {
+    if (hint) {
       footer = <Text color={FRAME}>{fitCells('還沒有派工。派出 subagent 後這裡會即時顯示。', cols)}</Text>
     }
   }

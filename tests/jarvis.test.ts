@@ -75,6 +75,7 @@ import {
   reportArgv,
 } from '../hooks/herdr'
 import { register } from '../hooks/register'
+import { BURN_RAMP, GAUGE_RAMP } from '../hooks/fleetChart'
 
 const near = (got: number | undefined, want: number, digits: number) =>
   expect(got !== undefined && Math.abs(got - want) < 10 ** -digits).toBe(true)
@@ -537,8 +538,9 @@ describe('hooks', () => {
     expect(lines.some(l => /子代理.* 1 完成/.test(l) && !l.includes('✓1'))).toBe(true)
     await press($, 'tab-stats')
     const card = modelCard(await draw($))
-    expect(card.rows).toContainEqual(expect.stringMatching(/^Haiku +×1 +█+ +100%$/))
-    expect(card.rows).toContainEqual(expect.stringMatching(/^省錢  省\d+% +≈\$\S+ vs Opus \$\S+$/))
+    expect(card.rows).toContainEqual(expect.stringMatching(/Haiku +100% +×1/))
+    expect(card.rows).toContainEqual(expect.stringMatching(/SAVED \d+%/))
+    expect(card.rows).toContainEqual(expect.stringMatching(/≈\$\S+ vs Opus \$\S+/))
   })
 
   test('a failed reason shows ✗; unknown agents are ignored', async ($, on) => {
@@ -561,7 +563,7 @@ describe('hooks', () => {
     await press($, 'tab-stats')
 
     const lines = linesOf(await draw($))
-    expect(lines.some(l => l.includes('主 session · Opus 5.5'))).toBe(true)
+    expect(lines.some(l => l.includes('MAIN LINE · Opus 5.5'))).toBe(true)
   })
 
   test('main chain counts main tool calls, turns red at 4, resets', async ($, on) => {
@@ -569,8 +571,8 @@ describe('hooks', () => {
     await press($, 'tab-stats')
     const chain = async () => {
       const tree = await draw($)
-      const node = findText(tree, /^\d+\/4$/)
-      return { text: node ? textOf(node) : '', color: node?.props?.color }
+      const node = findText(tree, /^ ?\d+\/4$/)
+      return { text: node ? textOf(node).trim() : '', color: node?.props?.color }
     }
 
     for (let i = 0; i < 3; i += 1) await $.tool.call({ tool: 'Read', file_path: '/x' })
@@ -676,8 +678,9 @@ describe('hooks', () => {
     const tree = await draw($)
     // haiku 0.42 vs opus 16.8 by hand: 1 - 0.42 / 16.8 = 97.5% saved
     const card = modelCard(tree)
-    expect(card.rows.at(-1)).toMatch(/^省錢  省98% +≈\$0\.42 vs Opus \$16\.80$/)
-    expect(cellWidth(card.rows.at(-1) ?? '')).toBe(card.inner)
+    expect(card.rows).toContainEqual(expect.stringMatching(/SAVED 98%/))
+    expect(card.rows).toContainEqual(expect.stringMatching(/≈\$0\.42 vs Opus \$16\.80/))
+    for (const r of card.rows) expect(cellWidth(r)).toBeLessThanOrEqual(card.inner)
     expect(linesOf(tree).some(l => l.includes('API 價格'))).toBe(false)
   })
 
@@ -1579,18 +1582,18 @@ const rowWidths = (n: Node | string): number[] => {
   return kids.flatMap(rowWidths)
 }
 
-const TITLES = /^(主線|派工流程|模型|省錢|子代理|進行中|最近事件|事件流)$/
+const TITLES = /^(主線|派工流程|模型|省錢|子代理|進行中|最近事件|事件流|MAIN LINE|DISPATCH|MODELS)$/
 
 // the card titles each top-level block of the pane holds, in order: what shares a row
 const blockTitles = (tree: Node): string[][] =>
   (tree.children ?? []).map(k => (typeof k === 'string' ? [] : findAllText(k, TITLES).map(textOf)))
 
-// the rows of the card titled 模型, as drawn, and the cells inside its border
+// the rows of the card titled MODELS, as drawn, and the cells inside its border
 const modelCard = (tree: Node): { rows: string[]; inner: number } => {
   const find = (n: Node | string): Node | undefined => {
     if (typeof n === 'string') return undefined
     const first = n.children?.[0]
-    if (n.props?.borderStyle && first !== undefined && textOf(first) === '模型') return n
+    if (n.props?.borderStyle && first !== undefined && textOf(first) === 'MODELS') return n
     for (const k of n.children ?? []) {
       const hit = find(k)
       if (hit) return hit
@@ -1639,25 +1642,25 @@ describe('cockpit layout', () => {
     for (let i = 0; i < n; i += 1) await $.tool.call({ tool: 'Read', file_path: `/a/f${i}.ts` })
   }
 
-  test('wide stats: main over model and savings beside dispatch, n/200 on the log', async ($, on) => {
+  test('wide stats: main and models side by side over the dispatch card, n/200 on the log', async ($, on) => {
     engine(on)
     await callMain($, 3)
     await press($, 'tab-stats')
     const tree = await draw($, 40, WIDE_COLS + 40)
-    // the savings sit at the foot of the model card
-    expect(blockTitles(tree).slice(2, 3)).toEqual([['主線', '模型', '省錢', '派工流程']])
+    expect(blockTitles(tree).slice(2, 4)).toEqual([['MAIN LINE', 'MODELS'], ['DISPATCH']])
     expect(linesOf(tree).join('\n')).toContain('沒有可計價的模型')
     await press($, 'tab-log')
     expect(findText(await draw($, 40, WIDE_COLS + 40), /^3\/200 則$/)).toBeDefined()
   })
 
-  test('narrow stats: main, dispatch and model stack, the savings inside the model card', async ($, on) => {
+  test('mid and narrow stats: main, dispatch and models stack', async ($, on) => {
     engine(on)
     await press($, 'tab-stats')
-    for (const cols of [TINY_COLS - 4, WIDE_COLS - 30]) {
+    for (const cols of [TINY_COLS - 4, 80]) {
       const tree = await draw($, 60, cols)
-      expect(blockTitles(tree).slice(2, 5)).toEqual([['主線'], ['派工流程'], ['模型', '省錢']])
-      expect(modelCard(tree).rows.at(-1)).toMatch(/^省錢  未計價 +沒有可計價的模型$/)
+      expect(blockTitles(tree).slice(2, 5)).toEqual([['MAIN LINE'], ['DISPATCH'], ['MODELS']])
+      expect(modelCard(tree).rows).toContainEqual(expect.stringMatching(/UNPRICED/))
+      expect(modelCard(tree).rows).toContainEqual(expect.stringMatching(/沒有可計價的模型/))
     }
   })
 
@@ -1743,21 +1746,22 @@ describe('cockpit layout', () => {
     }
   })
 
-  test('the role boxes: running ones light up, other shows only when it has agents', async ($, on) => {
+  test('the role rows: running ones light up, other shows only when it has agents', async ($, on) => {
     engine(on, 'agent-20')
     await press($, 'tab-stats')
     let tree = await draw($, 40, 170)
-    expect(findAllText(tree, /^其他$/)).toHaveLength(0)
-    expect(findAllText(tree, /^執行中 0 · 完成 0$/)).toHaveLength(5)
+    expect(findAllText(tree, /^其他\s*$/)).toHaveLength(0)
+    expect(findAllText(tree, /^◇$/)).toHaveLength(5)
 
     await $.agent.spawn(spawnInput({ description: 'job', subagentType: 'worker' }))
     tree = await draw($, 40, 170)
-    expect(findText(tree, /^\s*執行中 1 · 完成 0\s*$/)?.props?.color).toBe(THEME.accent)
-    expect(findAllText(tree, /^\s*執行中 0 · 完成 0\s*$/)).toHaveLength(4)
+    expect(findText(tree, /^◆$/)?.props?.color).toBe(THEME.accent)
+    expect(findText(tree, /^▶1$/)?.props?.color).toBe(THEME.accent)
+    expect(findAllText(tree, /^◇$/)).toHaveLength(4)
 
-    // too narrow for one line: running and done count on two
-    tree = await draw($, 40, 100)
-    expect(findText(tree, /^\s*執行中 1\s*$/)?.props?.color).toBe(THEME.accent)
+    // narrow: the running count stays on the role's row
+    tree = await draw($, 40, 50)
+    expect(linesOf(tree).find(l => /◆ worker/.test(l))).toMatch(/▶1/)
 
     await $.turn.complete(complete('agent-20'))
     await $.agent.spawn(spawnInput({ description: 'other job', subagentType: 'general-purpose', id: 'tu-2' }))
@@ -1776,9 +1780,10 @@ describe('cockpit layout', () => {
     const tree = await draw($, 40, 140)
     expect(linesOf(tree).some(l => l.includes('Haiku×1'))).toBe(false)
     const blocks = (tree.children ?? []) as Node[]
-    expect(blocks).toHaveLength(3) // the title, the tab bar, then the stats row
-    expect(findText(blocks[2] as Node, /^模型$/)).toBeDefined()
-    expect(modelCard(tree).rows.at(-1)).toMatch(/^省錢  省98% +≈\$0\.42 vs Opus \$16\.80$/)
+    expect(blocks).toHaveLength(4) // the title, the tab bar, main beside models, the dispatch card
+    expect(findText(blocks[2] as Node, /^MODELS$/)).toBeDefined()
+    expect(modelCard(tree).rows).toContainEqual(expect.stringMatching(/SAVED 98%/))
+    expect(modelCard(tree).rows).toContainEqual(expect.stringMatching(/≈\$0\.42 vs Opus \$16\.80/))
   })
 })
 
@@ -1837,7 +1842,7 @@ describe('pages', () => {
     expect(findText(tree, /^1\/200 則$/)).toBeDefined()
 
     await hotkey($, 's')
-    expect(blockTitles(await draw($)).slice(2, 4)).toEqual([['主線'], ['派工流程']])
+    expect(blockTitles(await draw($)).slice(2, 4)).toEqual([['MAIN LINE'], ['DISPATCH']])
 
     await press($, 'tab-log')
     expect(blockTitles(await draw($)).slice(2)).toEqual([['事件流']])
@@ -1961,7 +1966,7 @@ describe('subagent list and detail page', () => {
     expect(text).toContain('ACTIVE')
     expect(findText(tree, /^⌜ MK-2 ⌝ $/)).toBeDefined()
     await hotkey($, 's')
-    expect(blockTitles(await draw($)).slice(2, 4)).toEqual([['主線'], ['派工流程']])
+    expect(blockTitles(await draw($)).slice(2, 4)).toEqual([['MAIN LINE'], ['DISPATCH']])
 
     // a click on the row does what its digit does
     await press($, 'tab-now')
@@ -2160,14 +2165,13 @@ describe('workflow grouping', () => {
 
     await press($, 'tab-stats')
     let tree = await draw($, 40, 170)
-    expect(findAllText(tree, /^workflow$/)).toHaveLength(1)
-    expect(findAllText(tree, /^其他$/)).toHaveLength(0)
-    expect(findText(tree, /^執行中 2$/)?.props?.color).toBe(THEME.accent)
-    expect(findText(tree, /^完成 1$/)?.props?.color).toBe(THEME.primary)
-
+    const rowOf = (name: string) => linesOf(tree).find(l => new RegExp(`[◆◇] ${name}\\b`).test(l)) ?? ''
+    expect(rowOf('workflow')).toMatch(/ 1 +▶2/)
+    expect(findAllText(tree, /^其他\s*$/)).toHaveLength(0)
+    expect(findText(tree, /^◆$/)?.props?.color).toBe(THEME.accent)
     await $.agent.spawn(spawnIn('plan it', 'Plan'))
     tree = await draw($, 40, 170)
-    expect(findAllText(tree, /^其他$/)).toHaveLength(1)
+    expect(findAllText(tree, /^其他\s*$/)).toHaveLength(1)
   })
 
   test('the detail page names the workflow run', async ($, on) => {
@@ -2219,49 +2223,41 @@ describe('in-flight card', () => {
 })
 
 describe('layout fixes', () => {
-  // every role box's rows, as the texts they hold, and the box's inner width
-  const roleBoxes = (n: Node | string, out: { key: string; inner: number; rows: string[] }[] = []) => {
-    if (typeof n === 'string') return out
-    const key = n.props?.['key']
-    if (typeof key === 'string' && key.startsWith('role-')) {
-      const rows = (n.children ?? []).map(k => (typeof k === 'string' ? k : textOf(k)))
-      out.push({ key, inner: Number(n.props?.['width']) - 2, rows })
-      return out
+  // the dispatch card's role rows, as drawn, and the cells inside its border
+  const roleRows = (tree: Node): { inner: number; rows: string[] } => {
+    const find = (n: Node | string): Node | undefined => {
+      if (typeof n === 'string') return undefined
+      if (n.props?.borderStyle && findText(n, /^DISPATCH$/)) return n
+      for (const k of n.children ?? []) {
+        const hit = find(k)
+        if (hit) return hit
+      }
+      return undefined
     }
-    for (const k of n.children ?? []) roleBoxes(k, out)
-    return out
+    const card = find(tree)
+    const rows = (card?.children ?? []).map(k => (typeof k === 'string' ? k : textOf(k)))
+    return { inner: Number(card?.props?.['width']) - 4, rows: rows.filter(r => /^[◆◇] /.test(r)) }
   }
 
-  test('role boxes hold their text whole at 64, 80, 90, 120 and 160 columns', async ($, on) => {
+  test('role rows hold their text whole at 64, 80, 90, 120 and 160 columns', async ($, on) => {
     engineAll(on)
     const types = ['Explore', 'clerk', 'worker', 'verifier', 'fork', 'Plan']
     for (const t of types) await $.agent.spawn(spawnIn(`a ${t}`, t))
     await $.agent.spawn(spawnIn('wf', 'general-purpose', { runId: WF, agentIndex: 1 }))
-    // failures widen the names: verifier ✗ 12
+    // failures widen the row: FAIL 12
     for (let i = 0; i < 12; i += 1) {
       await $.agent.spawn(spawnIn(`v ${i}`, 'verifier'))
       await $.turn.complete(complete(`agent-${8 + i}`, { reason: 'aborted', isAborted: true }))
     }
     await press($, 'tab-stats')
     for (const cols of [64, 80, 90, 120, 160]) {
-      const boxes = roleBoxes(await draw($, 60, cols))
-      expect(boxes.map(b => b.key)).toEqual([
-        'role-Explore',
-        'role-clerk',
-        'role-worker',
-        'role-verifier',
-        'role-fork',
-        'role-workflow',
-        'role-other',
-      ])
-      for (const b of boxes) {
-        for (const row of b.rows) {
-          expect(cellWidth(row)).toBeLessThanOrEqual(b.inner)
-          expect(row).not.toContain('…')
-        }
+      const { inner, rows } = roleRows(await draw($, 60, cols))
+      expect(rows.map(r => r.slice(2).split(/\s+/)[0])).toEqual(['Explore', 'clerk', 'worker', 'verifier', 'fork', 'workflow', '其他'])
+      for (const row of rows) {
+        expect(cellWidth(row)).toBeLessThanOrEqual(inner)
+        expect(row).not.toContain('…')
       }
-      const verifier = boxes.find(b => b.key === 'role-verifier')?.rows.map(r => r.trim())
-      expect(verifier?.[0]).toBe('verifier ✗ 12')
+      expect(rows.find(r => r.startsWith('◆ verifier'))).toMatch(/▶1 FAIL 12/)
     }
   })
 
@@ -2282,8 +2278,8 @@ describe('layout fixes', () => {
     await $.turn.complete(complete('agent-2', { usage: usage('claude-opus-5-5', 1_000_000, 100_000, 0, 0) }))
     await press($, 'tab-stats')
     const tree = await draw($, 40, 100)
-    const row = linesOf(tree).find(l => l.startsWith('模型')) ?? ''
-    expect(row).toMatch(/Haiku\s+×1\s+█░+\s+<1%/)
+    const row = linesOf(tree).find(l => /Haiku/.test(l)) ?? ''
+    expect(row).toMatch(/Haiku\s+<1%\s+×1/)
     expect(row).not.toMatch(/Haiku[^%]*\s0%/)
   })
 
@@ -2462,20 +2458,24 @@ describe('beauty pass 2', () => {
     expect(describeCall('Bash', { command: 'cd x && ls', description: 'List' })).toBe('List')
   })
 
-  test('narrow stats: the main card drops its spacer rows; wide keeps them', async ($, on) => {
+  test('the main card is ten rows with the big ring, seven with the small one or the bar', async ($, on) => {
     engineAll(on)
     await press($, 'tab-stats')
-    const mainRows = (tree: Node) => {
-      const card = findAllText(tree, /^主線$/)[0]
-      expect(card).toBeDefined()
-      const top = (tree.children ?? [])[2] as Node
-      const box = (top.children ?? [])[0] as Node
-      return (box.children ?? []).length
+    const mainHeight = (tree: Node) => {
+      const find = (n: Node | string): Node | undefined => {
+        if (typeof n === 'string') return undefined
+        if (n.props?.borderStyle && findText(n, /^MAIN LINE$/)) return n
+        for (const k of n.children ?? []) {
+          const hit = find(k)
+          if (hit) return hit
+        }
+        return undefined
+      }
+      return Number(find(tree)?.props?.['height'])
     }
-    expect(mainRows(await draw($, 60, 64))).toBe(5)
-    const wide = await draw($, 60, 160)
-    const left = (((wide.children ?? [])[2] as Node).children ?? [])[0] as Node
-    expect((((left.children ?? [])[0] as Node).children ?? []).length).toBe(8)
+    expect(mainHeight(await draw($, 60, 120))).toBe(10)
+    expect(mainHeight(await draw($, 60, 80))).toBe(7)
+    expect(mainHeight(await draw($, 60, 50))).toBe(7)
   })
 })
 
@@ -2496,23 +2496,16 @@ describe('beauty pass 3', () => {
     expect(findText(tree, /^已完成 \(2\)$/)).toBeDefined()
   })
 
-  test('wide stats: the dispatch flow sits in the middle of its taller column', async ($, on) => {
+  test('wide stats: the dispatch card spans the pane under main and models', async ($, on) => {
     engineAll(on)
     for (const t of ['Explore', 'clerk', 'worker', 'verifier', 'fork', 'Plan']) await $.agent.spawn(spawnIn(t, t))
     await press($, 'tab-stats')
-    for (const cols of [WIDE_COLS, 140, 160]) {
+    for (const cols of [100, 140, 160]) {
       const tree = await draw($, 60, cols)
-      const top = (tree.children ?? [])[2] as Node
-      const [left, right] = (top.children ?? []) as Node[]
-      const height = (col: Node | undefined) =>
-        ((col?.children ?? []) as Node[]).reduce((n, card) => n + Number(card.props?.['height']), 0)
-      expect(height(right)).toBe(height(left))
-      const card = ((right?.children ?? [])[0] ?? {}) as Node
-      const rows = (card.children ?? []).map(k => (typeof k === 'string' ? k : textOf(k)))
-      const blankAbove = rows.slice(1).findIndex(r => r.trim() !== '')
-      const blankBelow = [...rows].reverse().findIndex(r => r.trim() !== '')
-      expect(blankAbove).toBe(blankBelow)
-      expect(rows[rows.length - 1 - blankBelow]).toContain('回主線')
+      const dispatch = (tree.children ?? [])[3] as Node
+      const box = (dispatch.children ?? [])[0] as Node
+      expect(Number(box.props?.['width'])).toBe(cols)
+      expect(findText(box, /^DISPATCH$/)).toBeDefined()
     }
   })
 })
@@ -2576,34 +2569,22 @@ describe('beauty pass 4', () => {
     for (const cols of [30, 64, 90, 120]) {
       const tree = await draw($, 60, cols)
       expect(findText(tree, /^還沒有派工/)).toBeUndefined()
-      expect(linesOf(tree).some(l => /(Opus|Sonnet|Haiku)×\d/.test(l))).toBe(false) // no summary line
+      expect(linesOf(tree).some(l => /(Opus|Sonnet|Haiku)×\d/.test(l))).toBe(false)
       expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
       const { rows, inner } = modelCard(tree)
-      expect(rows[0]).toBe('模型')
-      const models = rows.slice(1, 4)
+      expect(rows[0]?.trim()).toBe('MODELS')
+      const models = rows
+        .map(r => r.match(/(Sonnet|Opus|Haiku)\s+\S*?\s*(\d+%|<1%)\s+(×\d+)/)?.slice(1))
+        .filter((x): x is string[] => x !== undefined)
       // highest cost first: eight Sonnet calls outspend four Opus ones
-      expect(models.map(r => r.match(/^(\S+) +(×\d+)/)?.slice(1))).toEqual([
+      expect(models.map(m => [m[0], m[2]])).toEqual([
         ['Sonnet', '×8'],
         ['Opus', '×4'],
         ['Haiku', '×8'],
       ])
-      for (const r of models) {
-        expect(r).toMatch(/^\S+ +×\d+ +█+░* +(\d+%|<1%)$/)
-        expect(cellWidth(r)).toBe(inner)
-      }
-      expect(new Set(models.map(r => r.indexOf('×'))).size).toBe(1)
-      expect(new Set(models.map(r => r.indexOf('█'))).size).toBe(1)
-      expect(rows[4]).toBe('─'.repeat(inner))
-      const savings = rows.slice(5)
-      if (cols >= 64) {
-        expect(savings).toHaveLength(1)
-        expect(savings[0]).toMatch(/^省錢  省\d+% +≈\$\S+ vs Opus \$\S+$/)
-      } else {
-        expect(savings).toHaveLength(2)
-        expect(savings[0]).toMatch(/^省錢  省\d+%$/)
-        expect(savings[1]).toMatch(/^ *≈\$\S+ vs Opus \$\S+$/)
-      }
-      for (const r of savings) expect(cellWidth(r)).toBeLessThanOrEqual(inner)
+      expect(rows.some(r => /SAVED \d+%/.test(r))).toBe(true)
+      expect(rows.some(r => /≈\$\S+ vs Opus \$\S+/.test(r))).toBe(true)
+      for (const r of rows) expect(cellWidth(r)).toBeLessThanOrEqual(inner)
     }
   })
 })
@@ -3292,9 +3273,12 @@ describe('live check 3', () => {
     ...JARVIS_PALETTE,
     ...Object.values(FAMILY_COLOR),
     ...Object.values(ROLE_COLOR),
+    ...GAUGE_RAMP,
+    ...BURN_RAMP,
   ])
-  // what may wear the dark blue: marks, tree lines, separators, rules, empty bar cells
-  const DECOR = /^\s*(?:[✓?]|[├└]─|·|[░─]+|── |⣿)\s*$/
+  // what may wear the dark blue: marks, tree lines, separators, rules, empty bar cells, the
+  // unlit ring and chain cells
+  const DECOR = /^\s*(?:[✓?]|[├└]─|·|[░─]+|── |⣿|[▀▄█]+|▱+)\s*$/
 
   // every drawn Text that shows something, as `text color`, where it is off the theme, dim,
   // dark blue without being a decoration, or sets a mark against a character; and any
@@ -3436,5 +3420,150 @@ describe('live check 3', () => {
       }
     }
 
+  })
+})
+
+describe('stats dashboard', () => {
+  // the rows the pane takes: a box of a set height takes it, a row the tallest of its
+  // children, a column their sum, a line one
+  const paneRows = (n: Node | string): number => {
+    if (typeof n === 'string' || n.type === 'Text') return 1
+    const h = Number(n.props?.['height'])
+    if (Number.isFinite(h) && h > 0) return h
+    const kids = (n.children ?? []).map(paneRows)
+    if (kids.length === 0) return 0
+    return n.props?.flexDirection === 'row' ? Math.max(...kids) : kids.reduce((a, b) => a + b, 0)
+  }
+
+  const callMain = async ($: Engine, n: number) => {
+    for (let i = 0; i < n; i += 1) await $.tool.call({ tool: 'Read', file_path: `/a/f${i}.ts` })
+  }
+
+  test('the main card: a success ring with OK and FAIL, the chain in segments, the last call', async ($, on) => {
+    engine(on)
+    await callMain($, 3)
+    await press($, 'tab-stats')
+    const tree = await draw($, 40, 120)
+    const text = linesOf(tree).join('\n')
+    expect(text).toMatch(/SUCCESS 100%/)
+    expect(text).toMatch(/OK 3 · FAIL 0/)
+    expect(text).toMatch(/CHAIN [▰▱]{4} \d\/4/)
+    expect(text).toMatch(/LAST \S+/)
+    // the big ring draws half blocks around the rate
+    expect(findAllText(tree, /[▀▄█]/).length).toBeGreaterThan(0)
+  })
+
+  test('the main card: a failure rate of 10% or more turns the rate red, ring or bar', async ($, on) => {
+    mock.clock(on, { now: 0 })
+    let fail = false
+    on('tool.call', async () => (fail ? { isError: true, result: 'x', text: 'x' } : { result: {} }) as never)
+    for (let i = 0; i < 2; i += 1) await $.tool.call({ tool: 'Read', file_path: `/a/f${i}.ts` })
+    fail = true
+    await $.tool.call({ tool: 'Bash', command: 'go test' })
+    await press($, 'tab-stats')
+    for (const cols of [120, 80, 50]) {
+      const tree = await draw($, 40, cols)
+      const rate = findAllText(tree, /^67%$/)
+      expect(rate.length).toBeGreaterThan(0)
+      for (const t of rate) expect(t.props?.color).toBe(THEME.error)
+    }
+  })
+
+  test('dispatch: a row a role, an amber ◆ while it runs, a gradient bar, the done count, ▶ running', async ($, on) => {
+    engineAll(on)
+    await $.agent.spawn(spawnIn('a', 'worker'))
+    await $.agent.spawn(spawnIn('b', 'verifier'))
+    await $.turn.complete(complete('agent-2'))
+    await press($, 'tab-stats')
+    const tree = await draw($, 40, 120)
+    const lines = linesOf(tree)
+    expect(lines.find(l => /◆ worker/.test(l))).toMatch(/ 0 +▶1/)
+    expect(lines.find(l => /◇ verifier/.test(l))).toMatch(/█+.* 1/)
+    const dispatch = (tree.children ?? []).find(k => typeof k !== 'string' && findText(k, /^DISPATCH$/)) as Node
+    for (const t of findAllText(dispatch, /^[█▏▎▍▌▋▊▉]+$/)) {
+      expect([...BURN_RAMP, ...Object.values(FAMILY_COLOR), ...GAUGE_RAMP, THEME.error]).toContain(t.props?.color)
+    }
+  })
+
+  test('dispatch: bars scale to the busiest role and burn along BURN_RAMP to its end', async ($, on) => {
+    engineAll(on)
+    for (const [i, t] of ['worker', 'worker', 'verifier'].entries()) {
+      await $.agent.spawn(spawnIn(`job ${i}`, t))
+      await $.turn.complete(complete(`agent-${i + 1}`))
+    }
+    await press($, 'tab-stats')
+    const tree = await draw($, 40, 120)
+    const dispatch = (tree.children ?? []).find(k => typeof k !== 'string' && findText(k, /^DISPATCH$/)) as Node
+    const card = (dispatch.children ?? [])[0] as Node
+    const lines = (card.children ?? []).map(k => (typeof k === 'string' ? k : textOf(k)))
+    const fill = (l: string | undefined) => (l?.match(/[█▏▎▍▌▋▊▉]/g) ?? []).length
+    const worker = lines.find(l => /^◇ worker/.test(l))
+    const verifier = lines.find(l => /^◇ verifier/.test(l))
+    expect(fill(verifier)).toBeGreaterThan(0)
+    expect(Math.abs(fill(worker) - 2 * fill(verifier))).toBeLessThanOrEqual(1)
+    const colors = findAllText(dispatch, /^[█▏▎▍▌▋▊▉]+$/).map(t => t.props?.color)
+    expect(colors).toContain(BURN_RAMP.at(-1))
+  })
+
+  test('dispatch: a role\'s last hour as a braille line when the card is wide enough, none when narrow', async ($, on) => {
+    engineAll(on)
+    await $.agent.spawn(spawnIn('a', 'worker'))
+    await $.tool.call({ tool: 'Grep', pattern: 'x', agentId: 'agent-1' } as never)
+    await press($, 'tab-stats')
+    const row = async (cols: number) => linesOf(await draw($, 40, cols)).find(l => /◆ worker/.test(l)) ?? ''
+    expect(await row(120)).toMatch(/[⠁-⣿]/)
+    expect(await row(50)).not.toMatch(/[⠀-⣿]/)
+  })
+
+  test('models: a ring in each family\'s color beside its share and count', async ($, on) => {
+    mock.clock(on, { now: 0 })
+    let n = 0
+    const models = ['claude-opus-5-5', 'claude-sonnet-5-5']
+    on('agent.spawn', async () => ({ model: models[n] ?? HAIKU, agentId: `agent-${(n += 1)}` }))
+    on('turn.complete', async (_$, e) => ({ text: e.answer }))
+    await $.agent.spawn(spawnIn('big', 'fork'))
+    await $.agent.spawn(spawnIn('small', 'worker'))
+    await $.turn.complete(complete('agent-1', { usage: usage('claude-opus-5-5', 100_000, 10_000, 0, 0) }))
+    await $.turn.complete(complete('agent-2', { usage: usage('claude-sonnet-5-5', 100_000, 10_000, 0, 0) }))
+    await press($, 'tab-stats')
+    const tree = await draw($, 40, 120)
+    const ring = findAllText(tree, /[▀▄█]/).map(t => t.props?.color)
+    expect(ring).toContain(FAMILY_COLOR.opus)
+    expect(ring).toContain(FAMILY_COLOR.sonnet)
+    expect(modelCard(tree).rows.some(r => /Opus\s+\d+%\s+×1/.test(r))).toBe(true)
+  })
+
+  test('short of rows: the rings become bars, then the roles are cut with … 還有 N 種; never past the pane', async ($, on) => {
+    engineAll(on)
+    await press($, 'tab-stats')
+    for (const [rows, cols] of [[20, 80], [16, 120], [14, 50], [30, 64]] as const) {
+      const tree = await draw($, rows, cols)
+      expect(linesOf(tree).length).toBeLessThanOrEqual(rows)
+      expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
+    }
+    expect(linesOf(await draw($, 20, 80)).some(l => /… 還有 \d+ 種/.test(l))).toBe(true)
+  })
+
+  test('busy stats at 40, 65 and 100 columns, short to tall: never past the width; from 24 rows, never past the rows', async ($, on) => {
+    mock.clock(on, { now: 0 })
+    const plan = ['claude-opus-5-5', 'claude-sonnet-5-5', HAIKU, 'mystery-model']
+    let n = 0
+    on('agent.spawn', async () => ({ model: plan[n % plan.length] ?? HAIKU, agentId: `agent-${(n += 1)}` }))
+    on('turn.complete', async (_$, e) => ({ text: e.answer }))
+    on('tool.call', async () => ({ result: {} }) as never)
+    const types = ['Explore', 'clerk', 'worker', 'verifier', 'fork', 'Plan']
+    for (const [i, t] of types.entries()) await $.agent.spawn(spawnIn(`job ${i}`, t))
+    for (const [i, model] of plan.entries()) {
+      await $.turn.complete(complete(`agent-${i + 1}`, { usage: usage(model, 10_000, 1000, 0, 0) }))
+    }
+    await $.tool.call({ tool: 'Grep', pattern: 'x', agentId: 'agent-5' } as never)
+    await press($, 'tab-stats')
+    for (const cols of [40, 65, 100]) {
+      for (const rows of [12, 16, 20, 24, 30, 40]) {
+        const tree = await draw($, rows, cols)
+        expect([cols, rows, Math.max(...rowWidths(tree))]).toEqual([cols, rows, Math.min(cols, Math.max(...rowWidths(tree)))])
+        if (rows >= 24) expect([cols, rows, paneRows(tree) <= rows]).toEqual([cols, rows, true])
+      }
+    }
   })
 })
