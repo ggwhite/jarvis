@@ -70,8 +70,8 @@ export const BADGE_FULL_COLS = 90
 const HOTKEY_W = 3
 // The most rows a page is drawn for, whatever the room says.
 const MAX_ROWS = 500
-// Cells a chrome Button adds around its label: `[ ` and ` ]`.
-const BUTTON_CHROME = 4
+// A plain Button draws its hotkey, a colon and a space before the label.
+const BUTTON_CHROME = 3
 // From this many columns an event's actor reads `MK-1`; below, `1`.
 const MK_ACTOR_COLS = 64
 
@@ -412,24 +412,23 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       }
     }
     if (page === 'log') actions.push({ key: 'pause', hotkey: 'p', label: ctx.paused ? '繼續' : '暫停', run: ctx.pause })
-    const full = (hotkey: string, label: string) => `${hotkey} ${label}`
     const tabText = (tab: (typeof TABS)[number], compact: boolean) =>
-      compact && tab.page !== page ? tab.hotkey : full(tab.hotkey, tab.label)
-    const actionText = (a: (typeof actions)[number], compact: boolean) => (compact ? a.hotkey : full(a.hotkey, a.label))
+      compact && tab.page !== page ? [...tab.label][0] ?? tab.label : tab.label
+    const actionText = (a: (typeof actions)[number], compact: boolean) => (compact ? [...a.label][0] ?? a.label : a.label)
     const widthOf = (tabsCompact: boolean, actionsCompact: boolean) =>
-      [...TABS.map(tab => tabText(tab, tabsCompact)), ...actions.map(a => actionText(a, actionsCompact))].reduce(
-        (n, text) => n + cellWidth(text) + BUTTON_CHROME,
-        0,
-      ) +
+      [
+        ...TABS.map(tab => tab.hotkey.length + BUTTON_CHROME - 1 + cellWidth(tabText(tab, tabsCompact))),
+        ...actions.map(a => a.hotkey.length + BUTTON_CHROME - 1 + cellWidth(actionText(a, actionsCompact))),
+      ].reduce((n, w) => n + w, 0) +
       (TABS.length + actions.length - 1)
-    // too wide for every label: the tabs not shown keep only their key, then the actions too
+    // too wide for every label: the tabs not shown keep only their first character, then the actions too
     const tabsCompact = widthOf(false, false) > cols
     const actionsCompact = tabsCompact && widthOf(true, false) > cols
     const nodes: RenderElement[] = TABS.map(tab => {
       const current = tab.page === page
       const text = tabText(tab, tabsCompact)
       return (
-        <Button key={`tab-${tab.page}`} hotkey={tab.hotkey} onPress={() => ctx.go(tab.page)}>
+        <Button key={`tab-${tab.page}`} plain hotkey={tab.hotkey} onPress={() => ctx.go(tab.page)}>
           {current ? (
             <Text bold inverse color={ACCENT}>
               {text}
@@ -442,7 +441,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     })
     for (const a of actions) {
       nodes.push(
-        <Button key={a.key} hotkey={a.hotkey} onPress={a.run}>
+        <Button key={a.key} plain hotkey={a.hotkey} onPress={a.run}>
           <Text color={FRAME}>{actionText(a, actionsCompact)}</Text>
         </Button>,
       )

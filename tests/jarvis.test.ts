@@ -1821,11 +1821,11 @@ describe('pages', () => {
 
     const ui = await mountPane($)
     const tabs = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('tab-'))
-    expect(tabs.map(b => [b.key, b.props['hotkey'], b.text])).toEqual([
-      ['tab-now', 'n', 'n 現況'],
-      ['tab-log', 'l', 'l 事件流'],
-      ['tab-stats', 's', 's 統計'],
-      ['tab-fleet', 'f', 'f 艦隊'],
+    expect(tabs.map(b => [b.key, b.props['hotkey'], b.props['plain'], b.text])).toEqual([
+      ['tab-now', 'n', true, '現況'],
+      ['tab-log', 'l', true, '事件流'],
+      ['tab-stats', 's', true, '統計'],
+      ['tab-fleet', 'f', true, '艦隊'],
     ])
     // the page shown is the marked tab: its label in the accent gold, the rest in the frame teal
     expect((await ui.find({ key: 'tab-now' }))?.children).toEqual([
@@ -2027,7 +2027,7 @@ describe('subagent list and detail page', () => {
     expect(linesOf(tree).join('\n')).not.toContain('short lived')
     expect(blockTitles(tree).slice(2, 5)).toEqual([['子代理'], ['進行中'], ['最近事件']])
     const ui = await mountPane($)
-    expect(findText(tree, /^n 現況$/)?.props?.color).toBe(THEME.accent)
+    expect(findText(tree, /^現況$/)?.props?.color).toBe(THEME.accent)
     expect(await ui.find({ key: 'back' })).toBeUndefined()
     await ui.unmount()
   })
@@ -2050,7 +2050,7 @@ describe('event stream pause', () => {
     // recording goes on: the count is whole
     expect(findText(tree, /^5\/200 則$/)).toBeDefined()
     let ui = await mountPane($)
-    expect((await ui.find({ key: 'pause' }))?.text).toBe('p 繼續')
+    expect((await ui.find({ key: 'pause' }))?.text).toBe('繼續')
     await ui.unmount()
 
     // the other pages are live while the stream is paused
@@ -2065,7 +2065,7 @@ describe('event stream pause', () => {
     expect(text).toContain('e.ts')
     expect(findText(tree, /已暫停/)).toBeUndefined()
     ui = await mountPane($)
-    expect((await ui.find({ key: 'pause' }))?.text).toBe('p 暫停')
+    expect((await ui.find({ key: 'pause' }))?.text).toBe('暫停')
     await ui.unmount()
   })
 

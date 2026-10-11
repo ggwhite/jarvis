@@ -854,10 +854,13 @@ const rowWidths = (n: Node | string): number[] => {
   return kids.flatMap(rowWidths)
 }
 
-// the tab bar's width: each chrome Button is `[ ` + label + ` ]`, one cell apart
+const tabBarButtons = (tree: Node): Node[] =>
+  buttons(tree).filter(b => /^(tab-|back$|pause$|jump$)/.test(String(b.props?.['key'] ?? '')))
+
+// the tab bar's width: each plain Button is `N: ` + label, one cell apart
 const tabBarWidth = (tree: Node): number => {
-  const tabs = buttons(tree).filter(b => /^(tab-|back$|pause$|jump$)/.test(String(b.props?.['key'] ?? '')))
-  return tabs.reduce((n, b) => n + cellWidth(textOf(b)) + 4, 0) + Math.max(0, tabs.length - 1)
+  const tabs = tabBarButtons(tree)
+  return tabs.reduce((n, b) => n + cellWidth(`${String(b.props?.['hotkey'])}: `) + cellWidth(textOf(b)), 0) + Math.max(0, tabs.length - 1)
 }
 
 const draw = async ($: Engine, rows = 40, cols = 80): Promise<Node> =>
@@ -979,7 +982,9 @@ describe('fleet page', () => {
     await openFleet($, clock, 40, 40)
     for (const key of ['tab-now', 'tab-log', 'tab-stats', 'tab-fleet', 'suit-1']) {
       await press($, key, 40, 40)
-      expect(tabBarWidth(await draw($, 40, 40))).toBeLessThanOrEqual(40)
+      const tree = await draw($, 40, 40)
+      expect(tabBarWidth(tree)).toBeLessThanOrEqual(40)
+      for (const b of tabBarButtons(tree)) expect([b.props?.['key'], b.props?.['plain']]).toEqual([b.props?.['key'], true])
     }
   })
 
