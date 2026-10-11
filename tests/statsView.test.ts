@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { JarvisAgent, JarvisEvent } from '../types'
 import { BEAT_MS, BEATS } from '../hooks/fleet'
+import { BIG_ROWS } from '../hooks/fleetChart'
 import { MAIN_ACTOR } from '../hooks/jarvis'
 import {
   FAIL_WARN,
@@ -62,37 +63,38 @@ describe('stats figures', () => {
 })
 
 describe('stats plan', () => {
-  test('card heights: main 10 with the big ring, 7 otherwise; models fit their rows; dispatch a row a role', () => {
-    expect(mainRows('big')).toBe(10)
-    expect(mainRows('small')).toBe(7)
-    expect(mainRows('bar')).toBe(7)
-    expect(modelsRows('big', 3)).toBe(10)
-    expect(modelsRows('small', 3)).toBe(8)
-    expect(modelsRows('bar', 3)).toBe(8)
-    expect(modelsRows('small', 0)).toBe(6)
+  test('main card: border, head and the big digits; narrow puts the readouts under', () => {
+    expect(mainRows('wide')).toBe(2 + 1 + BIG_ROWS)
+    expect(mainRows('mid')).toBe(2 + 1 + BIG_ROWS)
+    expect(mainRows('narrow')).toBe(2 + 1 + BIG_ROWS + 3)
+  })
+
+  test('models card: border, head, the bar, a line a model and the two savings lines; dispatch a row a role', () => {
+    expect(modelsRows(0)).toBe(6)
+    expect(modelsRows(3)).toBe(2 + 1 + 1 + 3 + 2)
     expect(dispatchRows(5)).toBe(8)
   })
 
-  test('each width picks its ring: big when wide, small at mid, a bar when narrow', () => {
+  test('each width picks its mode: main beside models when wide, stacked at mid and narrow', () => {
     const s = { room: 60, roles: 5, models: 3 }
-    expect(planStats({ ...s, cols: 120 })).toEqual({ mode: 'wide', gauge: 'big', height: 18 })
-    expect(planStats({ ...s, cols: 80 })).toEqual({ mode: 'mid', gauge: 'small', height: 23 })
-    expect(planStats({ ...s, cols: 50 })).toEqual({ mode: 'narrow', gauge: 'bar', height: 23 })
+    expect(planStats({ ...s, cols: 120 })).toEqual({ mode: 'wide', height: 17 })
+    expect(planStats({ ...s, cols: 80 })).toEqual({ mode: 'mid', height: 23 })
+    expect(planStats({ ...s, cols: 50 })).toEqual({ mode: 'narrow', height: 26 })
   })
 
-  test('short of rows the ring shrinks, then the roles are cut, the cut counted in rows', () => {
-    expect(planStats({ cols: 120, room: 16, roles: 5, models: 3 })).toEqual({ mode: 'wide', gauge: 'small', height: 16 })
-    expect(planStats({ cols: 80, room: 20, roles: 5, models: 3 })).toEqual({
-      mode: 'mid',
-      gauge: 'bar',
-      height: 20,
-      roleCut: 2,
-    })
+  test('plan: fits whole, else cuts the roles, the cut counted in rows', () => {
+    const s = { cols: 80, room: 100, roles: 6, models: 2 }
+    expect(planStats(s).roleCut).toBeUndefined()
+    const tight = planStats({ ...s, room: statsHeight('mid', s, 0) + 2 })
+    expect(tight.roleCut).toBe(2)
+    expect(planStats({ cols: 120, room: 16, roles: 5, models: 3 })).toEqual({ mode: 'wide', height: 16, roleCut: 4 })
+    expect(planStats({ cols: 80, room: 20, roles: 5, models: 3 })).toEqual({ mode: 'mid', height: 20, roleCut: 2 })
   })
 
   test('a single role is never cut: short of rows it keeps its own row, counted in the height', () => {
-    expect(planStats({ cols: 80, room: 10, roles: 1, models: 3 })).toEqual({ mode: 'mid', gauge: 'bar', height: 19 })
-    expect(planStats({ cols: 80, room: 10, roles: 0, models: 3 })).toEqual({ mode: 'mid', gauge: 'bar', height: 18 })
+    expect(planStats({ cols: 80, room: 5, roles: 1, models: 2 }).roleCut).toBeUndefined()
+    expect(planStats({ cols: 80, room: 10, roles: 1, models: 3 })).toEqual({ mode: 'mid', height: 19 })
+    expect(planStats({ cols: 80, room: 10, roles: 0, models: 3 })).toEqual({ mode: 'mid', height: 18 })
   })
 
   test('whatever the size, a plan that fits stays inside the room', () => {
@@ -102,7 +104,7 @@ describe('stats plan', () => {
           for (const models of [0, 1, 3]) {
             const s = { cols, room, roles, models }
             const p = planStats(s)
-            const floor = statsHeight(p.mode, p.gauge, s, 0) + 1
+            const floor = statsHeight(p.mode, s, 0) + 1
             if (p.roleCut === undefined || room >= floor) expect([s, p.height <= room]).toEqual([s, true])
             if (p.roleCut !== undefined) expect(p.roleCut).toBeLessThan(roles)
           }

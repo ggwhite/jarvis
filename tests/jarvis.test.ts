@@ -80,7 +80,7 @@ import {
   reportArgv,
 } from '../hooks/herdr'
 import { register } from '../hooks/register'
-import { BURN_RAMP, GAUGE_RAMP } from '../hooks/fleetChart'
+import { BIG_ROWS, BURN_RAMP, GAUGE_RAMP } from '../hooks/fleetChart'
 import { SUIT_BLOCK_ROWS, SUIT_ROWS } from '../hooks/suit'
 
 const near = (got: number | undefined, want: number, digits: number) =>
@@ -1588,6 +1588,23 @@ const rowWidths = (n: Node | string): number[] => {
   return kids.flatMap(rowWidths)
 }
 
+// the bordered card whose first line reads `title`
+const cardOf = (tree: Node, title: RegExp): Node => {
+  const find = (n: Node | string): Node | undefined => {
+    if (typeof n === 'string') return undefined
+    const first = n.children?.[0]
+    if (n.props?.borderStyle && first !== undefined && title.test(textOf(first))) return n
+    for (const k of n.children ?? []) {
+      const hit = find(k)
+      if (hit) return hit
+    }
+    return undefined
+  }
+  return find(tree) ?? {}
+}
+
+const mainCard = (tree: Node): Node => cardOf(tree, /^MAIN LINE/)
+
 const TITLES = /^(主線|派工流程|模型|省錢|子代理|進行中|最近事件|事件流|MAIN LINE|DISPATCH|MODELS)$/
 
 // the card titles each top-level block of the pane holds, in order: what shares a row
@@ -2482,7 +2499,7 @@ describe('beauty pass 2', () => {
     expect(describeCall('Bash', { command: 'cd x && ls', description: 'List' })).toBe('List')
   })
 
-  test('the main card is ten rows with the big ring, seven with the small one or the bar', async ($, on) => {
+  test('the main card is six rows beside the readouts, nine with them under the digits when narrow', async ($, on) => {
     engineAll(on)
     await press($, 'tab-stats')
     const mainHeight = (tree: Node) => {
@@ -2497,9 +2514,9 @@ describe('beauty pass 2', () => {
       }
       return Number(find(tree)?.props?.['height'])
     }
-    expect(mainHeight(await draw($, 60, 120))).toBe(10)
-    expect(mainHeight(await draw($, 60, 80))).toBe(7)
-    expect(mainHeight(await draw($, 60, 50))).toBe(7)
+    expect(mainHeight(await draw($, 60, 120))).toBe(6)
+    expect(mainHeight(await draw($, 60, 80))).toBe(6)
+    expect(mainHeight(await draw($, 60, 50))).toBe(9)
   })
 })
 
@@ -3476,21 +3493,23 @@ describe('stats dashboard', () => {
     for (let i = 0; i < n; i += 1) await $.tool.call({ tool: 'Read', file_path: `/a/f${i}.ts` })
   }
 
-  test('the main card: a success ring with OK and FAIL, the chain in segments, the last call', async ($, on) => {
+  test('the main card: the rate in big digits beside OK and FAIL, the chain in segments, the last call', async ($, on) => {
     engine(on)
     await callMain($, 3)
     await press($, 'tab-stats')
     const tree = await draw($, 40, 120)
     const text = linesOf(tree).join('\n')
-    expect(text).toMatch(/SUCCESS 100%/)
-    expect(text).toMatch(/OK 3 · FAIL 0/)
+    expect(text).toMatch(/OK 3/)
+    expect(text).toMatch(/FAIL 0/)
+    expect(text).toMatch(/SUCCESS RATE/)
     expect(text).toMatch(/CHAIN [▰▱]{4} \d\/4/)
     expect(text).toMatch(/LAST \S+/)
-    // the big ring draws half blocks around the rate
-    expect(findAllText(tree, /[▀▄█]/).length).toBeGreaterThan(0)
+    // the rate drawn in half blocks: three rows, one color
+    const digits = findAllText(mainCard(tree), /[▀▄█]/)
+    expect(digits.length).toBeGreaterThan(0)
+    for (const t of digits) expect(t.props?.color).toBe(THEME.primary)
   })
-
-  test('the main card: a failure rate of 10% or more turns the rate red, ring or bar', async ($, on) => {
+  test('the main card: a failure rate of 10% or more turns the digits red, at every width', async ($, on) => {
     mock.clock(on, { now: 0 })
     let fail = false
     on('tool.call', async () => (fail ? { isError: true, result: 'x', text: 'x' } : { result: {} }) as never)
@@ -3500,12 +3519,11 @@ describe('stats dashboard', () => {
     await press($, 'tab-stats')
     for (const cols of [120, 80, 50]) {
       const tree = await draw($, 40, cols)
-      const rate = findAllText(tree, /^67%$/)
-      expect(rate.length).toBeGreaterThan(0)
-      for (const t of rate) expect(t.props?.color).toBe(THEME.error)
+      const digits = findAllText(mainCard(tree), /[▀▄█]/)
+      expect([cols, digits.length > 0]).toEqual([cols, true])
+      for (const t of digits) expect([cols, t.props?.color]).toEqual([cols, THEME.error])
     }
   })
-
   test('dispatch: a row a role, an amber ◆ while it runs, a gradient bar, the done count, ▶ running', async ($, on) => {
     engineAll(on)
     await $.agent.spawn(spawnIn('a', 'worker'))
@@ -3552,7 +3570,7 @@ describe('stats dashboard', () => {
     expect(await row(50)).not.toMatch(/[⠀-⣿]/)
   })
 
-  test('models: a ring in each family\'s color beside its share and count', async ($, on) => {
+  test('models: one stacked bar in each family\'s color over its share and count', async ($, on) => {
     mock.clock(on, { now: 0 })
     let n = 0
     const models = ['claude-opus-5-5', 'claude-sonnet-5-5']
@@ -3564,13 +3582,12 @@ describe('stats dashboard', () => {
     await $.turn.complete(complete('agent-2', { usage: usage('claude-sonnet-5-5', 100_000, 10_000, 0, 0) }))
     await press($, 'tab-stats')
     const tree = await draw($, 40, 120)
-    const ring = findAllText(tree, /[▀▄█]/).map(t => t.props?.color)
-    expect(ring).toContain(FAMILY_COLOR.opus)
-    expect(ring).toContain(FAMILY_COLOR.sonnet)
+    const bar = findAllText(cardOf(tree, /^MODELS$/), /[█]/).map(t => t.props?.color)
+    expect(bar).toContain(FAMILY_COLOR.opus)
+    expect(bar).toContain(FAMILY_COLOR.sonnet)
     expect(modelCard(tree).rows.some(r => /Opus\s+\d+%\s+×1/.test(r))).toBe(true)
   })
-
-  test('model bars fill the card\'s inside exactly, an unpriced model\'s 未計價 and its ×N kept whole', async ($, on) => {
+  test('the model bar fills the card\'s inside exactly, an unpriced model\'s 未計價 and its ×N kept whole', async ($, on) => {
     mock.clock(on, { now: 0 })
     const plan = ['claude-opus-5-5', 'claude-sonnet-5-5', HAIKU, 'mystery-model']
     let n = 0
@@ -3583,16 +3600,15 @@ describe('stats dashboard', () => {
     await press($, 'tab-stats')
     for (const [cols, rows] of [[40, 60], [44, 60], [64, 20]] as const) {
       const { rows: lines, inner } = modelCard(await draw($, rows, cols))
-      const bars = lines.filter(l => /^(Opus|Sonnet|Haiku|其他)/.test(l))
-      expect([cols, bars.length]).toEqual([cols, 4])
-      expect([cols, bars.filter(l => /[█▏▎▍▌▋▊▉]/.test(l)).length]).toEqual([cols, 3])
-      for (const l of bars) expect([cols, l, cellWidth(l)]).toEqual([cols, l, inner])
-      for (const l of bars) expect(l).toMatch(/ ×1$/)
-      expect(bars.find(l => l.startsWith('其他'))).toMatch(/ 未計價 ×1$/)
+      expect([cols, lines[1] ?? '']).toEqual([cols, '█'.repeat(inner)])
+      const named = lines.filter(l => /^(Opus|Sonnet|Haiku|其他)/.test(l))
+      expect([cols, named.length]).toEqual([cols, 4])
+      for (const l of named) expect([cols, l, cellWidth(l) <= inner]).toEqual([cols, l, true])
+      for (const l of named) expect(l).toMatch(/ ×1$/)
+      expect(named.find(l => l.startsWith('其他'))).toMatch(/ 未計價 ×1$/)
     }
   })
-
-  test('short of rows: the rings become bars, then the roles are cut with … 還有 N 種; never past the pane', async ($, on) => {
+  test('short of rows: the roles are cut with … 還有 N 種; never past the pane', async ($, on) => {
     engineAll(on)
     await press($, 'tab-stats')
     for (const [rows, cols] of [[20, 80], [16, 120], [14, 50], [30, 64]] as const) {
@@ -3634,7 +3650,7 @@ describe('stats dashboard', () => {
     }
   })
 
-  test('busy stats at 40, 65 and 100 columns, short to tall: never past the width; from 24 rows, never past the rows', async ($, on) => {
+  test('busy stats at 40, 65 and 100 columns, short to tall: never past the width; from 24 rows (25 when narrow, the readouts under the digits), never past the rows', async ($, on) => {
     mock.clock(on, { now: 0 })
     const plan = ['claude-opus-5-5', 'claude-sonnet-5-5', HAIKU, 'mystery-model']
     let n = 0
@@ -3649,12 +3665,154 @@ describe('stats dashboard', () => {
     await $.tool.call({ tool: 'Grep', pattern: 'x', agentId: 'agent-5' } as never)
     await press($, 'tab-stats')
     for (const cols of [40, 65, 100]) {
-      for (const rows of [12, 16, 20, 24, 30, 40]) {
+      for (const rows of [12, 16, 20, 24, 25, 30, 40]) {
         const tree = await draw($, rows, cols)
         expect([cols, rows, Math.max(...rowWidths(tree))]).toEqual([cols, rows, Math.min(cols, Math.max(...rowWidths(tree)))])
-        if (rows >= 24) expect([cols, rows, paneRows(tree) <= rows]).toEqual([cols, rows, true])
+        if (rows >= (cols < 64 ? 25 : 24)) expect([cols, rows, paneRows(tree) <= rows]).toEqual([cols, rows, true])
       }
     }
+  })
+})
+
+describe('stats HUD', () => {
+  // spawns one agent per `[type, model]`, each completed with that model's usage
+  const fleetOf = async ($: Engine, on: On, crew: readonly (readonly [string, string])[]) => {
+    mock.clock(on, { now: 0 })
+    let n = 0
+    on('agent.spawn', async () => ({ model: crew[n]?.[1] ?? HAIKU, agentId: `agent-${(n += 1)}` }))
+    on('turn.complete', async (_$, e) => ({ text: e.answer }))
+    on('tool.call', async () => ({ result: {} }) as never)
+    for (const [i, [type, model]] of crew.entries()) {
+      await $.agent.spawn(spawnIn(`job ${i}`, type))
+      await $.turn.complete(complete(`agent-${i + 1}`, { usage: usage(model, 10_000, 1000, 0, 0) }))
+    }
+  }
+
+  test('main line: the rate in big digits, OK/FAIL, CHAIN, TOP and LAST beside', async ($, on) => {
+    engine(on)
+    await start($)
+    for (let i = 0; i < 3; i++) await $.tool.call({ tool: 'Bash', command: 'ls' } as never)
+    await $.tool.call({ tool: 'Read', file_path: '/a' } as never)
+    await press($, 'tab-stats', 40, 80)
+    const tree = await draw($, 40, 80)
+    const text = linesOf(tree).join('\n')
+    expect(text).toContain('OK 4')
+    expect(text).toContain('SUCCESS RATE')
+    expect(text).toMatch(/TOP Bash 3 · Read 1/)
+    expect(text).toMatch(/LAST Read/)
+    expect(text).not.toMatch(/SUCCESS 100%/)
+    // the digits sit left of the readouts, one row each
+    const rows = (mainCard(tree).children ?? []).map(textOf)
+    expect(rows.find(r => r.includes('OK 4'))).toMatch(/^[▀▄█ ]+ {2}OK 4/)
+    expect(rows.find(r => r.includes('FAIL 0'))).toMatch(/^[▀▄█ ]+ {2}FAIL 0/)
+    expect(rows.find(r => r.includes('SUCCESS RATE'))).toMatch(/^[▀▄█ ]+ {2}SUCCESS RATE/)
+  })
+
+  test('main line, narrow: the readouts under the digits', async ($, on) => {
+    engine(on)
+    await start($)
+    await $.tool.call({ tool: 'Bash', command: 'ls' } as never)
+    await press($, 'tab-stats', 40, 50)
+    const rows = (mainCard(await draw($, 40, 50)).children ?? []).map(textOf)
+    const digitRows = rows.map((r, i) => (/[▀▄█]/.test(r) ? i : -1)).filter(i => i >= 0)
+    expect(digitRows).toEqual([1, 2, 3])
+    expect(rows[4]).toMatch(/^OK 1 +CHAIN/)
+    expect(rows[5]).toMatch(/^FAIL 0 +TOP Bash 1/)
+    expect(rows[6]).toMatch(/^SUCCESS RATE {2}LAST Bash/)
+  })
+
+  test('no ring is drawn on the stats page; the model mix is one stacked bar', async ($, on) => {
+    await fleetOf($, on, [
+      ['fork', 'claude-opus-5-5'],
+      ['fork', 'claude-opus-5-5'],
+      ['worker', SONNET],
+    ])
+    await $.tool.call({ tool: 'Read', file_path: '/a' } as never)
+    await press($, 'tab-stats')
+    for (const cols of [120, 80, 50]) {
+      const tree = await draw($, 40, cols)
+      const { rows, inner } = modelCard(tree)
+      expect([cols, rows[1]]).toEqual([cols, '█'.repeat(inner)])
+      const models = cardOf(tree, /^MODELS$/)
+      const barColors = findAllText(models, /█/).map(t => t.props?.color)
+      expect([cols, [...new Set(barColors)].sort()]).toEqual([cols, [FAMILY_COLOR.opus, FAMILY_COLOR.sonnet].sort()])
+      // the bar is the model card's only blocks: no ring beside the model lines
+      expect([cols, rows.slice(2).filter(r => /[▀▄█]/.test(r))]).toEqual([cols, []])
+      // the main card's blocks are the digits alone: three rows of one color, no ring track
+      const main = (mainCard(tree).children ?? []).map(textOf)
+      expect([cols, main.filter(r => /[▀▄█]/.test(r)).length]).toEqual([cols, BIG_ROWS])
+      for (const t of findAllText(mainCard(tree), /[▀▄█]/)) expect([cols, t.props?.color]).toEqual([cols, THEME.primary])
+    }
+  })
+
+  test('dispatch rows name each role\'s model, + when mixed', async ($, on) => {
+    await fleetOf($, on, [
+      ['verifier', SONNET],
+      ['verifier', SONNET],
+      ['verifier', 'claude-opus-5-5'],
+      ['worker', 'claude-opus-5-5'],
+    ])
+    await press($, 'tab-stats')
+    for (const cols of [120, 80, 50]) {
+      const tree = await draw($, 40, cols)
+      const dispatch = cardOf(tree, /^DISPATCH$/)
+      const rows = (dispatch.children ?? []).map(textOf)
+      expect([cols, rows.find(r => /^◇ verifier/.test(r))]).toEqual([cols, expect.stringMatching(/^◇ verifier\s+Sonnet\+ /)])
+      const worker = rows.find(r => /^◇ worker/.test(r)) ?? ''
+      expect([cols, worker]).toEqual([cols, expect.stringMatching(/^◇ worker\s+Opus /)])
+      expect(worker).not.toContain('+')
+      expect(findText(dispatch, /^Sonnet\+\s*$/)?.props?.color).toBe(FAMILY_COLOR.sonnet)
+      expect(findText(dispatch, /^Opus\s*$/)?.props?.color).toBe(FAMILY_COLOR.opus)
+      // a role nobody ran keeps the column blank, the bars still aligned
+      const explore = rows.find(r => /^◇ Explore/.test(r)) ?? ''
+      expect([cols, explore.indexOf('█') === -1 || explore.search(/[█▏▎▍▌▋▊▉░]/) === worker.search(/[█▏▎▍▌▋▊▉░]/)]).toEqual([cols, true])
+      for (const r of rows) expect([cols, r, cellWidth(r) <= cols - 4]).toEqual([cols, r, true])
+    }
+  })
+
+  test('dispatch without any subagent leaves the model column out', async ($, on) => {
+    engineAll(on)
+    await press($, 'tab-stats')
+    const rows = (cardOf(await draw($, 40, 120), /^DISPATCH$/).children ?? []).map(textOf)
+    const worker = rows.find(r => /^◇ worker/.test(r)) ?? ''
+    expect(worker).not.toMatch(/Opus|Sonnet|Haiku|Fable/)
+    // the bar right after the name column and one blank: no empty model column between
+    const nameW = Math.max(4, ...rows.slice(1).map(r => cellWidth(r.split(' ')[1] ?? '')))
+    expect(worker.search(/[█▏▎▍▌▋▊▉░]/)).toBe(2 + nameW + 1)
+  })
+
+  test('long and missing main tools stay inside the card', async ($, on) => {
+    engine(on)
+    await start($)
+    await press($, 'tab-stats', 40, 64)
+    const text = linesOf(await draw($, 40, 64)).join('\n')
+    expect(text).toMatch(/TOP --/)
+    expect(text).toMatch(/LAST --/)
+    await $.tool.call({ tool: 'mcp__memory__memory_store', input: {} } as never)
+    for (const cols of [40, 64, 100]) {
+      await press($, 'tab-stats', 40, cols)
+      const tree = await draw($, 40, cols)
+      expect([cols, Math.max(...rowWidths(tree))]).toEqual([cols, Math.min(cols, Math.max(...rowWidths(tree)))])
+      const main = mainCard(tree)
+      const inner = Number(main.props?.width ?? 0) - 4
+      for (const r of (main.children ?? []).map(textOf)) expect([cols, r, cellWidth(r) <= inner]).toEqual([cols, r, true])
+      expect([cols, (main.children ?? []).map(textOf).some(r => /TOP mcp__/.test(r))]).toEqual([cols, true])
+    }
+  })
+
+  test('a high failure rate turns the digits red', async ($, on) => {
+    mock.clock(on, { now: 0 })
+    let fail = false
+    on('tool.call', async () => (fail ? { isError: true, result: 'x', text: 'x' } : { result: {} }) as never)
+    for (let i = 0; i < 9; i += 1) await $.tool.call({ tool: 'Read', file_path: `/a/f${i}.ts` })
+    await press($, 'tab-stats')
+    const colors = async () => [...new Set(findAllText(mainCard(await draw($, 40, 80)), /[▀▄█]/).map(t => t.props?.color))]
+    expect(await colors()).toEqual([THEME.primary])
+    // one failure in ten: FAIL_WARN reached
+    fail = true
+    await $.tool.call({ tool: 'Bash', command: 'go test' })
+    expect(await colors()).toEqual([THEME.error])
+    expect(linesOf(await draw($, 40, 80)).join('\n')).toMatch(/FAIL 1/)
   })
 })
 

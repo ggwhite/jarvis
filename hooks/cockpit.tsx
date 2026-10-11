@@ -11,10 +11,10 @@ import type {
   QuotaWindow,
 } from '../types'
 import { fleetSections, fmtAgo, fmtBig, wrapCells } from './fleet'
-import { BURN_RAMP, RING_BIG, RING_SMALL, brailleLine, burnChart, cellsToSegs, gaugeBar, gaugeCells, partsGaugeCells, rampBar } from './fleetChart'
-import type { Cell, Overlay, RingPart } from './fleetChart'
+import { BURN_RAMP, bigText, bigWidth, brailleLine, burnChart, cellsToSegs, rampBar, stackedBar } from './fleetChart'
+import type { Cell, StackPart } from './fleetChart'
 import { idlePerRow, planFleet } from './fleetLayout'
-import type { FleetPlan, GaugeForm } from './fleetLayout'
+import type { FleetMode, FleetPlan } from './fleetLayout'
 import { FAIL_WARN, planStats, roleBeats, successRate } from './statsView'
 import { SUIT_BLOCK_ROWS, SUIT_COLS, SUIT_ROWS, suitCells } from './suit'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
@@ -44,10 +44,12 @@ import {
   padCells,
   phaseOf,
   reactorOf,
+  roleModels,
   shareLabel,
   shortModel,
   tokenTotal,
   tokensOf,
+  topTools,
   WORKFLOW_TYPE,
 } from './jarvis'
 import type { BootStage, Cockpit, EventRow, Health, ListUnit, Lock, ModelShare, Outcome, Phase, Role, RoleStat } from './jarvis'
@@ -537,7 +539,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const m = view.main
   const warn = m.chain >= CHAIN_WARN
   const rate = successRate(m.ok, m.fail)
-  const failHigh = rate !== undefined && 1 - rate >= FAIL_WARN
+  const failHigh = rate !== undefined && m.fail / (m.ok + m.fail) >= FAIL_WARN
   const pctText = rate === undefined ? '--' : `${Math.round(rate * 100)}%`
   const statsRoles = view.dispatch.filter(
     r => (r.role !== 'other' && r.role !== 'workflow') || r.running + r.done + r.failed > 0,
@@ -547,29 +549,15 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   const chartLine = (cells: readonly Cell[]): Seg[] => cellsToSegs(cells)
 
-  // The ring's rows with lines of text two cells to its right, as many rows as the taller.
-  const ringBlock = (cells: Cell[][], text: Seg[][], inner: number): Seg[][] => {
-    const ringW = cells[0]?.length ?? 0
-    return Array.from({ length: Math.max(cells.length, text.length) }, (_, i) => {
-      const row = cells[i]
-      return [...(row ? chartLine(row) : [sp(ringW)]), sp(2), ...clip(text[i] ?? [], Math.max(0, inner - ringW - 2))]
-    })
-  }
+  // `segs` padded with blanks to `width` cells
+  const padSegs = (segs: readonly Seg[], width: number): Seg[] => [...segs, sp(width - segsWidth(segs))]
 
-  const mainStatsSpec = (w: number, gauge: GaugeForm): CardSpec => {
+  const mainStatsSpec = (w: number, mode: FleetMode): CardSpec => {
     const inner = w - 4
     const family = nameFamilyOf(m.model)
     const head: Seg[] = [title('MAIN LINE', PRIMARY)]
     if (m.model !== '') head.push({ t: ` · ${shortModel(m.model)}`, color: family ? FAMILY_COLOR[family] : FRAME })
     const state: Seg = m.isRunning ? { t: '● 執行中', color: PRIMARY } : { t: '○ 閒置', color: FRAME }
-    const rateSeg: Seg = { t: pctText, color: failHigh ? ERROR : BRIGHT, bold: true }
-    const counts: Seg[] = [
-      { t: 'OK ', color: FRAME },
-      { t: String(m.ok), color: PRIMARY, bold: true },
-      { t: ' · ', color: MUTED },
-      { t: 'FAIL ', color: FRAME },
-      { t: String(m.fail), color: m.fail > 0 ? ERROR : FRAME, bold: m.fail > 0 },
-    ]
     const lit = Math.min(m.chain, CHAIN_WARN)
     const chain: Seg[] = [
       { t: 'CHAIN ', color: FRAME },
@@ -586,15 +574,41 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
             { t: m.lastDesc === '' ? '' : ` ${m.lastDesc}`, color: PRIMARY },
           ]
     const headLine = leftRight(head, [state], inner)
-    if (gauge === 'bar') {
-      const barW = Math.max(4, inner - cellWidth('SUCCESS ') - 1 - cellWidth(pctText))
-      const bar: Seg[] = [{ t: 'SUCCESS ', color: FRAME }, ...chartLine(gaugeBar(barW, rate ?? 0, failHigh)), sp(1), rateSeg]
-      return { w, color: FRAME, lines: [headLine, bar, counts, chain, last] }
+    const digits = bigText(pctText, failHigh ? ERROR : PRIMARY)
+    const dW = bigWidth(pctText)
+    const top = topTools(m.toolCounts, 2)
+    const col1: Seg[][] = [
+      [{ t: 'OK ', color: FRAME }, { t: String(m.ok), color: PRIMARY, bold: true }],
+      [{ t: 'FAIL ', color: FRAME }, { t: String(m.fail), color: m.fail > 0 ? ERROR : FRAME, bold: m.fail > 0 }],
+      [{ t: 'SUCCESS RATE', color: FRAME }],
+    ]
+    const col2: Seg[][] = [
+      chain,
+      top.length === 0
+        ? [{ t: 'TOP ', color: FRAME }, { t: '--', color: FRAME }]
+        : [
+            { t: 'TOP ', color: FRAME },
+            ...top.flatMap((x, i): Seg[] => [
+              ...(i > 0 ? [{ t: ' · ', color: MUTED }] : []),
+              { t: x.tool, color: TOOL_COLOR, bold: true },
+              { t: ` ${x.count}`, color: PRIMARY },
+            ]),
+          ],
+      last,
+    ]
+    const col1W = Math.max(...col1.map(segsWidth))
+    if (mode === 'narrow') {
+      const under = [0, 1, 2].map(i => clip([...padSegs(col1[i] ?? [], col1W), sp(2), ...(col2[i] ?? [])], inner))
+      return { w, color: FRAME, lines: [headLine, ...digits.map(r => chartLine(r)), ...under] }
     }
-    const success: Seg[] = [{ t: 'SUCCESS ', color: FRAME }, rateSeg]
-    const overlay: Overlay[] = gauge === 'big' ? [{ row: 3, text: pctText, color: failHigh ? ERROR : BRIGHT, bold: true }] : []
-    const cells = gaugeCells(gauge === 'big' ? RING_BIG : RING_SMALL, rate ?? 0, failHigh, overlay)
-    return { w, color: FRAME, lines: [headLine, ...ringBlock(cells, [success, counts, chain, last], inner)] }
+    const rows = [0, 1, 2].map(i => [
+      ...chartLine(digits[i] ?? []),
+      sp(2),
+      ...padSegs(col1[i] ?? [], col1W),
+      sp(2),
+      ...clip(col2[i] ?? [], Math.max(0, inner - dW - 2 - col1W - 2)),
+    ])
+    return { w, color: FRAME, lines: [headLine, ...rows] }
   }
 
   // `cut`: rows for the roles, the last one saying how many more there are.
@@ -605,13 +619,26 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const nameW = Math.max(4, ...statsRoles.map(r => cellWidth(r.label)))
     const numW = Math.max(1, ...statsRoles.map(r => String(r.done).length))
     const maxDone = Math.max(1, ...statsRoles.map(r => r.done))
-    const barW = Math.max(3, inner - (2 + nameW + 1 + 1 + numW + 1 + ROLE_EXTRA_W + (showBeats ? 2 + ROLE_BEAT_W : 0)))
+    const models = roleModels([...view.running, ...view.stale, ...view.finished])
+    const modelText = (role: Role) => {
+      const x = models.get(role)
+      return x ? x.label + (x.mixed ? '+' : '') : ''
+    }
+    const modelW = Math.max(0, ...statsRoles.map(r => cellWidth(modelText(r.role))))
+    const barW = Math.max(
+      3,
+      inner - (2 + nameW + 1 + modelW + (modelW > 0 ? 1 : 0) + 1 + numW + 1 + ROLE_EXTRA_W + (showBeats ? 2 + ROLE_BEAT_W : 0)),
+    )
     const extras = (r: RoleStat): Seg[] => {
       const parts: Seg[] = []
       if (r.running > 0) parts.push({ t: `▶${r.running}`, color: ACCENT, bold: true })
       if (r.failed > 0) parts.push({ t: `${parts.length > 0 ? ' ' : ''}FAIL ${r.failed}`, color: ERROR })
       const shown = clip(parts, ROLE_EXTRA_W)
       return [...shown, sp(ROLE_EXTRA_W - segsWidth(shown))]
+    }
+    const modelSeg = (role: Role): Seg => {
+      const family = models.get(role)?.family
+      return { t: padCells(modelText(role), modelW), color: family ? FAMILY_COLOR[family] : FRAME }
     }
     const row = (r: RoleStat): Seg[] => {
       const active = r.running > 0
@@ -620,6 +647,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         sp(1),
         { t: padCells(r.label, nameW), color: ROLE_COLOR[r.role], bold: true },
         sp(1),
+        ...(modelW > 0 ? [modelSeg(r.role), sp(1)] : []),
         ...chartLine(rampBar(barW, r.done / maxDone, BURN_RAMP)),
         sp(1),
         { t: padCells(String(r.done), numW, 'right'), color: r.done > 0 ? BRIGHT : FRAME, bold: r.done > 0 },
@@ -644,7 +672,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return { w, color: ACCENT, lines: [[title('DISPATCH', ACCENT)], ...shown.map(row), ...more] }
   }
 
-  const modelsStatsSpec = (w: number, gauge: GaugeForm): CardSpec => {
+  const modelsStatsSpec = (w: number): CardSpec => {
     const inner = w - 4
     const head: Seg[] = [title('MODELS', PRIMARY)]
     const verdict: Seg[] =
@@ -664,35 +692,15 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const shareText = (r: ModelShare) => (r.family ? shareLabel(r.share) : '未計價')
     const shareW = Math.max(4, ...view.models.map(r => cellWidth(shareText(r))))
     const share = (r: ModelShare): Seg => ({ t: padCells(shareText(r), shareW, 'right'), color: r.family ? PRIMARY : FRAME })
-    if (gauge === 'bar') {
-      const barW = Math.max(3, inner - labelW - 1 - 1 - shareW - 1 - countW)
-      const rows = view.models.map((r): Seg[] => [
-        { t: padCells(r.label, labelW), color: colorOf(r), bold: true },
-        sp(1),
-        ...(r.family
-          ? chartLine(rampBar(barW, Math.max(r.share, 1 / (barW * 8)), [colorOf(r)]))
-          : [{ t: ' '.repeat(barW) }]),
-        sp(1),
-        share(r),
-        sp(1),
-        { t: padCells(`×${r.count}`, countW), color: FRAME },
-      ])
-      return { w, color: FRAME, lines: [head, ...rows, verdict, figures] }
-    }
-    const parts: RingPart[] = view.models.filter(r => r.family).map(r => ({ share: r.share, color: colorOf(r) }))
-    const cells = partsGaugeCells(gauge === 'big' ? RING_BIG : RING_SMALL, parts, [])
-    const text: Seg[][] = [
-      ...view.models.map((r): Seg[] => [
-        { t: padCells(r.label, labelW), color: colorOf(r), bold: true },
-        sp(1),
-        share(r),
-        sp(1),
-        { t: `×${r.count}`, color: FRAME },
-      ]),
-      verdict,
-      figures,
-    ]
-    return { w, color: FRAME, lines: [head, ...ringBlock(cells, text, inner)] }
+    const parts: StackPart[] = view.models.filter(r => r.family).map(r => ({ share: r.share, color: colorOf(r) }))
+    const rows = view.models.map((r): Seg[] => [
+      { t: padCells(r.label, labelW), color: colorOf(r), bold: true },
+      sp(1),
+      share(r),
+      sp(1),
+      { t: padCells(`×${r.count}`, countW), color: FRAME },
+    ])
+    return { w, color: FRAME, lines: [head, chartLine(stackedBar(inner, parts)), ...rows, verdict, figures] }
   }
 
   // ---- 子代理清單 ---------------------------------------------------------
@@ -1290,12 +1298,12 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const dispatchCard = dispatchStatsSpec(cols, plan.roleCut)
     if (plan.mode === 'wide') {
       const [lw = cols, rw = cols] = splitCols(cols, 2)
-      blocks.push(cardRow([mainStatsSpec(lw, plan.gauge), modelsStatsSpec(rw, plan.gauge)]), cardRow([dispatchCard]))
+      blocks.push(cardRow([mainStatsSpec(lw, plan.mode), modelsStatsSpec(rw)]), cardRow([dispatchCard]))
     } else {
       blocks.push(
-        cardRow([mainStatsSpec(cols, plan.gauge)]),
+        cardRow([mainStatsSpec(cols, plan.mode)]),
         cardRow([dispatchCard]),
-        cardRow([modelsStatsSpec(cols, plan.gauge)]),
+        cardRow([modelsStatsSpec(cols)]),
       )
     }
     if (hint) {
