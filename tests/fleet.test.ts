@@ -1370,6 +1370,28 @@ describe('fleet dashboard data', () => {
     expect(EMPTY_FLEET.hourly).toEqual(emptyHours())
   })
 
+  test('a session carries its own hours: its transcript and its subagents, an old one none', async () => {
+    const a = pathOf('/srv/alpha', 'sess-a')
+    const sub = subOf('/srv/alpha', 'sess-a', 'agent-x.jsonl')
+    const b = pathOf('/srv/bravo', 'sess-b')
+    const w: World = {
+      panes: [pane(), pane({ pane_id: 'w2:p2', agent_session: { value: 'sess-b' }, cwd: '/srv/bravo' })],
+      files: {
+        [a]: jsonl(reply(T0 - 9 * MIN, 'm1', [text('x')], use(100, 50)), reply(T0 - 70 * MIN, 'm0', [text('w')], use(4, 1))),
+        [sub]: jsonl(reply(T0 - 3 * MIN, 's1', [text('y')], use(20, 7))),
+        [b]: jsonl(reply(YESTERDAY, 'old', [text('z')], use(500, 500))),
+      },
+      mtime: { [b]: YESTERDAY },
+      calls: [],
+    }
+    const { view } = await refreshFleet(fakeIo(w), EMPTY_FLEET, {}, T0)
+    const h = view.sessions[0]?.hourly ?? []
+    expect(h).toHaveLength(24)
+    expect(h[14]).toBe(150 + 27)
+    expect(h[13]).toBe(5)
+    expect(view.sessions[1]?.hourly).toEqual(emptyHours())
+  })
+
   test('an unchanged file past midnight starts the new day with empty hours', async () => {
     const a = pathOf('/srv/alpha', 'sess-a')
     const w: World = { panes: [pane()], files: { [a]: jsonl(reply(T0 - MIN, 'u1', [text('x')], use(10, 5))) }, calls: [] }

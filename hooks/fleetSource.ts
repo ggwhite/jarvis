@@ -97,7 +97,7 @@ export async function refreshFleet(
   const jobs: Job[] = []
   const plans: { base: FleetSession; path?: string; subs: string[] }[] = []
   for (const p of panes) {
-    const base: FleetSession = { ...p, stamps: [], tools: 0, todayTokens: 0, todayCost: 0 }
+    const base: FleetSession = { ...p, stamps: [], tools: 0, todayTokens: 0, todayCost: 0, hourly: emptyHours() }
     if (p.sessionId === '' || p.cwd === '') {
       plans.push({ base, subs: [] })
       continue
@@ -181,15 +181,25 @@ export async function refreshFleet(
     const file = path === undefined ? undefined : next[path]
     let tokens = file && file.day === today ? file.tokens : 0
     let cost = file && file.day === today ? file.cost : 0
+    const own = emptyHours()
+    const addOwn = (f: FleetFile | undefined) => {
+      if (!f || f.day !== today || !f.hourly) return
+      f.hourly.forEach((v, i) => {
+        own[i] = (own[i] ?? 0) + v
+      })
+    }
+    addOwn(file)
     for (const subPath of subs) {
       addHours(subPath)
       const sub = next[subPath]
+      addOwn(sub)
       if (sub && sub.day === today) {
         tokens += sub.tokens
         cost += sub.cost
       }
     }
-    sessions.push(file ? { ...base, ...file.tail, todayTokens: tokens, todayCost: cost } : { ...base, todayTokens: tokens, todayCost: cost })
+    const used = { todayTokens: tokens, todayCost: cost, hourly: own }
+    sessions.push(file ? { ...base, ...file.tail, ...used } : { ...base, ...used })
   }
 
   const quota = parseQuota(await io.read(`${io.home}/${LIMITS_PATH}`))

@@ -176,14 +176,15 @@ const DOTS = [
   [0x08, 0x10, 0x20, 0x80],
 ]
 
-// `vals` as one row of braille `width` cells wide: a line four dots tall, scaled to its
-// own highest value, each dot joined to the one before it.
-export function brailleLine(vals: readonly number[], width: number): string {
+// `vals` as one row of braille `width` cells wide: a line four dots tall, scaled to `top`
+// when given (a value past it drawn at the top) or else its own highest value, each dot
+// joined to the one before it.
+export function brailleLine(vals: readonly number[], width: number, top?: number): string {
   if (width <= 0) return ''
   const dw = width * 2
   const dh = 4
   const n = vals.length
-  const max = Math.max(0, ...vals)
+  const max = top ?? Math.max(0, ...vals)
   const ys: number[] = []
   for (let x = 0; x < dw; x += 1) {
     const f = n > 1 && dw > 1 ? (x * (n - 1)) / (dw - 1) : 0
@@ -191,7 +192,7 @@ export function brailleLine(vals: readonly number[], width: number): string {
     const a = vals[i] ?? 0
     const b = vals[i + 1] ?? a
     const v = a + (b - a) * (f - i)
-    ys.push(Math.round((1 - (max > 0 ? v / max : 0)) * (dh - 1)))
+    ys.push(Math.round((1 - (max > 0 ? Math.min(1, v / max) : 0)) * (dh - 1)))
   }
   const dots = new Set<string>()
   ys.forEach((y, x) => {

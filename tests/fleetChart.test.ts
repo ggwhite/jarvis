@@ -132,6 +132,14 @@ describe('fleet braille line', () => {
     expect(brailleLine([0, 1], 1)).toBe('⣸')
   })
 
+  test('a line scaled to a given top: below it stays low, past it pins the top', () => {
+    expect(brailleLine([0, 10], 1, 40)).not.toBe(brailleLine([0, 10], 1))
+    expect(brailleLine([0, 10], 1, 10)).toBe(brailleLine([0, 10], 1))
+    expect(brailleLine([0, 99], 1, 10)).toBe(brailleLine([0, 10], 1))
+    expect([...brailleLine([0, 99], 6, 10)].every(ch => ch !== '⠀')).toBe(true)
+    expect(brailleLine([0, 0], 3, 50)).toBe('⣀⣀⣀')
+  })
+
   test('no width, no line', () => {
     expect(brailleLine([1, 2], 0)).toBe('')
   })

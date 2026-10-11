@@ -94,6 +94,9 @@ export type FleetSession = FleetTail & {
   contextPct?: number
   todayTokens: number
   todayCost: number
+  // today's input + output tokens by local hour, its transcript and its subagents';
+  // missing on a view kept from before it was counted
+  hourly?: number[]
 }
 
 // A quota window: used percent, when it resets (ms) and how long it is (minutes).
