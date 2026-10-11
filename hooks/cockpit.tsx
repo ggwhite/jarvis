@@ -130,11 +130,11 @@ export const HEALTH_TEXT: Record<Health, string> = {
 
 // One color per role in the dispatch flow; the main loop is the accent gold everywhere.
 export const ROLE_COLOR: Record<Role, string> = {
-  Explore: '#3EC6FF',
-  clerk: '#5EE6A8',
+  Explore: '#E879F9',
+  clerk: '#88F8A8',
   worker: '#9B8CFF',
   verifier: '#FF8FB1',
-  fork: '#E6A7FF',
+  fork: '#D0C8F8',
   workflow: '#A8F868',
   other: FRAME,
 }

@@ -2894,9 +2894,18 @@ describe('Mark 42', () => {
     for (const c of JARVIS_PALETTE) {
       const [r, g, b] = rgb(c)
       expect(r > 200 && g < 140 && b < 140).toBe(false)
-      const [pr, pg, pb] = rgb(THEME.primary)
-      expect(Math.hypot(r - pr, g - pg, b - pb)).toBeGreaterThan(100)
     }
+    const dist = (x: string, y: string) => Math.hypot(...rgb(x).map((v, i) => v - (rgb(y)[i] ?? v)))
+    for (const c of JARVIS_PALETTE) {
+      for (const t of [THEME.accent, THEME.primary, THEME.error]) expect(dist(c, t)).toBeGreaterThan(100)
+    }
+    JARVIS_PALETTE.forEach((c, i) => {
+      for (const d of JARVIS_PALETTE.slice(i + 1)) expect(dist(c, d)).toBeGreaterThan(70)
+    })
+    const family = Object.values(FAMILY_COLOR)
+    family.forEach((c, i) => {
+      for (const d of family.slice(i + 1)) expect(dist(c, d)).toBeGreaterThan(100)
+    })
   })
 
   test('the title is suit red with gold corners; health warnings are red; the recovered ↻ is bright', async ($, on) => {
