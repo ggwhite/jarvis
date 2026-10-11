@@ -630,8 +630,8 @@ export function jarvisColor(seq: number): string {
   return JARVIS_PALETTE[i] ?? THEME.primary
 }
 
-// Every listed subagent's number (1 up, in list order: what its digit opens) and color
-// (by dispatch order, so it keeps its color however the list moves).
+// Every listed subagent's number (1 up, by dispatch order: its MK-N, and its digit while
+// that is one) and color (by dispatch order too): both stay however the list moves.
 export type Member = { n: number; color: string }
 
 export function rosterOf(agents: readonly JarvisAgent[], sections: readonly ListSection[]): Map<string, Member> {
@@ -640,7 +640,8 @@ export function rosterOf(agents: readonly JarvisAgent[], sections: readonly List
   for (const section of sections) {
     for (const u of section.units) {
       for (const a of u.kind === 'agent' ? [u.agent] : u.agents) {
-        out.set(a.id, { n: out.size + 1, color: jarvisColor(seq.get(a.id) ?? 0) })
+        const s = seq.get(a.id) ?? 0
+        out.set(a.id, { n: s + 1, color: jarvisColor(s) })
       }
     }
   }
