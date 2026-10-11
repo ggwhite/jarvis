@@ -168,6 +168,8 @@ export const register: Register = on => {
   let fleetBusy = false
 
   on('session.start', async ($, e, next) => {
+    unknown.clear()
+    listing.fails = 0
     try {
       await $.command.register({
         name: 'jarvis',

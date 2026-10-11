@@ -4007,4 +4007,50 @@ describe('background wait, wired', () => {
     expect(calls).toBe(1)
     expect(linesOf(await draw($, 40, 80)).join('\n')).toContain('還沒有派工')
   })
+
+  const waitThenEmpty = (on: On) => {
+    const mode = { empty: false }
+    on('agent.list', async () => ({
+      value: (mode.empty ? [] : [{ id: 'agent-1', status: 'waiting', type: 'verifier', description: 'check' }]) as never,
+    }))
+    return mode
+  }
+
+  test('an empty listing leaves a waiting agent WAITING', async ($, on) => {
+    const clock = engine(on, 'agent-1')
+    const mode = waitThenEmpty(on)
+    await start($)
+    await $.agent.spawn(spawnInput({ description: 'check', subagentType: 'verifier' }))
+    await $.turn.complete(complete('agent-1'))
+    mode.empty = true
+    await clock.advance(1500)
+    expect(linesOf(await draw($, 40, 80)).join('\n')).toContain('WAITING')
+  })
+
+  test('empty listings count as saying nothing: in time a waiting agent goes lost', async ($, on) => {
+    const clock = engine(on, 'agent-1')
+    const mode = waitThenEmpty(on)
+    await start($)
+    await $.agent.spawn(spawnInput({ description: 'check', subagentType: 'verifier' }))
+    await $.turn.complete(complete('agent-1'))
+    mode.empty = true
+    await clock.advance(STALE_MS + 60_000)
+    const lines = linesOf(await draw($, 40, 80)).join('\n')
+    expect(lines).not.toContain('WAITING')
+    expect(lines).toContain('SIGNAL LOST')
+  })
+
+  test('a new session asks the engine again about an id it did not have', async ($, on) => {
+    engine(on)
+    let calls = 0
+    on('agent.list', async () => {
+      calls += 1
+      return { value: [{ id: 'other', status: 'running', type: 'worker', description: 'x' }] as never }
+    })
+    await start($)
+    await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'nobody' } as never)
+    await start($)
+    await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'nobody' } as never)
+    expect(calls).toBe(2)
+  })
 })
