@@ -3068,7 +3068,8 @@ describe('Mark 42', () => {
     on('ui.open', async () => ({ value: { isPlaced: true as const } }))
     on('command.run', async () => ({}))
     await start($)
-    // a pane drawn before the command shows no boot
+    // the boot the session opened with played out: a pane drawn before the command shows none
+    await clock.advance(BOOT_MS)
     expect(linesOf(await draw($)).join('\n')).not.toContain('ONLINE')
 
     await $.command.run({
@@ -4887,6 +4888,7 @@ describe('standby suit', () => {
     await clock.advance(BOOT_MS + 1000)
     expect(await poseOf($)).toBe(PAUSED)
     await start($)
+    await clock.advance(BOOT_MS + 1000)
     const text = linesOf(await draw($, 50)).join('\n')
     expect(text).not.toContain('PAUSED')
     expect(text).toContain(STANDBY)
@@ -5514,5 +5516,87 @@ describe('main tools and role models', () => {
     expect(w.main?.toolCounts).toEqual({ Bash: 2 })
     const view = buildCockpit({ agents: [], main: w.main as JarvisMain, events: [] }, 0)
     expect(view.main.toolCounts).toEqual({ Bash: 2 })
+  })
+})
+
+describe('opened at session start', () => {
+  // the engine beneath: the panes asked for, the commands registered, every line shown
+  const surface = (
+    on: On,
+    open: () => Promise<{ value: { isPlaced: true } | { isPlaced: false; reason: string } } | { deny: string }>,
+  ) => {
+    const seen = { opens: [] as { id: string; title?: string }[], commands: [] as string[], shown: 0 }
+    on('ui.open', async (_$, e) => {
+      seen.opens.push({ id: e.id, title: e.title })
+      return open()
+    })
+    on('command.register', async (_$, e) => {
+      seen.commands.push(e.name)
+      return { value: { command: e.name } }
+    })
+    for (const name of ['ui.toast', 'ui.log', 'ui.notice'] as const) {
+      on(name, async () => {
+        seen.shown += 1
+        return { value: undefined }
+      })
+    }
+    return seen
+  }
+  const placed = async () => ({ value: { isPlaced: true as const } })
+  const run = ($: Engine) =>
+    $.command.run({
+      command: 'jarvis',
+      args: '',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: true, columns: 100 },
+    })
+
+  test('session.start opens the pane as /jarvis does, its boot screen playing', async ($, on) => {
+    engineAll(on)
+    const seen = surface(on, placed)
+    await start($)
+    expect(seen.opens).toEqual([{ id: 'jarvis', title: 'Jarvis' }])
+    expect(linesOf(await draw($)).join('\n')).toContain('J.A.R.V.I.S. ONLINE')
+  })
+
+  for (const [name, open] of [
+    ['is refused', async () => ({ deny: 'no panes' })],
+    ['waits undrawn', async () => ({ value: { isPlaced: false as const, reason: 'narrow' } })],
+  ] as const) {
+    test(`a pane that ${name} leaves session.start whole and quiet`, async ($, on) => {
+      mock.clock(on, { now: 0 })
+      let reached = 0
+      on('session.start', async (_$, e) => {
+        reached += 1
+        return { cwd: e.cwd }
+      })
+      const seen = surface(on, open)
+      const out = await start($)
+      expect([out, reached]).toEqual([{ cwd: '/tmp' }, 1])
+      expect(seen.commands).toEqual(['jarvis'])
+      expect(seen.opens).toHaveLength(1)
+      expect(seen.shown).toBe(0)
+    })
+  }
+
+  test('a session started again asks for the same pane, not a second one', async ($, on) => {
+    engineAll(on)
+    const seen = surface(on, placed)
+    await start($)
+    await start($)
+    expect(seen.opens).toHaveLength(2)
+    expect(new Set(seen.opens.map(o => o.id))).toEqual(new Set(['jarvis']))
+  })
+
+  test('/jarvis still opens it by hand, and says when it cannot', async ($, on) => {
+    engineAll(on)
+    on('command.run', async () => ({}))
+    let fails = false
+    const seen = surface(on, async () => (fails ? { deny: 'no panes' } : { value: { isPlaced: true as const } }))
+    await start($)
+    expect(await run($)).toMatchObject({ text: 'Jarvis 面板已開啟' })
+    fails = true
+    expect(await run($)).toMatchObject({ text: 'Jarvis 面板開啟失敗' })
+    expect(seen.opens.slice(1)).toEqual([{ id: 'jarvis', title: 'Jarvis' }, { id: 'jarvis', title: 'Jarvis' }])
   })
 })

@@ -75,6 +75,23 @@ const suit = atom({ plugin: 'jarvis', key: 'suit' } as const, { n: 0 })
 // counting them in flight would hide a stuck subagent.
 const UNTRACKED = new Set(['Agent', 'Workflow'])
 
+// opens the pane, its boot screen from the time handed to boot (undefined: none); false when it could not open
+async function openPane($: Pick<EngineInterface, 'clock' | 'ui'>, boot: (at: number | undefined) => void): Promise<boolean> {
+  try {
+    boot(await $.clock.now())
+  } catch {
+    // no clock: no boot screen
+    boot(undefined)
+  }
+  try {
+    await $.ui.open({ id: PANE, title: 'Jarvis' })
+    return true
+  } catch {
+    boot(undefined)
+    return false
+  }
+}
+
 // What the engine says of its agents, as reconcileAgents reads it; undefined when it
 // cannot say (the listing failed or came back empty).
 async function engineAgents($: Pick<EngineInterface, 'agent'>): Promise<EngineAgent[] | undefined> {
@@ -189,6 +206,10 @@ export const register: Register = on => {
   const suitOff = () => {
     suitTimer?.cancel()
     suitTimer = undefined
+  }
+
+  const setBoot = (at: number | undefined) => {
+    bootAt = at
   }
 
   on('session.start', async ($, e, next) => {
@@ -400,25 +421,15 @@ export const register: Register = on => {
       // bookkeeping only
     }
 
+    // the pane is optional: one that cannot open waits for /jarvis
+    await openPane($, setBoot)
+
     return next(e)
   })
 
-  on('command.run', { command: 'jarvis' }, async $ => {
-    try {
-      bootAt = await $.clock.now()
-    } catch {
-      // no clock: no boot screen
-      bootAt = undefined
-    }
-    try {
-      await $.ui.open({ id: PANE, title: 'Jarvis' })
-    } catch {
-      bootAt = undefined
-      return { text: 'Jarvis 面板開啟失敗' }
-    }
-
-    return { text: 'Jarvis 面板已開啟' }
-  })
+  on('command.run', { command: 'jarvis' }, async $ =>
+    (await openPane($, setBoot)) ? { text: 'Jarvis 面板已開啟' } : { text: 'Jarvis 面板開啟失敗' },
+  )
 
   on('agent.spawn', async ($, e, next) => {
     const out = await next(e)
