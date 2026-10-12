@@ -180,7 +180,7 @@ export const register: Register = on => {
   let drawnAt = -Infinity
   // restarts the tick at `ms` when it runs at another period; set at session.start
   let pace: ((ms: number) => void) | undefined
-  // when /jarvis opened the pane: its boot plays until a drawing finds it over
+  // when the pane was opened, at session start or by /jarvis: its boot plays until a drawing finds it over
   let bootAt: number | undefined
   // the boot animates only while the pane is in view
   const booting = (now: number) => bootAt !== undefined && now - drawnAt <= SEEN_MS
