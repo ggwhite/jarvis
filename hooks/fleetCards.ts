@@ -16,7 +16,7 @@ import type { ChartSeg } from './fleetChart'
 import { THEME, cellWidth, fitCells, fmtClock, fmtDate, fmtUsd, padCells, shortModel } from './jarvis'
 
 // A suit as drawn: `chip` the label of its number Button, `top` what follows it on its
-// first row, `body` the rows below; the caller sets the hotkey cells before them.
+// first row, `body` the rows below.
 export type CardLines = { chip: ChartSeg[]; top: ChartSeg[]; body: ChartSeg[][] }
 // `idleMax`: the highest hour of today among the idle suits (idleHourMax), the top every
 // idle suit's day is scaled to; without it each is scaled to its own.

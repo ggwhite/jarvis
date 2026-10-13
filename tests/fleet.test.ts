@@ -4,6 +4,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { FleetSession } from '../types'
 import { FAMILY_COLOR, THEME, cellWidth, costAt } from '../hooks/jarvis'
+import { TAB_ICON } from '../hooks/icons'
 import { BURN_RAMP, GAUGE_RAMP } from '../hooks/fleetChart'
 import {
   BEATS,
@@ -837,14 +838,12 @@ const buttons = (n: Node | string, out: Node[] = []): Node[] => {
   return out
 }
 
-// each drawn row's width: a row of texts and plain Buttons side by side, a plain Button's
-// hotkey drawn as `1: ` before its label
+// each drawn row's width: a row of texts and plain Buttons side by side
 const rowWidths = (n: Node | string): number[] => {
   if (typeof n === 'string') return [cellWidth(n)]
   if (n.type === 'Text') return [cellWidth(textOf(n))]
   const kids = n.children ?? []
-  const cells = (k: Node) =>
-    cellWidth(textOf(k)) + (k.type === 'Button' && k.props?.['hotkey'] ? cellWidth(`${String(k.props['hotkey'])}: `) : 0)
+  const cells = (k: Node) => cellWidth(textOf(k))
   if (
     n.props?.flexDirection === 'row' &&
     kids.every(k => typeof k !== 'string' && (k.type === 'Text' || (k.type === 'Button' && k.props?.['plain'])))
@@ -857,10 +856,10 @@ const rowWidths = (n: Node | string): number[] => {
 const tabBarButtons = (tree: Node): Node[] =>
   buttons(tree).filter(b => /^(tab-|back$|pause$|jump$)/.test(String(b.props?.['key'] ?? '')))
 
-// the tab bar's width: each plain Button is `N: ` + label, one cell apart
+// the tab bar's width: each plain Button its label, two cells apart
 const tabBarWidth = (tree: Node): number => {
   const tabs = tabBarButtons(tree)
-  return tabs.reduce((n, b) => n + cellWidth(`${String(b.props?.['hotkey'])}: `) + cellWidth(textOf(b)), 0) + Math.max(0, tabs.length - 1)
+  return tabs.reduce((n, b) => n + cellWidth(textOf(b)), 0) + 2 * Math.max(0, tabs.length - 1)
 }
 
 const draw = async ($: Engine, rows = 40, cols = 80): Promise<Node> =>
@@ -1125,15 +1124,25 @@ describe('fleet page', () => {
     expect(linesOf(tree).find(l => l.includes('Charlie docs'))).toContain('RETIRE')
   })
 
-  test('only the corner and icon of a card are its Button; 1-9 carry their hotkey', async ($, on) => {
+  test('only the corner and icon of a card are its Button, no hotkey and no number', async ($, on) => {
     const w = sampleWorld()
     const clock = fleetEngine(on, w)
     const suits = buttons(await openFleet($, clock)).filter(b => String(b.props?.['key'] ?? '').startsWith('suit-'))
     expect(suits.map(b => [b.props?.['key'], b.props?.['hotkey'], b.props?.['plain'], textOf(b)])).toEqual([
-      ['suit-1', '1', true, '╭─ ▲'],
-      ['suit-2', '2', true, '╭─ ◆'],
-      ['suit-3', '3', true, '╭─ ◇'],
+      ['suit-1', undefined, true, '╭─ ▲'],
+      ['suit-2', undefined, true, '╭─ ◆'],
+      ['suit-3', undefined, true, '╭─ ◇'],
     ])
+  })
+
+  test('no Button on the fleet page or a suit detail page carries a hotkey', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const list = buttons(await openFleet($, clock))
+    await press($, 'suit-1', 40, 80)
+    const detail = buttons(await draw($, 40, 80))
+    expect(detail.map(b => b.props?.['key'])).toEqual(expect.arrayContaining(['back', 'jump']))
+    for (const b of [...list, ...detail]) expect([b.props?.['key'], b.props?.['hotkey']]).toEqual([b.props?.['key'], undefined])
   })
 
   test('every text the fleet page draws wears a theme color, a ramp color or a model color', async ($, on) => {
@@ -1224,14 +1233,14 @@ describe('fleet page', () => {
     }
   })
 
-  test('suits past 9 carry their number inside the Button, no hotkey, no wider', async ($, on) => {
+  test('suits past 9 are a click away like the rest: no number drawn, no hotkey, no wider', async ($, on) => {
     const busy = Array.from({ length: 12 }, (_, i) => pane({ pane_id: `w1:b${i}`, label: `Busy ${i}`, agent_status: 'working', agent_session: { value: `busy-${i}` } }))
     const w = sampleWorld({ panes: busy })
     const clock = fleetEngine(on, w)
     const tree = await openFleet($, clock, 90, 80)
     const tenth = buttons(tree).find(b => b.props?.['key'] === 'suit-10')
     expect(tenth?.props?.['hotkey']).toBeUndefined()
-    expect(textOf(tenth ?? {})).toMatch(/^10 /)
+    expect(textOf(tenth ?? {})).toMatch(/^╭─ /)
     expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(80)
   })
 
@@ -1253,7 +1262,7 @@ describe('fleet page', () => {
     const clock = fleetEngine(on, w)
     const lines = linesOf(await openFleet($, clock))
     expect(lines.some(l => l.includes('╮ ╭─'))).toBe(true)
-    expect(lines.some(l => l.includes('╯    ╰'))).toBe(true)
+    expect(lines.some(l => l.includes('╯ ╰'))).toBe(true)
   })
 
   test('with the burn chart gone, Σ moves to the IRON LEGION header', async ($, on) => {
@@ -1402,7 +1411,7 @@ describe('fleet detail page', () => {
     await openFleet($, clock, 40, 40)
     await press($, 'suit-1', 40, 40)
     const bar = tabBarButtons(await draw($, 40, 40)).map(b => [b.props?.['key'], textOf(b)])
-    expect(bar).toContainEqual(['tab-now', '現'])
+    expect(bar).toContainEqual(['tab-now', `${TAB_ICON.now} `])
     expect(bar).toContainEqual(['jump', '跳轉'])
   })
 

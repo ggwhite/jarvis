@@ -9,8 +9,6 @@ export const MAIN_ACTOR = 'main'
 export const LOOP_FAILS = 3
 export const STUCK_MS = 5 * 60 * 1000
 export const DESC_MAX = 60
-// The highest MK number whose digit is a hotkey to its detail page.
-export const MAX_NUMBERED = 9
 export const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 // The sweep a freshly dispatched squad member shows while it starts up.
 export const SCAN = ['░▒▓', '▒▓░', '▓░▒']
@@ -34,6 +32,7 @@ export const THEME = {
   accent: '#5CE1FF',
   bright: '#FFF1D6',
   error: '#FF3B30',
+  success: '#5BD67A',
   muted: '#4A3418',
   suitRed: '#C8102E',
   suitGold: '#E8B04B',
