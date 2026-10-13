@@ -1,7 +1,7 @@
 import type { JarvisChange } from '../types'
 import { cellWidth, fitCells } from './jarvis'
 
-export type ChangeMode = 'session' | 'unpushed'
+export type ChangeMode = 'session' | 'unpushed' | 'commits'
 
 // What the changes page asks of the machine: a hook in register.tsx builds it from its `$`.
 export type ChangesIo = {

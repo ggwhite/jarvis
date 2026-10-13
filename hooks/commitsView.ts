@@ -102,3 +102,15 @@ export function commitRows(tree: CommitTree, startedAt: number | undefined): Com
     }
   })
 }
+
+// The commits mode as the cockpit draws it: the session directory's name, the time now and
+// when the session started, the repo list (on the changes page), and the presses that open a
+// repo's tree and ask find and git again.
+export type CommitsCtx = {
+  cwdName: string
+  now: number
+  startedAt?: number
+  list?: RepoList
+  openRepo: (repo: string) => void
+  refreshList: () => void
+}

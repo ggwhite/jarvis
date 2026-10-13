@@ -1384,3 +1384,152 @@ describe('session mode: worktrees, scratch files and counts', () => {
     expect(text).toMatch(/h\.go\s+對 HEAD \+4 −2/)
   })
 })
+
+describe('commits mode: repo list', () => {
+  const G = '/usr/bin/git'
+  const FIND_LINE = '/usr/bin/find /w -maxdepth 4 ( -name node_modules -o -name Library -o -name .Trash -o -name .cache -o -path */.claude/worktrees ) -prune -o -name .git -print -prune'
+  const A = '/w/acme/payments'
+  const B = '/w/legacy/billing'
+  const C = '/w/old'
+  const AF = `${A}/x.go`
+  const sumLine = (repo: string) => `${G} -C ${repo} log -1 --decorate=full --format=%ct%x00%h%x00%D HEAD`
+  const summary = (ct: number, branch: string): Run => ({ exitCode: 0, stdout: `${ct}\x00abc1234\x00HEAD -> refs/heads/${branch}, refs/remotes/origin/${branch}\n` })
+  const answers = (over: Record<string, Run> = {}): Record<string, Run> => ({
+    [FIND_LINE]: { exitCode: 0, stdout: `${A}/.git\n${B}/.git\n${C}/.git\n` },
+    [sumLine(A)]: summary(100, 'main'),
+    [sumLine(B)]: summary(300, 'master'),
+    [sumLine(C)]: summary(200, 'dev'),
+    [`${G} -C ${A} rev-list --count @{u}..HEAD`]: { exitCode: 0, stdout: '2\n' },
+    [`${G} -C ${B} rev-list --count @{u}..HEAD`]: { exitCode: 0, stdout: '0\n' },
+    ...over,
+  })
+  const setup = (on: On, git: Git = answers(), holdRun?: (argv: string[]) => Promise<void>) =>
+    world(on, { dirs: [`${A}/.git`], files: { [AF]: 1 }, results: { [AF]: editResult(AF, 'a') }, git, ...(holdRun ? { holdRun } : {}) })
+  const press = async ($: Engine, key: string, cols = 80) => {
+    const ui = await pane($, cols)
+    await ui.press({ key })
+    await ui.unmount()
+    await settle()
+  }
+  // the changes page in the commits mode, git answered
+  const listed = async ($: Engine) => {
+    await start($)
+    await edit($, AF)
+    await showChanges($)
+    await press($, 'chg-mode-commits')
+    await drawn($)
+    await settle()
+  }
+  const finds = (w: { runs: string[][] }) => w.runs.filter(r => r[0] === '/usr/bin/find').length
+
+  test('lists the repos under the session directory, touched ones first with ★, then newest commit first', async ($, on) => {
+    setup(on)
+    await listed($)
+    const lines = await drawn($)
+    const text = lines.join('\n')
+    expect(text).toContain('提交')
+    expect(text).toContain(' w · 3 repos')
+    const at = (s: string) => lines.findIndex(l => l.includes(s))
+    expect(lines[at('acme/payments')]).toMatch(/★ acme\/payments\s+main ↑2/)
+    expect(at('acme/payments')).toBeLessThan(at('legacy/billing'))
+    expect(at('legacy/billing')).toBeLessThan(at('old'))
+    expect(lines[at('legacy/billing')]).toMatch(/legacy\/billing\s+master\s+剛剛/)
+    expect(lines[at('legacy/billing')]).not.toContain('↑')
+  })
+
+  test('find runs on entering the mode and on 重新整理, not on every drawing; the session counts are not asked', async ($, on) => {
+    const w = setup(on)
+    await listed($)
+    expect(finds(w)).toBe(1)
+    await drawn($)
+    await drawn($)
+    await settle()
+    await press($, 'chg-mode-session')
+    await press($, 'chg-mode-commits')
+    await drawn($)
+    await settle()
+    expect(finds(w)).toBe(1)
+    await press($, 'chg-refresh')
+    await drawn($)
+    await settle()
+    expect(finds(w)).toBe(2)
+    expect(w.runs.some(r => r.includes('--no-index'))).toBe(true)
+    const before = w.runs.filter(r => r.includes('--no-index')).length
+    await drawn($)
+    await settle()
+    expect(w.runs.filter(r => r.includes('--no-index')).length).toBe(before)
+  })
+
+  test('a repo whose git fails shows the error on its row, the others listed', async ($, on) => {
+    setup(on, answers({ [sumLine(C)]: { exitCode: 128, stdout: '' } }))
+    await listed($)
+    const text = (await drawn($)).join('\n')
+    expect(text).toMatch(/old\s+git log 失敗/)
+    expect(text).toContain('legacy/billing')
+  })
+
+  test('nothing found says 找不到 repo', async ($, on) => {
+    setup(on, answers({ [FIND_LINE]: { exitCode: 0, stdout: '' } }))
+    // no edit: a touched repo with its .git on disk would be listed (the test below)
+    await start($)
+    await showChanges($)
+    await press($, 'chg-mode-commits')
+    await drawn($)
+    await settle()
+    expect((await drawn($)).join('\n')).toContain('找不到 repo')
+  })
+
+  test('a touched repo find did not list is added while its .git is there', async ($, on) => {
+    setup(on, answers({ [FIND_LINE]: { exitCode: 0, stdout: `${B}/.git\n` } }))
+    await listed($)
+    const text = (await drawn($)).join('\n')
+    expect(text).toContain('★ acme/payments')
+    expect(text).toContain('2 repos')
+  })
+
+  test('a /clear drops the scan still running; the next drawing scans again', async ($, on) => {
+    let release = () => {}
+    const gate = new Promise<void>(r => (release = r))
+    // the held find answers last: world() asks holdRun before it answers, so the first find
+    // marks the answer it is about to get as the stale one once let go
+    let staleNext = false
+    const git = (argv: string[]): Run => {
+      if (argv[0] !== '/usr/bin/find') return answers()[argv.join(' ')] ?? { exitCode: 128, stdout: '' }
+      if (!staleNext) return { exitCode: 0, stdout: `${B}/.git\n` }
+      staleNext = false
+      return { exitCode: 0, stdout: '/w/stale/.git\n' }
+    }
+    let held = 0
+    const w = setup(on, git, argv =>
+      argv[0] === '/usr/bin/find' && held++ === 0 ? gate.then(() => void (staleNext = true)) : Promise.resolve(),
+    )
+    await start($)
+    await showChanges($)
+    await press($, 'chg-mode-commits')
+    await drawn($)
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    await drawn($)
+    await settle()
+    release()
+    await settle()
+    await drawn($)
+    await settle()
+    const text = (await drawn($)).join('\n')
+    expect(finds(w)).toBe(2)
+    expect(text).toContain('legacy/billing')
+    expect(text).not.toContain('stale')
+  })
+
+  test('no line is wider than the pane at 40, 60, 80 and 120 columns; no repo button has a hotkey', async ($, on) => {
+    setup(on)
+    await listed($)
+    for (const cols of [40, 60, 80, 120]) {
+      for (const line of await drawn($, cols)) expect(cellWidth(line)).toBeLessThanOrEqual(cols)
+    }
+    const ui = await pane($)
+    const buttons = await ui.findAll({ type: 'Button' })
+    await ui.unmount()
+    expect(buttons.filter(b => b.key?.startsWith('cm-repo-')).length).toBe(3)
+    expect(buttons.every(b => b.props['hotkey'] === undefined)).toBe(true)
+  })
+})

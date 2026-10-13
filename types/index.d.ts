@@ -178,6 +178,8 @@ export type JarvisPage =
   | 'fleetDetail'
   | 'changes'
   | 'changeDiff'
+  | 'commitTree'
+  | 'commitDiff'
 
 // What the pane shows: the page, the subagent the detail page is about, and whether the
 // event stream is paused at `pausedTotal` events recorded.
@@ -189,13 +191,18 @@ export type JarvisUi = {
   // the session the fleet detail page is about
   paneId: string
   // the changes page's mode; absent is the session's own changes
-  changesMode?: 'session' | 'unpushed'
+  changesMode?: 'session' | 'unpushed' | 'commits'
   // the changes page's file the diff page is about, by its row's key
   diffKey?: string
   // the dispatch role the role page is about
   role?: string
   // the page the detail page was opened from, when its 返回 goes back there
   detailFrom?: JarvisPage
+  // the commits mode: the repo its tree page is about, the commit its diff page is about,
+  // and the file that page shows (absent: the commit's first)
+  commitRepo?: string
+  commitSha?: string
+  commitFile?: string
 }
 
 declare module 'claude-code' {

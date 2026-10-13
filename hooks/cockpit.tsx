@@ -42,6 +42,8 @@ import { isFailed } from './gitDiff'
 import type { DiffRow, Failed } from './gitDiff'
 import { tailCells } from './changes'
 import type { ChangeMode } from './changes'
+import { relTime } from './commitsView'
+import type { CommitsCtx } from './commitsView'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
 import type { CardLines } from './fleetCards'
 import {
@@ -194,6 +196,8 @@ export type Ctx = {
   // the diff page: the row's key it is about, and its diff as git gave it; undefined
   // while git works it out
   diff?: { key: string; rows: DiffRow[] | Failed | undefined }
+  // the commits mode: the repo list and its presses (the tree and diff pages' too)
+  commits?: CommitsCtx
 }
 
 const FRAME = THEME.frame
@@ -1631,6 +1635,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const CHANGE_MODES: { mode: ChangeMode; label: string }[] = [
     { mode: 'session', label: '本次 session' },
     { mode: 'unpushed', label: '未推送' },
+    { mode: 'commits', label: '提交' },
   ]
 
   // who changed a file: the main loop by name, a squad member by its card's mark, more
@@ -1657,11 +1662,51 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
             { t: `−${e.del}`, color: ERROR },
           ]
 
+  // the commits mode's repos: ★ for those the session touched, the branch, ↑ commits not
+  // pushed and when the last commit was made; each row opens its tree
+  const repoListLines = (inner: number): Line[] => {
+    const cm = ctx.commits
+    const list = cm?.list
+    if (!cm || !list || (list.rows.length === 0 && list.scanning)) return [[{ t: '掃描 repo 中…', color: MUTED }]]
+    if (list.error !== undefined) return [[{ t: list.error, color: MUTED }]]
+    if (list.rows.length === 0) return [[{ t: '找不到 repo', color: MUTED }]]
+    const out: Line[] = [
+      [
+        { t: withIcon(CHANGE_ICON.repo, cm.cwdName), color: PRIMARY, bold: true },
+        { t: ` · ${list.total} repos`, color: FRAME },
+      ],
+    ]
+    for (const r of list.rows) {
+      const left: Seg[] = [
+        r.touched ? { t: '★ ', color: ACCENT, bold: true } : sp(2),
+        { t: r.name, ...(r.touched ? { color: PRIMARY, bold: true } : {}) },
+        ...(r.branch !== undefined ? [sp(2), { t: r.branch, color: FRAME }] : []),
+        ...(r.ahead ? [{ t: ` ↑${r.ahead}`, color: ACCENT, bold: true }] : []),
+      ]
+      const right: Seg[] = r.pending
+        ? [{ t: '讀取中…', color: MUTED }]
+        : r.error !== undefined
+          ? [{ t: r.error, color: MUTED }]
+          : [{ t: relTime(cm.now - (r.time ?? 0)), color: FRAME }]
+      const repo = r.repo
+      out.push({
+        h: 1,
+        node: (
+          <Button key={`cm-repo-${repo}`} plain onPress={() => cm.openRepo(repo)}>
+            <Text>{texts(leftRight(left, right, inner))}</Text>
+          </Button>
+        ),
+      })
+    }
+    if (list.more > 0) out.push([{ t: `… 還有 ${list.more} 個 repo`, color: FRAME }])
+    return out
+  }
+
   const changesBlock = (room: number): Block => {
     const inner = cols - 4
     const cv = ctx.changes ?? { mode: 'session' as const, groups: [], pending: false, total: 0 }
     const files = cv.groups.reduce((n, g) => n + g.entries.length, 0)
-    const head = leftRight([title(TAB_ICON.changes, '異動', PRIMARY)], [{ t: `${files} 檔`, color: FRAME }], inner)
+    const head = leftRight([title(TAB_ICON.changes, '異動', PRIMARY)], cv.mode === 'commits' ? [] : [{ t: `${files} 檔`, color: FRAME }], inner)
     const modeRow = (
       <Box flexDirection="row" gap={TAB_GAP}>
         {CHANGE_MODES.map(m => (
@@ -1675,14 +1720,18 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
             )}
           </Button>
         ))}
-        {cv.mode === 'unpushed' ? (
-          <Button key="chg-refresh" plain onPress={() => ctx.refreshChanges?.()}>
+        {cv.mode !== 'session' ? (
+          <Button key="chg-refresh" plain onPress={() => (cv.mode === 'commits' ? ctx.commits?.refreshList() : ctx.refreshChanges?.())}>
             <Text color={FRAME}>重新整理</Text>
           </Button>
         ) : null}
       </Box>
     )
     const lines: Line[] = [head, { node: modeRow, h: 1 }]
+    if (cv.mode === 'commits') {
+      const body = repoListLines(inner)
+      return card({ w: cols, color: FRAME, lines: [...lines, ...body] }, Math.max(6, room, 2 + lines.length + body.length))
+    }
     const markW = Math.max(
       cellWidth('主線'),
       ...cv.groups.flatMap(g => g.entries.map(e => segsWidth(changeActor(e.actors)))),

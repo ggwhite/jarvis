@@ -41,6 +41,10 @@ import { isFailed, sessionDiff, sessionStat, unpushedDiff, unpushedOf } from './
 import type { DiffRow, Failed, FileStat, Unpushed, UnpushedFile } from './gitDiff'
 import { MAX_LISTED, sessionGroups, unpushedGroups } from './changesView'
 import type { ChangesView } from './changesView'
+import { findRepos, repoSummary } from './gitCommits'
+import type { RepoSummary } from './gitCommits'
+import { commitRepoName, repoRows } from './commitsView'
+import type { CommitsCtx, RepoList } from './commitsView'
 
 const PANE = 'jarvis'
 const MAX_EARLY = 100
@@ -53,6 +57,8 @@ const QUOTA_EVERY_MS = 30_000
 const CHANGES_RUN_TIMEOUT_MS = 5_000
 // the changes page reads its files' mtimes at most this often while drawn
 const CHANGES_SCAN_MS = 2_000
+// the commits mode's repo list redraws after this many repos answer, and once all have
+const COMMITS_REDRAW_EVERY = 8
 
 const agents = atom({ plugin: 'jarvis', key: 'agents' } as const, [])
 const main = atom({ plugin: 'jarvis', key: 'main' } as const, {
@@ -247,6 +253,87 @@ const dropUnpushed = (cache: ChangesCache) => {
   cache.unpushedLive.clear()
   for (const key of [...cache.diffs.keys()]) if (key.startsWith('u:')) cache.diffs.delete(key)
   if (cache.diffBusy.startsWith('u:')) cache.diffBusy = ''
+}
+
+// What the commits mode keeps between drawings: the repos found under the session
+// directory (or why none), each repo's summary as git gave it, and whether find or git is
+// being asked; `gen` counts the drops, so an answer to an older ask stores nothing.
+type CommitsCache = {
+  gen: number
+  repos: string[] | Failed | undefined
+  scanning: boolean
+  summaries: Map<string, RepoSummary | Failed>
+}
+
+const dropCommits = (cc: CommitsCache) => {
+  cc.gen += 1
+  cc.repos = undefined
+  cc.scanning = false
+  cc.summaries.clear()
+}
+
+// The commits mode's repo list: the repos find gave with the touched ones still on disk,
+// each as git last said; find and git asked in the background when the list or a repo is
+// missing, the page redrawn when find answers, every COMMITS_REDRAW_EVERY repos and at the end.
+async function commitListNow(
+  $: Pick<EngineInterface, 'fs' | 'process' | 'ui'>,
+  cc: CommitsCache,
+  touched: readonly string[],
+  names: { cwd: string; home: string },
+): Promise<RepoList> {
+  const io = ioOf($)
+  const missing = cc.repos === undefined || (!isFailed(cc.repos) && cc.repos.some(r => !cc.summaries.has(r)))
+  if (missing && !cc.scanning) {
+    cc.scanning = true
+    const gen = cc.gen
+    const redraw = () => {
+      try {
+        $.ui.invalidate('ui.render')
+      } catch {
+        // the next drawing shows it
+      }
+    }
+    void (async () => {
+      try {
+        if (cc.repos === undefined) {
+          const found = await findRepos(io, names.cwd)
+          const extra: string[] = []
+          if (!isFailed(found)) {
+            for (const r of touched) {
+              if (!found.includes(r) && (await io.stat(`${r === '/' ? '' : r}/.git`)) !== undefined) extra.push(r)
+            }
+          }
+          if (cc.gen !== gen) return
+          cc.repos = isFailed(found) ? found : [...found, ...extra]
+          redraw()
+        }
+        const repos = cc.repos
+        if (isFailed(repos)) return
+        let n = 0
+        for (const repo of repos) {
+          if (cc.summaries.has(repo)) continue
+          let s: RepoSummary | Failed
+          try {
+            s = await repoSummary(io, repo)
+          } catch {
+            s = { error: 'git log 失敗' }
+          }
+          if (cc.gen !== gen) return
+          cc.summaries.set(repo, s)
+          n += 1
+          if (n % COMMITS_REDRAW_EVERY === 0) redraw()
+        }
+      } catch {
+        // the page shows what it has
+      } finally {
+        if (cc.gen === gen) {
+          cc.scanning = false
+          redraw()
+        }
+      }
+    })()
+  }
+  return repoRows(cc.repos, cc.summaries, new Set(touched), names, cc.scanning)
 }
 
 // What the changes page lists now: in the unpushed mode, each touched repo as git last
@@ -526,6 +613,7 @@ export const register: Register = on => {
     diffBusy: '',
     bashRepos: new Set(),
   }
+  const commitsCache: CommitsCache = { gen: 0, repos: undefined, scanning: false, summaries: new Map() }
   const resetChanges = () => {
     repoCache.clear()
     origs.clear()
@@ -541,6 +629,7 @@ export const register: Register = on => {
     changesCache.diffs.clear()
     changesCache.diffBusy = ''
     changesCache.bashRepos.clear()
+    dropCommits(commitsCache)
   }
   let timer: Timer | undefined
   let period = 0
@@ -1064,7 +1153,19 @@ export const register: Register = on => {
     const shown = await read($, ui)
     const changesMode: ChangeMode = shown.changesMode ?? 'session'
     const onChanges = shown.page === 'changes' || shown.page === 'changeDiff'
-    const changesView = onChanges ? await changesNow($, changesCache, changesMode, now, { cwd, home: changesHome }) : undefined
+    // the commits mode lists repos, not files: git is not asked of the session's files
+    const changesView: ChangesView | undefined = !onChanges
+      ? undefined
+      : changesMode === 'commits'
+        ? { mode: 'commits', groups: [], pending: false, total: 0 }
+        : await changesNow($, changesCache, changesMode, now, { cwd, home: changesHome })
+    const commitsShown = shown.page === 'changes' && changesMode === 'commits'
+    let touched: string[] = []
+    if (commitsShown) {
+      touched = reposOf(await read($, changes))
+      for (const r of changesCache.bashRepos) if (!touched.includes(r)) touched.push(r)
+    }
+    const commitList = commitsShown ? await commitListNow($, commitsCache, touched, { cwd, home: changesHome }) : undefined
     const diffKey = shown.diffKey ?? ''
     const diff = shown.page === 'changeDiff' ? { key: diffKey, rows: await diffNow($, changesCache, diffKey) } : undefined
     if (shown.page === 'fleet' || shown.page === 'fleetDetail') fleetOn?.(now)
@@ -1103,6 +1204,21 @@ export const register: Register = on => {
           // the pane stays as it was
         }
       })()
+    }
+    const commits: CommitsCtx = {
+      cwdName: commitRepoName(cwd, cwd, changesHome),
+      now,
+      ...(sessionStartedAt === undefined ? {} : { startedAt: sessionStartedAt }),
+      ...(commitList ? { list: commitList } : {}),
+      openRepo: (repo: string) => setUi(u => ({ ...u, page: 'commitTree', commitRepo: repo })),
+      refreshList: () => {
+        dropCommits(commitsCache)
+        try {
+          $.ui.invalidate('ui.render')
+        } catch {
+          // the next drawing asks again
+        }
+      },
     }
     return drawCockpit(elements, view, {
       cols: e.props.bodyColumns,
@@ -1154,6 +1270,7 @@ export const register: Register = on => {
         }
       },
       openDiff: (key: string) => setUi(u => ({ ...u, page: 'changeDiff', diffKey: key })),
+      commits,
     })
   })
 }
