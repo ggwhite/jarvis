@@ -5,6 +5,10 @@ import type { GraphCommit, GraphRow } from '../hooks/commitGraph'
 import type { ChangesIo } from '../hooks/changes'
 import { FIND, commitFileDiff, commitFiles, commitTreeOf, findArgv, findRepos, parseFound, parseLog, parseRefs, repoSummary } from '../hooks/gitCommits'
 import { GIT, isFailed } from '../hooks/gitDiff'
+import { LANE_COLORS, MAX_REPOS, commitRepoName, commitRows, laneColor, refLabels, relTime, repoRows } from '../hooks/commitsView'
+import type { CommitInfo, CommitTree, RepoSummary } from '../hooks/gitCommits'
+import { COMMIT_ICON } from '../hooks/icons'
+import { THEME } from '../hooks/jarvis'
 
 const c = (sha: string, ...parents: string[]): GraphCommit => ({ sha, parents })
 const txt = (r: GraphRow): string => r.cells.map(x => x.ch).join('')
@@ -219,5 +223,94 @@ describe("a commit's files and diffs", () => {
   test('failures say git diff 失敗', async () => {
     expect(await commitFiles(runIo({}), R, C1)).toEqual({ error: 'git diff 失敗' })
     expect(await commitFileDiff(runIo({}), R, C1, 'a')).toEqual({ error: 'git diff 失敗' })
+  })
+})
+
+describe('commitsView', () => {
+  test('relTime reads like a person says it', () => {
+    const MIN = 60_000
+    expect(relTime(-5)).toBe('剛剛')
+    expect(relTime(30_000)).toBe('剛剛')
+    expect(relTime(3 * MIN)).toBe('3 分鐘前')
+    expect(relTime(5 * 60 * MIN)).toBe('5 小時前')
+    expect(relTime(30 * 60 * MIN)).toBe('昨天')
+    expect(relTime(3 * 24 * 60 * MIN)).toBe('3 天前')
+    expect(relTime(65 * 24 * 60 * MIN)).toBe('2 個月前')
+    expect(relTime(800 * 24 * 60 * MIN)).toBe('2 年前')
+  })
+
+  test('the session directory is named by its basename, others as the changes page names them', () => {
+    expect(commitRepoName('/w/Acme', '/w/Acme', '/Users/u')).toBe('Acme')
+    expect(commitRepoName('/w/Acme/a/b', '/w/Acme', '/Users/u')).toBe('a/b')
+    expect(commitRepoName('/Users/u/dotfiles', '/w', '/Users/u')).toBe('~/dotfiles')
+  })
+
+  test('repoRows: touched repos first, then newest commit first, unanswered last', () => {
+    const sum = (time: number, ahead?: number): RepoSummary => ({ branch: 'main', time, ...(ahead !== undefined ? { ahead } : {}) })
+    const summaries = new Map<string, RepoSummary | { error: string }>([
+      ['/w/old', sum(100)],
+      ['/w/new', sum(300, 2)],
+      ['/w/mine', sum(50)],
+      ['/w/bad', { error: 'git log 失敗' }],
+    ])
+    const list = repoRows(['/w/bad', '/w/mine', '/w/new', '/w/old', '/w/wait'], summaries, new Set(['/w/mine']), { cwd: '/w', home: '/Users/u' }, true)
+    expect(list.rows.map(r => r.name)).toEqual(['mine', 'new', 'old', 'bad', 'wait'])
+    expect(list.rows[0]).toEqual({ repo: '/w/mine', name: 'mine', touched: true, pending: false, branch: 'main', time: 50 })
+    expect(list.rows[1]?.ahead).toBe(2)
+    expect(list.rows[3]).toEqual({ repo: '/w/bad', name: 'bad', touched: false, pending: false, error: 'git log 失敗' })
+    expect(list.rows[4]?.pending).toBe(true)
+    expect(list.scanning).toBe(true)
+    expect(list.total).toBe(5)
+  })
+
+  test('repoRows lists at most MAX_REPOS and counts the rest; no list yet is scanning; a failed find is its error', () => {
+    const many = Array.from({ length: MAX_REPOS + 5 }, (_, i) => `/w/r${i}`)
+    const list = repoRows(many, new Map(), new Set(), { cwd: '/w', home: '' }, false)
+    expect(list.rows.length).toBe(MAX_REPOS)
+    expect(list.more).toBe(5)
+    expect(repoRows(undefined, new Map(), new Set(), { cwd: '/w', home: '' }, false)).toEqual({ rows: [], more: 0, total: 0, scanning: true })
+    expect(repoRows({ error: '找不到 repo' }, new Map(), new Set(), { cwd: '/w', home: '' }, false)).toEqual({ rows: [], more: 0, total: 0, scanning: false, error: '找不到 repo' })
+  })
+
+  test('refLabels: HEAD branch, local, remote and tag, remote HEAD left out, at most two', () => {
+    expect(refLabels(['HEAD -> refs/heads/main', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main', 'tag: refs/tags/v1'], 4)).toEqual([
+      { kind: 'head', name: 'main' },
+      { kind: 'remote', name: 'origin/main' },
+      { kind: 'tag', name: 'v1' },
+    ])
+    expect(refLabels(['refs/heads/feat/x', 'HEAD'])).toEqual([
+      { kind: 'branch', name: 'feat/x' },
+      { kind: 'head', name: 'HEAD' },
+    ])
+    expect(refLabels(['refs/heads/a', 'refs/heads/b', 'refs/heads/c'])).toHaveLength(2)
+    expect(refLabels(['refs/stash'])).toEqual([])
+  })
+
+  test('commitRows: HEAD, merge and plain nodes, pushed or not, made this session or before', () => {
+    const ci = (sha: string, parents: string[], time: number, refs: string[] = []): CommitInfo => ({ sha, parents, author: 'w', time, refs, subject: sha })
+    const tree: CommitTree = {
+      branch: 'main',
+      upstream: 'origin/main',
+      ahead: 2,
+      commits: [ci('m', ['p', 'f'], 100_000, ['HEAD -> refs/heads/main']), ci('f', ['b'], 90_000), ci('p', ['b'], 80_000, ['refs/remotes/origin/main']), ci('b', [], 70_000)],
+      unpushed: ['m', 'f'],
+    }
+    const rows = commitRows(tree, 85_000)
+    expect(rows.map(r => r.graph.cells.map(c => c.ch).join(''))).toEqual([`${COMMIT_ICON.head}─╮`, '│ ●', '● │', '●─╯'])
+    expect(rows.map(r => r.unpushed)).toEqual([true, true, false, false])
+    expect(rows.map(r => r.session)).toEqual([true, true, false, false])
+    expect(rows[2]?.refs).toEqual([{ kind: 'remote', name: 'origin/main' }])
+    const merge = commitRows({ ...tree, commits: [ci('m', ['p', 'f'], 1)] }, undefined)
+    expect(merge[0]?.graph.cells[0]?.ch).toBe(COMMIT_ICON.merge)
+    expect(merge[0]?.session).toBe(false)
+  })
+
+  test('lane colors: six, distinct, none the alarm red; a blank is the frame color', () => {
+    expect(LANE_COLORS).toHaveLength(6)
+    expect(new Set(LANE_COLORS).size).toBe(6)
+    expect(LANE_COLORS).not.toContain(THEME.error)
+    expect(laneColor(0)).toBe(LANE_COLORS[0])
+    expect(laneColor(7)).toBe(LANE_COLORS[1])
+    expect(laneColor(-1)).toBe(THEME.frame)
   })
 })

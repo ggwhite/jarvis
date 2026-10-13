@@ -48,4 +48,14 @@ export const CHANGE_ICON = {
   repo: '\uf401',
 } as const
 
+// a commit tree's nodes (the plain and HEAD ones are not PUA glyphs: no space after them),
+// and the branch and tag marks before a ref's name
+export const COMMIT_ICON = {
+  node: '●',
+  head: '◉',
+  merge: '\uf419',
+  branch: '\ue725',
+  tag: '\uf02b',
+} as const
+
 export const withIcon = (icon: string, text: string): string => `${icon} ${text}`
