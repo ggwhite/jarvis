@@ -11,8 +11,9 @@ export const MAX_DIFF_ROWS = 2000
 export type DiffSeg = { t: string; color?: string; bold?: boolean }
 
 // One file row: its key (what a press opens), its path, the label drawn, who changed it,
-// its counts, a word instead of them when they cannot say (已刪除, 對 HEAD, an error), and
-// whether git has not answered yet.
+// its counts, a word instead of them when they cannot say (二進位, an error), a word before
+// them (已刪除, 對 HEAD), whether it is deleted (its removed lines alone shown), and whether
+// git has not answered yet.
 export type ChangeEntry = {
   key: string
   path: string
@@ -22,12 +23,17 @@ export type ChangeEntry = {
   del: number
   binary: boolean
   note?: string
+  mark?: string
+  deleted?: boolean
   pending: boolean
 }
 
+// `removed`: a worktree no longer on disk, drawn as one line saying how many of its files
+// the session changed, none listed.
 export type ChangeGroup = {
   key: string
   name: string
+  removed?: number
   ahead?: number
   error?: string
   note?: string
@@ -39,29 +45,43 @@ export type ChangeGroup = {
 
 export type ChangesView = { mode: ChangeMode; groups: ChangeGroup[]; pending: boolean; total: number }
 
-const noteOf = (s: FileStat): string | undefined => (s.deleted ? '已刪除' : s.binary ? '二進位' : s.vsHead ? '對 HEAD' : undefined)
-
+// `gone`: the changed files and worktree roots no longer on disk. A file outside git that
+// is gone was scratch and is not listed; a removed worktree's files are only counted.
+// The counts a group's rows show add up to the group's.
 export function sessionGroups(
   list: readonly JarvisChange[],
   stats: ReadonlyMap<string, FileStat | Failed>,
   names: { cwd: string; home: string },
+  gone: ReadonlySet<string> = new Set(),
 ): ChangeGroup[] {
   const groups: ChangeGroup[] = []
   for (const c of list.slice(0, MAX_LISTED)) {
+    const s = stats.get(c.path)
+    if (c.repo === null && (gone.has(c.path) || (s !== undefined && !isFailed(s) && s.deleted))) continue
     const key = c.repo ?? ''
     let g = groups.find(x => x.key === key)
     if (!g) {
-      g = { key, name: repoName(c.repo, names.cwd, names.home), entries: [], add: 0, del: 0, pending: false }
+      const main = c.repo !== null && c.worktree !== undefined ? c.mainRepo : undefined
+      if (main !== undefined && gone.has(key)) g = { key, name: `worktree ${c.worktree}`, removed: 0, entries: [], add: 0, del: 0, pending: false }
+      else {
+        const name = main !== undefined ? `${repoName(main, names.cwd, names.home)} · worktree ${c.worktree}` : repoName(c.repo, names.cwd, names.home)
+        g = { key, name, entries: [], add: 0, del: 0, pending: false }
+      }
       groups.push(g)
     }
-    const s = stats.get(c.path)
+    if (g.removed !== undefined) {
+      g.removed += 1
+      continue
+    }
     const base = { key: `s:${c.path}`, path: c.path, label: relPath(c.path, c.repo, names.home), actors: c.actors }
     if (s === undefined) g.entries.push({ ...base, add: 0, del: 0, binary: false, pending: true })
     else if (isFailed(s)) g.entries.push({ ...base, add: 0, del: 0, binary: false, note: s.error, pending: false })
+    else if (s.binary) g.entries.push({ ...base, add: 0, del: 0, binary: true, note: '二進位', pending: false })
     else {
-      const note = noteOf(s)
-      g.entries.push({ ...base, add: s.add, del: s.del, binary: s.binary, ...(note ? { note } : {}), pending: false })
-      g.add += s.add
+      const add = s.deleted ? 0 : s.add
+      const mark = s.deleted ? '已刪除' : s.vsHead ? '對 HEAD' : undefined
+      g.entries.push({ ...base, add, del: s.del, binary: false, ...(mark ? { mark } : {}), ...(s.deleted ? { deleted: true } : {}), pending: false })
+      g.add += add
       g.del += s.del
     }
     g.pending = g.pending || s === undefined

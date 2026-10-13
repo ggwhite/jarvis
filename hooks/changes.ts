@@ -6,6 +6,7 @@ export type ChangeMode = 'session' | 'unpushed'
 // What the changes page asks of the machine: a hook in register.tsx builds it from its `$`.
 export type ChangesIo = {
   stat: (path: string) => Promise<{ kind: 'file' | 'dir' | 'other'; size: number; mtimeMs: number } | undefined>
+  read: (path: string) => Promise<string | undefined>
   write: (path: string, text: string) => Promise<boolean>
   run: (argv: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string } | undefined>
 }
@@ -65,12 +66,35 @@ export async function repoOf(io: Pick<ChangesIo, 'stat'>, file: string, cache: M
   }
 }
 
+// A linked worktree: the repo it was added from and its name under `.git/worktrees`.
+export type Worktree = { mainRepo: string; name: string }
+
+// The worktree a `.git` file's `gitdir: <main>/.git/worktrees/<name>` line names, a relative
+// gitdir read from `repo`; undefined for anything else (a submodule's, say).
+export function parseGitdir(text: string, repo: string): Worktree | undefined {
+  const line = /^gitdir:\s*(.+?)\s*$/m.exec(text)?.[1]
+  if (line === undefined) return undefined
+  const dir = absolutePath(line, repo, '')
+  const m = dir === undefined ? null : /^(.*)\/\.git\/worktrees\/([^/]+)$/.exec(dir)
+  if (!m) return undefined
+  return { mainRepo: m[1] === '' ? '/' : (m[1] ?? '/'), name: m[2] ?? '' }
+}
+
+// The worktree `repo` is, by its `.git` file; undefined when `.git` is a directory or unread.
+export async function worktreeOf(io: Pick<ChangesIo, 'read'>, repo: string): Promise<Worktree | undefined> {
+  const text = await io.read(`${repo === '/' ? '' : repo}/.git`)
+  return text === undefined ? undefined : parseGitdir(text, repo)
+}
+
 export function noteChange(
   list: readonly JarvisChange[],
-  seen: { path: string; repo: string | null; actor: string; orig: string },
+  seen: { path: string; repo: string | null; actor: string; orig: string; worktree?: Worktree },
 ): JarvisChange[] {
   const i = list.findIndex(c => c.path === seen.path)
-  if (i < 0) return [...list, { path: seen.path, repo: seen.repo, actors: [seen.actor], seq: list.length, touches: 1, orig: seen.orig }]
+  if (i < 0) {
+    const wt = seen.worktree ? { mainRepo: seen.worktree.mainRepo, worktree: seen.worktree.name } : {}
+    return [...list, { path: seen.path, repo: seen.repo, actors: [seen.actor], seq: list.length, touches: 1, orig: seen.orig, ...wt }]
+  }
   return list.map((c, j) =>
     j !== i ? c : { ...c, touches: c.touches + 1, actors: c.actors.includes(seen.actor) ? c.actors : [...c.actors, seen.actor] },
   )
