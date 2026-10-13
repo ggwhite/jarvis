@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { JarvisChange } from '../types'
-import { CREATED, dirOf, editOf, noteChange, relPath, repoName, repoOf, reposOf, tailCells } from '../hooks/changes'
+import { CREATED, bashPaths, dirOf, editOf, noteChange, relPath, repoName, repoOf, reposOf, tailCells } from '../hooks/changes'
 import type { ChangesIo } from '../hooks/changes'
 import { BOOT_MS, cellWidth } from '../hooks/jarvis'
 import { ioOf } from '../hooks/register'
@@ -89,6 +89,41 @@ describe('repoOf', () => {
   })
 })
 
+describe('bashPaths', () => {
+  const H = '/Users/u'
+  test('cd, pushd and git -C name their directory', () => {
+    expect(bashPaths('cd a/b && go test ./...', '/w', H)).toEqual(['/w/a/b', '/w/a/b/...'])
+    expect(bashPaths('pushd sub', '/w', H)).toEqual(['/w/sub'])
+    expect(bashPaths('git -C a/b status', '/w', H)).toEqual(['/w/a/b'])
+    expect(bashPaths('/usr/bin/git -C sub log', '/w', H)).toEqual(['/w/sub'])
+  })
+  test('words that look like paths count; options, -- and URLs do not', () => {
+    expect(bashPaths("sed -i 's/x/y/' a/b/c.go", '/w', H)).toEqual(['/w/s/x/y', '/w/a/b/c.go'])
+    expect(bashPaths('curl -o ./out https://x.io/a/b -- --path=/w/z', '/w', H)).toEqual(['/w/out'])
+    expect(bashPaths('ls -la', '/w', H)).toEqual([])
+  })
+  test('quotes come off', () => {
+    expect(bashPaths(`cat "a b/c.go" 'd/e f.md'`, '/w', H)).toEqual(['/w/a b/c.go', '/w/d/e f.md'])
+  })
+  test('~ is home, an absolute path stays, and only paths under cwd are kept', () => {
+    expect(bashPaths('cat ~/x', H, H)).toEqual([`${H}/x`])
+    expect(bashPaths('cat ~/x', '/w', '')).toEqual([])
+    expect(bashPaths('cat /w/a/b.go /tmp/x ../y', '/w', H)).toEqual(['/w/a/b.go'])
+    expect(bashPaths('cd .', '/w', H)).toEqual(['/w'])
+  })
+  test('a relative path after cd X on the line is read from X', () => {
+    expect(bashPaths('cd a && cat ../b/x', '/w', H)).toEqual(['/w/a', '/w/b/x'])
+    expect(bashPaths('cd /tmp && cat a/b', '/w', H)).toEqual([])
+  })
+  test('the same path once, at most 20', () => {
+    expect(bashPaths('cat a/x a/x ./a/x', '/w', H)).toEqual(['/w/a/x'])
+    const many = Array.from({ length: 30 }, (_, i) => `d/${i}`).join(' ')
+    const out = bashPaths(`ls ${many}`, '/w', H)
+    expect(out).toHaveLength(20)
+    expect(out[19]).toBe('/w/d/19')
+  })
+})
+
 describe('noteChange', () => {
   const seen = (path: string, actor: string, orig = '/tmp/c/1.orig') => ({ path, repo: '/w/r', actor, orig })
   test('a new path is appended in order', () => {
@@ -162,7 +197,7 @@ let worldClock: { advance: (ms: number) => Promise<unknown> } | undefined
 // results by file path; what it was asked is logged in order.
 export function world(
   on: On,
-  opts: { dirs?: string[]; files?: Record<string, number>; git?: Git; results?: Record<string, unknown>; failWrites?: boolean; holdWrite?: (text: string) => Promise<void> | undefined; holdRun?: (argv: string[]) => Promise<void> } = {},
+  opts: { dirs?: string[]; files?: Record<string, number>; git?: Git; results?: Record<string, unknown>; failWrites?: boolean; holdWrite?: (text: string) => Promise<void> | undefined; holdRun?: (argv: string[]) => Promise<void>; denied?: string[] } = {},
 ) {
   const log: string[] = []
   const writes = new Map<string, string>()
@@ -197,7 +232,8 @@ export function world(
     return { value: undefined as void }
   })
   on('tool.call', async (_$, e) => {
-    const input = e as { file_path?: string; notebook_path?: string }
+    const input = e as { file_path?: string; notebook_path?: string; command?: string }
+    if (input.command !== undefined && (opts.denied ?? []).includes(input.command)) return { deny: 'blocked' }
     const r = opts.results?.[input.file_path ?? input.notebook_path ?? '']
     return { result: (typeof r === 'function' ? r(e) : (r ?? {})) as never }
   })
@@ -629,6 +665,108 @@ describe('unpushed mode', () => {
     const text = (await drawn($)).join('\n')
     expect(text).toMatch(/主線\s+service\/order\.go\s+\+30 −5/)
     expect(text).not.toContain('+99')
+  })
+})
+
+describe('repos touched by Bash', () => {
+  const G = '/usr/bin/git'
+  const R = '/w/acme/payments'
+  const S = '/w/legacy/billing'
+  const A = `${R}/service/order.go`
+  const answersOf = (repo: string, numstat: string): Record<string, Run> => ({
+    [`${G} -C ${repo} symbolic-ref -q --short refs/remotes/origin/HEAD`]: { exitCode: 0, stdout: 'origin/main\n' },
+    [`${G} -C ${repo} merge-base HEAD origin/main`]: { exitCode: 0, stdout: 'b4se\n' },
+    [`${G} -C ${repo} rev-list --count b4se..HEAD`]: { exitCode: 0, stdout: '0\n' },
+    [`${G} -C ${repo} diff --numstat -z --no-renames b4se`]: { exitCode: 0, stdout: numstat },
+    [`${G} -C ${repo} ls-files --others --exclude-standard -z`]: { exitCode: 0, stdout: '' },
+  })
+  const answers = { ...answersOf(R, '30\t5\tservice/order.go\x00'), ...answersOf(S, '4\t1\tapi/pay.go\x00') }
+  const setup = (on: On, extra: { denied?: string[] } = {}) =>
+    world(on, {
+      dirs: [R, `${R}/.git`, S, `${S}/.git`, `${S}/api`],
+      files: { [A]: 1, [`${S}/api/pay.go`]: 1 },
+      results: { [A]: editResult(A, 'a') },
+      git: answers,
+      ...extra,
+    })
+  const bash = ($: Engine, command: string, agentId?: string) =>
+    $.tool.call({ tool: 'Bash', command, ...(agentId ? { agentId } : {}) } as never)
+  const unpushedText = async ($: Engine) => {
+    await showChanges($)
+    const ui = await pane($)
+    await ui.press({ key: 'chg-mode-unpushed' })
+    await ui.unmount()
+    await settle()
+    await drawn($)
+    await settle()
+    return (await drawn($)).join('\n')
+  }
+  const mergeBases = (w: { runs: string[][] }, repo: string) =>
+    w.runs.filter(r => r.includes('merge-base') && r.includes(repo)).length
+
+  test('a repo a Bash call went into is listed in the unpushed mode, its files 其他', async ($, on) => {
+    setup(on)
+    await start($)
+    await bash($, 'cd legacy/billing && go test ./...')
+    const text = await unpushedText($)
+    expect(text).toContain(' legacy/billing')
+    expect(text).toMatch(/其他\s+api\/pay\.go\s+\+4 −1/)
+  })
+
+  test('a recorded repo comes first, then the Bash ones; a subagent Bash counts', async ($, on) => {
+    setup(on)
+    await start($)
+    await edit($, A)
+    await bash($, `sed -i 's/x/y/' legacy/billing/api/pay.go`, 'agent-1')
+    const text = await unpushedText($)
+    expect(text).toMatch(/主線\s+service\/order\.go\s+\+30 −5/)
+    expect(text).toMatch(/其他\s+api\/pay\.go\s+\+4 −1/)
+    expect(text.indexOf('acme/payments')).toBeLessThan(text.indexOf('legacy/billing'))
+  })
+
+  test('a denied Bash call is not recorded', async ($, on) => {
+    const w = setup(on, { denied: ['cd legacy/billing'] })
+    await start($)
+    const out = await bash($, 'cd legacy/billing')
+    expect((out as { deny?: string }).deny).toBe('blocked')
+    const text = await unpushedText($)
+    expect(text).not.toContain('legacy/billing')
+    expect(mergeBases(w, S)).toBe(0)
+  })
+
+  test('paths that are not there, or whose stat throws, leave the call as it was', async ($, on) => {
+    world(on, { results: { '': { stdout: 'ok' } } })
+    await start($)
+    const out = await bash($, 'cat nothing/here ./gone && cd missing')
+    expect((out as { result?: unknown }).result).toEqual({ stdout: 'ok' })
+  })
+
+  test('/clear forgets the repos Bash touched', async ($, on) => {
+    const w = setup(on)
+    await start($)
+    await bash($, 'git -C legacy/billing status')
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    const text = await unpushedText($)
+    expect(text).toContain('這個 session 還沒碰過任何 git repo')
+    expect(mergeBases(w, S)).toBe(0)
+  })
+
+  test('a repo touched again is asked of git once; a new one alone is asked', async ($, on) => {
+    const w = setup(on)
+    await start($)
+    await edit($, A)
+    await bash($, 'cd acme/payments && go test ./...')
+    await bash($, 'git -C acme/payments status')
+    await unpushedText($)
+    expect(mergeBases(w, R)).toBe(1)
+    await bash($, 'cd legacy/billing')
+    await bash($, 'git -C legacy/billing log')
+    await drawn($)
+    await settle()
+    const text = (await drawn($)).join('\n')
+    expect(text).toContain(' legacy/billing')
+    expect(mergeBases(w, R)).toBe(1)
+    expect(mergeBases(w, S)).toBe(1)
   })
 })
 

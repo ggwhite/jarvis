@@ -35,7 +35,7 @@ import { SUIT_REST_TICK_MS } from './suit'
 import { EMPTY_FLEET, FLEET_MS, FLEET_RUN_TIMEOUT_MS, LIMITS_PATH, focusArgv, refreshFleet, withJump } from './fleetSource'
 import type { FleetIo } from './fleetSource'
 import type { JarvisChange } from '../types'
-import { CREATED, UNKNOWN, editOf, noteChange, repoOf, reposOf } from './changes'
+import { CREATED, UNKNOWN, bashPaths, editOf, noteChange, repoOf, reposOf } from './changes'
 import type { ChangeMode, ChangesIo, EditSeen } from './changes'
 import { isFailed, sessionDiff, sessionStat, unpushedDiff, unpushedOf } from './gitDiff'
 import type { DiffRow, Failed, FileStat, Unpushed, UnpushedFile } from './gitDiff'
@@ -167,7 +167,8 @@ async function recordChange(
 // keeps what git said of each touched repo, asked on entering the mode and on 重新整理;
 // `unpushedGen` counts the drops, so an answer to an older ask stores nothing. The diff
 // page: what each listed file's key stands for, each key's diff by the signature it was
-// taken at, and the key git is diffing; `gen` drops those too.
+// taken at, and the key git is diffing; `gen` drops those too. `bashRepos`: the repos
+// the session's Bash calls touched, listed in the unpushed mode beside the recorded ones.
 type ChangesCache = {
   stats: Map<string, { sig: string; stat: FileStat | Failed }>
   busy: boolean
@@ -180,11 +181,37 @@ type ChangesCache = {
   opened: Map<string, Opened>
   diffs: Map<string, { sig: string; rows: DiffRow[] | Failed }>
   diffBusy: string
+  bashRepos: Set<string>
 }
 
 type Opened =
   | { mode: 'session'; change: JarvisChange }
   | { mode: 'unpushed'; repo: string; base: string; file: UnpushedFile }
+
+// Notes the repos a Bash line touched: each path it names that exists, a file standing
+// for its directory. A reset while it looks stores nothing.
+async function recordBash(
+  $: Pick<EngineInterface, 'fs' | 'process'>,
+  command: unknown,
+  names: { cwd: string; home: string },
+  cache: ChangesCache,
+  repoCache: Map<string, string | null>,
+): Promise<void> {
+  try {
+    if (typeof command !== 'string') return
+    const gen = cache.gen
+    const io = ioOf($)
+    for (const path of bashPaths(command, names.cwd, names.home)) {
+      const s = await io.stat(path)
+      if (s === undefined) continue
+      // repoOf walks up from the directory holding its argument
+      const repo = await repoOf(io, s.kind === 'dir' ? `${path}/` : path, repoCache)
+      if (repo !== null && cache.gen === gen) cache.bashRepos.add(repo)
+    }
+  } catch {
+    // the call itself already ran
+  }
+}
 
 // forgets the unpushed answers and the diffs of unpushed files, those still coming
 // included: the next drawing asks git again
@@ -211,6 +238,7 @@ async function changesNow(
   const all = await read($, changes)
   if (mode === 'unpushed') {
     const repos = reposOf(all)
+    for (const repo of cache.bashRepos) if (!repos.includes(repo)) repos.push(repo)
     const missing = repos.filter(r => !cache.unpushed.has(r))
     if (missing.length > 0 && !cache.unpushedBusy) {
       cache.unpushedBusy = true
@@ -453,6 +481,7 @@ export const register: Register = on => {
     opened: new Map(),
     diffs: new Map(),
     diffBusy: '',
+    bashRepos: new Set(),
   }
   const resetChanges = () => {
     repoCache.clear()
@@ -466,6 +495,7 @@ export const register: Register = on => {
     changesCache.opened = new Map()
     changesCache.diffs.clear()
     changesCache.diffBusy = ''
+    changesCache.bashRepos.clear()
   }
   let timer: Timer | undefined
   let period = 0
@@ -847,6 +877,8 @@ export const register: Register = on => {
       const out = await next(e)
       ok = out.isError !== true
       if (ok && out.deny === undefined) await recordChange($, tool, out.result, id ?? MAIN_ACTOR, cacheDir, repoCache, origs)
+      if (tool === 'Bash' && out.deny === undefined)
+        await recordBash($, (e as unknown as Record<string, unknown>)['command'], { cwd, home: changesHome }, changesCache, repoCache)
       return out
     } catch (err) {
       ok = false
