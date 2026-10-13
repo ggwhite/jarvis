@@ -188,9 +188,9 @@ type Opened =
   | { mode: 'session'; change: JarvisChange }
   | { mode: 'unpushed'; repo: string; base: string; file: UnpushedFile }
 
-// Notes the repos a Bash line run in `shell` touched: each path under the session's
-// `cwd` it names that exists, a file standing for its directory. A reset while it looks
-// stores nothing.
+// Notes the repos a Bash line run in `shell` touched: `shell` itself when it is below the
+// session's `cwd` (a bare `touch a.txt` names no path), and each path under `cwd` the line
+// names that exists, a file standing for its directory. A reset while it looks stores nothing.
 async function recordBash(
   $: Pick<EngineInterface, 'fs' | 'process'>,
   command: unknown,
@@ -203,7 +203,9 @@ async function recordBash(
     if (typeof command !== 'string') return
     const gen = cache.gen
     const io = ioOf($)
-    for (const path of bashPaths(command, shell, names.home, names.cwd)) {
+    const paths = bashPaths(command, shell, names.home, names.cwd)
+    if (names.cwd !== '' && shell.startsWith(`${names.cwd}/`) && !paths.includes(shell)) paths.unshift(shell)
+    for (const path of paths) {
       const s = await io.stat(path)
       if (s === undefined) continue
       // repoOf walks up from the directory holding its argument

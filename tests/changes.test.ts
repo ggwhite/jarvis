@@ -796,6 +796,33 @@ describe('repos touched by Bash', () => {
     expect(mergeBases(w, S)).toBe(0)
   })
 
+  test('a line naming no path records the repo the shell sits in', async ($, on) => {
+    const w = setup(on, { shellCwd: () => S })
+    await start($)
+    await bash($, "sed -i '' s/a/b/ main.go")
+    const text = await unpushedText($)
+    expect(text).toContain('\uf401 legacy/billing')
+    expect(mergeBases(w, S)).toBe(1)
+  })
+
+  test('the shell at the session directory adds no repo of its own', async ($, on) => {
+    const w = world(on, { dirs: ['/w', '/w/.git'], git: answers, shellCwd: () => '/w' })
+    await start($)
+    await bash($, 'git commit -m x')
+    expect(await unpushedText($)).toContain('這個 session 還沒碰過任何 git repo')
+    expect(w.runs.filter(r => r.includes('merge-base'))).toHaveLength(0)
+  })
+
+  test('a shell in a worktree under the session directory records the worktree', async ($, on) => {
+    const T = '/w/.claude/worktrees/x'
+    world(on, { dirs: ['/w/.git', T], files: { [`${T}/.git`]: 1 }, git: answersOf(T, '2\t0\ta.go\x00'), shellCwd: () => T })
+    await start($)
+    await bash($, 'touch a.txt')
+    const text = await unpushedText($)
+    expect(text).toContain('\uf401 .claude/worktrees/x')
+    expect(text).toMatch(/其他\s+a\.go\s+\+2 −0/)
+  })
+
   test('a relative path is read from where the shell is, after an earlier cd', async ($, on) => {
     // the shell sits in acme/payments, as $.session.cwd() says after a `cd` there
     let shell = '/w'
