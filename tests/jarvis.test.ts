@@ -67,6 +67,8 @@ import {
   reactorOf,
   roleModels,
   topTools,
+  fmtUsd,
+  roleBreakdown,
 } from '../hooks/jarvis'
 import { HEALTH_TEXT, MIN_EVENT_ROWS, MIN_FINISHED, MIN_RECENT, RECOVERED, ROLE_COLOR, TITLE } from '../hooks/cockpit'
 import { PHASE_ICON, ROLE_ICON, TAB_ICON, TITLE_ICON } from '../hooks/icons'
@@ -5782,5 +5784,211 @@ describe('nerd font icons', () => {
     const found = allButtons(await draw($, 50, 100))
     expect(found.some(b => b.props?.['key'] === 'suit-mark')).toBe(true)
     expect(found.filter(b => b.props?.['hotkey'] !== undefined)).toEqual([])
+  })
+})
+
+describe('role detail page', () => {
+  const OPUS = 'claude-opus-5-5'
+
+  // spawns on the models in `plan` by order: agent-1 on plan[0], agent-2 on plan[1], ...
+  const crew = (on: On, plan: string[]) => {
+    const clock = mock.clock(on, { now: 0 })
+    on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+    on('turn.complete', async (_$, e) => ({ text: e.answer }))
+    on('tool.call', async () => ({ result: {} as never }))
+    let n = 0
+    on('agent.spawn', async () => ({ model: plan[n] ?? HAIKU, agentId: `agent-${(n += 1)}` }))
+    return clock
+  }
+
+  // the role page's card, a string a row: its title row reads the role and its count
+  const roleCard = (tree: Node, role: string): string[] =>
+    (cardOf(tree, new RegExp(`^[\\uE000-\\uF8FF] ${role} .*\\d+ 次$`)).children ?? []).map(textOf)
+
+  const buttonsOf = async ($: Engine, rows = 40, cols = 100) => {
+    const ui = await mountPane($, rows, cols)
+    const found = await ui.findAll({ type: 'Button' })
+    await ui.unmount()
+    return found
+  }
+
+  // four workers: Opus done, Sonnet failed, Opus done, Sonnet done; and a verifier
+  const fourWorkers = async ($: Engine) => {
+    await $.agent.spawn(spawnIn('first opus', 'worker'))
+    await $.agent.spawn(spawnIn('sonnet that fails', 'worker'))
+    await $.agent.spawn(spawnIn('second opus', 'worker'))
+    await $.agent.spawn(spawnIn('sonnet that works', 'worker'))
+    await $.agent.spawn(spawnIn('check', 'verifier'))
+    await $.turn.complete(complete('agent-1', { durationMs: 60_000, usage: usage(OPUS, 100_000, 10_000, 0, 0) }))
+    await $.turn.complete(
+      complete('agent-2', { reason: 'aborted', isAborted: true, durationMs: 30_000, usage: usage(SONNET, 50_000, 5000, 0, 0) }),
+    )
+    await $.turn.complete(complete('agent-3', { durationMs: 120_000, usage: usage(OPUS, 200_000, 20_000, 0, 0) }))
+    await $.turn.complete(complete('agent-4', { durationMs: 90_000, usage: usage(SONNET, 20_000, 2000, 0, 0) }))
+    await $.turn.complete(complete('agent-5', { usage: usage(HAIKU, 1000, 100, 0, 0) }))
+  }
+
+  test('a dispatch row is a plain Button opening its role page; 返回 goes back to the stats page', async ($, on) => {
+    crew(on, [OPUS, SONNET, OPUS, SONNET, HAIKU])
+    await fourWorkers($)
+    await press($, 'tab-stats', 40, 100)
+    const roleButtons = (await buttonsOf($)).filter(b => b.key?.startsWith('role-'))
+    expect(roleButtons.map(b => b.key)).toEqual(['role-Explore', 'role-clerk', 'role-worker', 'role-verifier', 'role-fork'])
+    expect(roleButtons.every(b => b.props['plain'] === true && b.props['hotkey'] === undefined)).toBe(true)
+
+    await press($, 'role-worker', 40, 100)
+    const tree = await draw($, 40, 100)
+    expect(roleCard(tree, 'worker')[0]).toMatch(/ 4 次$/)
+    // the stats tab stays marked on the role page
+    const ui = await mountPane($, 40, 100)
+    expect((await ui.find({ key: 'tab-stats' }))?.children).toEqual([
+      expect.objectContaining({ type: 'Text', props: { bold: true, inverse: true, color: THEME.accent } }),
+    ])
+    expect((await ui.find({ key: 'back' }))?.text).toBe('返回')
+    await ui.unmount()
+
+    await press($, 'back', 40, 100)
+    expect(blockTitles(await draw($, 40, 100)).slice(2).flat()).toContain('DISPATCH')
+  })
+
+  test('the runs by model: counts, tokens, failures, the most run first', async ($, on) => {
+    crew(on, [OPUS, SONNET, OPUS, SONNET, HAIKU])
+    await fourWorkers($)
+    await press($, 'tab-stats', 40, 100)
+    await press($, 'role-worker', 40, 100)
+    const rows = roleCard(await draw($, 40, 100), 'worker')
+    expect(rows[1]).toMatch(/^Opus +[█▏▎▍▌▋▊▉░]+ 2 次  330k  ≈\$\S+  平均 1:30 +$/)
+    expect(rows[2]).toMatch(/^Sonnet [█▏▎▍▌▋▊▉░]+ 2 次 {3}77k  ≈\$\S+  平均 1:00  FAIL 1$/)
+    expect(rows[3]).toMatch(/^─+$/)
+  })
+
+  test('roleBreakdown: by model as roleModels keys them, most runs first, failures and mean elapsed', () => {
+    let list: JarvisAgent[] = []
+    const run = (id: string, type: string, model: string, reason: string, ms: number, i: number, o: number) => {
+      list = addAgent(list, { id, type, description: id, model, now: 0 })
+      list = finishTurn(list, id, { reason, durationMs: ms, usage: usage(model, i, o, 0, 0) }, ms)
+    }
+    run('a', 'worker', SONNET, 'answer', 1000, 10, 1)
+    run('b', 'worker', OPUS, 'answer', 2000, 100, 10)
+    run('c', 'worker', OPUS, 'error', 4000, 200, 20)
+    run('d', 'clerk', HAIKU, 'answer', 1000, 5, 5)
+    run('e', 'worker', 'mystery-model', 'answer', 3000, 7, 0)
+    const rows = roleBreakdown(list, 'worker', 10_000)
+    expect(rows.map(r => [r.label, r.count, r.tokens, r.failed, r.avgMs])).toEqual([
+      ['Opus', 2, 330, 1, 3000],
+      ['mystery-model', 1, 7, 0, 3000],
+      ['Sonnet', 1, 11, 0, 1000],
+    ])
+    expect(rows.find(r => r.label === 'mystery-model')?.cost).toBeUndefined()
+    expect(roleBreakdown(list, 'fork', 10_000)).toEqual([])
+  })
+
+  test('the cost is costAt, the MODELS card\'s own: the same figure on both pages', async ($, on) => {
+    crew(on, [OPUS, OPUS])
+    await $.agent.spawn(spawnIn('one', 'worker'))
+    await $.agent.spawn(spawnIn('two', 'worker'))
+    await $.turn.complete(complete('agent-1', { usage: usage(OPUS, 300_000, 40_000, 1_000_000, 50_000) }))
+    await $.turn.complete(complete('agent-2', { usage: usage(OPUS, 100_000, 10_000, 0, 0) }))
+    await press($, 'tab-stats', 40, 120)
+    const figures = modelCard(await draw($, 40, 120)).rows.find(r => r.startsWith('≈')) ?? ''
+    const models = /^≈(\$[\d.]+) vs/.exec(figures)?.[1]
+    expect(models).toBeDefined()
+    await press($, 'role-worker', 40, 120)
+    const opus = roleCard(await draw($, 40, 120), 'worker').find(r => r.startsWith('Opus')) ?? ''
+    expect(opus).toContain(`≈${models}`)
+    // and by the numbers: one role on one model costs what summarize says
+    let list: JarvisAgent[] = []
+    list = addAgent(list, { id: 'x', type: 'worker', description: 'x', model: OPUS, now: 0 })
+    list = finishTurn(list, 'x', { reason: 'answer', durationMs: 1, usage: usage(OPUS, 300_000, 40_000, 1_000_000, 50_000) }, 1)
+    list = addAgent(list, { id: 'y', type: 'worker', description: 'y', model: OPUS, now: 0 })
+    list = finishTurn(list, 'y', { reason: 'answer', durationMs: 1, usage: usage(OPUS, 100_000, 10_000, 0, 0) }, 1)
+    expect(roleBreakdown(list, 'worker', 1)[0]?.cost).toBe(summarize(list).cost)
+    expect(fmtUsd(summarize(list).cost)).toBe(models)
+  })
+
+  test('the runs newest first, each a plain Button to its detail page, whose 返回 comes back here', async ($, on) => {
+    const clock = crew(on, [OPUS, SONNET, OPUS, SONNET, HAIKU, OPUS])
+    await fourWorkers($)
+    await clock.advance(1000)
+    await $.agent.spawn(spawnIn('still going', 'worker'))
+    await press($, 'tab-stats', 40, 100)
+    await press($, 'role-worker', 40, 100)
+    const rows = roleCard(await draw($, 40, 100), 'worker').slice(4)
+    expect(rows.map(r => /[⌜⌞]MK-(\d+)[⌝⌟]/.exec(r)?.[1])).toEqual(['6', '4', '3', '2', '1'])
+    expect(rows[0]).toMatch(/^⌜MK-6⌝/)
+    expect(rows[1]).toMatch(new RegExp(`^⌞MK-4⌟ ${PHASE_ICON.complete} Sonnet sonnet that works +1:30 +22k$`))
+    expect(rows[3]).toContain(PHASE_ICON.failed)
+    const runs = (await buttonsOf($)).filter(b => b.key?.startsWith('role-run-'))
+    expect(runs.map(b => [b.key, b.props['plain'], b.props['hotkey']])).toEqual(
+      [6, 4, 3, 2, 1].map(n => [`role-run-${n}`, true, undefined]),
+    )
+
+    await press($, 'role-run-3', 40, 100)
+    const detail = linesOf(await draw($, 40, 100)).join('\n')
+    expect(detail).toContain('MK-3')
+    expect(detail).toContain('second opus')
+    await press($, 'back', 40, 100)
+    expect(roleCard(await draw($, 40, 100), 'worker')[0]).toMatch(/ 5 次$/)
+    // opened from the now page, the detail page still goes back to the now page
+    await press($, 'tab-now', 40, 100)
+    await press($, 'agent-3', 40, 100)
+    await press($, 'back', 40, 100)
+    expect(blockTitles(await draw($, 40, 100)).slice(2).flat()).toContain('子代理')
+  })
+
+  test('a role never dispatched opens to its empty page', async ($, on) => {
+    crew(on, [OPUS])
+    await $.agent.spawn(spawnIn('one', 'worker'))
+    await press($, 'tab-stats', 40, 100)
+    await press($, 'role-clerk', 40, 100)
+    const rows = roleCard(await draw($, 40, 100), 'clerk')
+    expect(rows[0]).toMatch(/ 0 次$/)
+    expect(rows[1]).toMatch(/^這個角色還沒有派工/)
+  })
+
+  test('a workflow run\'s agents have their role page like any other role', async ($, on) => {
+    crew(on, [SONNET, SONNET])
+    await $.agent.spawn(spawnIn('wf one', 'workflow-subagent', { runId: WF, agentIndex: 0 }))
+    await $.agent.spawn(spawnIn('wf two', 'workflow-subagent', { runId: WF, agentIndex: 1 }))
+    await $.turn.complete(complete('agent-1', { usage: usage(SONNET, 1000, 100, 0, 0) }))
+    await press($, 'tab-stats', 40, 100)
+    await press($, 'role-workflow', 40, 100)
+    const rows = roleCard(await draw($, 40, 100), 'workflow')
+    expect(rows[0]).toMatch(/ 2 次$/)
+    expect(rows[1]).toMatch(/^Sonnet .* 2 次/)
+    expect(rows.slice(3).map(r => /MK-(\d+)/.exec(r)?.[1])).toEqual(['2', '1'])
+  })
+
+  test('at 40, 60, 80 and 120 columns nothing overruns: the description cut first, then the mean and the cost', async ($, on) => {
+    crew(on, [OPUS, SONNET, OPUS, SONNET, HAIKU, OPUS])
+    await fourWorkers($)
+    await $.agent.spawn(spawnIn('a very long description of the job that will not fit narrow', 'worker'))
+    await press($, 'tab-stats', 40, 100)
+    await press($, 'role-worker', 40, 100)
+    for (const cols of [40, 60, 80, 120]) {
+      const tree = await draw($, 40, cols)
+      expect([cols, Math.max(...rowWidths(tree)) <= cols]).toEqual([cols, true])
+      const rows = roleCard(tree, 'worker')
+      expect([cols, rows.length > 0]).toEqual([cols, true])
+      for (const r of rows) expect([cols, r, cellWidth(r) <= cols - 4]).toEqual([cols, r, true])
+      const long = rows.find(r => r.includes('a very')) ?? ''
+      expect([cols, long.includes('…')]).toEqual([cols, cols < 120])
+      const opus = rows.find(r => r.startsWith('Opus')) ?? ''
+      expect([cols, opus.includes('平均'), opus.includes('≈$')]).toEqual([cols, cols >= 60, cols >= 60])
+    }
+  })
+
+  test('no Button on the stats, role or detail page carries a hotkey', async ($, on) => {
+    crew(on, [OPUS, SONNET, OPUS, SONNET, HAIKU])
+    await fourWorkers($)
+    await press($, 'tab-stats', 40, 100)
+    const all = [...(await buttonsOf($))]
+    await press($, 'role-worker', 40, 100)
+    all.push(...(await buttonsOf($)))
+    await press($, 'role-run-1', 40, 100)
+    all.push(...(await buttonsOf($)))
+    expect(all.some(b => b.key === 'role-worker')).toBe(true)
+    expect(all.some(b => b.key === 'role-run-1')).toBe(true)
+    expect(all.filter(b => b.props['hotkey'] !== undefined)).toEqual([])
   })
 })

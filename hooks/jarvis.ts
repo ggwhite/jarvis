@@ -633,6 +633,46 @@ export function roleModels(agents: readonly JarvisAgent[]): Map<Role, RoleModel>
   return out
 }
 
+// One model a role ran on: its runs, input + output tokens, cost (undefined unpriced, by
+// costAt as the MODELS card), mean elapsed and failures.
+export type RoleModelStat = {
+  label: string
+  family?: Family
+  count: number
+  tokens: number
+  cost?: number
+  avgMs: number
+  failed: number
+}
+
+// A role's runs by model, as roleModels keys them, most runs first, ties by label.
+export function roleBreakdown(agents: readonly JarvisAgent[], role: Role, now: number): RoleModelStat[] {
+  const byKey = new Map<string, RoleModelStat & { totalMs: number }>()
+  for (const a of agents) {
+    if (dispatchRoleOf(a) !== role) continue
+    const family = familyOf(a.model)
+    const key = family ?? shortModel(a.model)
+    const row = byKey.get(key) ?? {
+      label: family ? FAMILY_NAME[family] : key,
+      ...(family ? { family, cost: 0 } : {}),
+      count: 0,
+      tokens: 0,
+      avgMs: 0,
+      failed: 0,
+      totalMs: 0,
+    }
+    row.count += 1
+    row.tokens += tokenTotal(tokensOf(a))
+    if (family) row.cost = (row.cost ?? 0) + costAt(tokensOf(a), family)
+    row.totalMs += elapsedMs(a, now)
+    if (a.status === 'failed') row.failed += 1
+    byKey.set(key, row)
+  }
+  return [...byKey.values()]
+    .sort((x, y) => y.count - x.count || x.label.localeCompare(y.label))
+    .map(({ totalMs, ...row }) => ({ ...row, avgMs: totalMs / row.count }))
+}
+
 export type RoleStat = { role: Role; label: string; running: number; done: number; failed: number }
 
 export function dispatchStats(agents: readonly JarvisAgent[]): RoleStat[] {

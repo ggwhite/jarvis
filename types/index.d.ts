@@ -168,7 +168,16 @@ export type JarvisChange = {
   worktree?: string
 }
 
-export type JarvisPage = 'now' | 'log' | 'stats' | 'detail' | 'fleet' | 'fleetDetail' | 'changes' | 'changeDiff'
+export type JarvisPage =
+  | 'now'
+  | 'log'
+  | 'stats'
+  | 'roleDetail'
+  | 'detail'
+  | 'fleet'
+  | 'fleetDetail'
+  | 'changes'
+  | 'changeDiff'
 
 // What the pane shows: the page, the subagent the detail page is about, and whether the
 // event stream is paused at `pausedTotal` events recorded.
@@ -183,6 +192,10 @@ export type JarvisUi = {
   changesMode?: 'session' | 'unpushed'
   // the changes page's file the diff page is about, by its row's key
   diffKey?: string
+  // the dispatch role the role page is about
+  role?: string
+  // the page the detail page was opened from, when its 返回 goes back there
+  detailFrom?: JarvisPage
 }
 
 declare module 'claude-code' {

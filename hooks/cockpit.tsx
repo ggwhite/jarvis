@@ -69,6 +69,10 @@ import {
   padCells,
   phaseOf,
   reactorOf,
+  ROLES,
+  ROLE_LABEL,
+  familyOf,
+  roleBreakdown,
   roleModels,
   shareLabel,
   shortModel,
@@ -77,7 +81,20 @@ import {
   topTools,
   WORKFLOW_TYPE,
 } from './jarvis'
-import type { BootStage, Cockpit, EventRow, Health, ListUnit, Lock, ModelShare, Outcome, Phase, Role, RoleStat } from './jarvis'
+import type {
+  BootStage,
+  Cockpit,
+  EventRow,
+  Health,
+  ListUnit,
+  Lock,
+  ModelShare,
+  Outcome,
+  Phase,
+  Role,
+  RoleModelStat,
+  RoleStat,
+} from './jarvis'
 
 export const MIN_EVENT_ROWS = 4
 // The dispatch card draws each role's last hour once its inside is this wide.
@@ -105,6 +122,9 @@ const SCAN_FRAME_W = SUIT_CANVAS_COLS + 4
 export const BADGE_FULL_COLS = 90
 // The most rows a page is drawn for, whatever the room says.
 const MAX_ROWS = 500
+// The least cells the role page's model bar keeps before the mean elapsed, then the cost,
+// give way.
+const ROLE_BAR_MIN = 4
 // Cells between two buttons of the tab bar.
 const TAB_GAP = 2
 // From this many columns an event's actor reads `MK-1`; below, `1`.
@@ -138,7 +158,13 @@ export type Ctx = {
   // events recorded since the pause
   fresh: number
   go: (page: JarvisPage) => void
-  open: (agentId: string) => void
+  // `from`: the page the detail page's 返回 goes back to, when not the now page
+  open: (agentId: string, from?: JarvisPage) => void
+  // the role page: the role it is about, the page the detail page was opened from, and
+  // the press that opens it from a dispatch row
+  role?: string
+  detailFrom?: JarvisPage
+  openRole?: (role: Role) => void
   pause: () => void
   // the fleet page: what the last refresh saw, whether herdr is there to ask, the session
   // its detail page is about, and this session's id (its row is marked THIS)
@@ -433,11 +459,16 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // the changes page's rows in the order listed, and the one the diff page is about
   const diffOrder = (ctx.changes?.groups ?? []).flatMap(g => g.entries.map(e => ({ g, e })))
   const diffAt = ctx.page === 'changeDiff' && ctx.diff ? diffOrder.findIndex(x => x.e.key === ctx.diff?.key) : -1
+  const roleShown = ROLES.find(r => r === ctx.role)
+  // the detail page opened from the role page goes back there
+  const detailBack: JarvisPage = ctx.detailFrom === 'roleDetail' && roleShown ? 'roleDetail' : 'now'
   // a detail page whose subagent, session or file left the list is its list page
   const page: JarvisPage =
     ctx.page === 'detail' && !selected
-      ? 'now'
-      : ctx.page === 'fleetDetail' && !fleetSelected
+      ? detailBack
+      : ctx.page === 'roleDetail' && !roleShown
+        ? 'stats'
+        : ctx.page === 'fleetDetail' && !fleetSelected
         ? 'fleet'
         : ctx.page === 'changeDiff' && diffAt < 0
           ? 'changes'
@@ -471,7 +502,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   const tabBar = (): Block => {
     const actions: { key: string; label: string; run: () => void }[] = []
-    if (page === 'detail') actions.push({ key: 'back', label: '返回', run: () => ctx.go('now') })
+    if (page === 'detail') actions.push({ key: 'back', label: '返回', run: () => ctx.go(detailBack) })
+    if (page === 'roleDetail') actions.push({ key: 'back', label: '返回', run: () => ctx.go('stats') })
     if (page === 'fleetDetail') {
       actions.push({ key: 'back', label: '返回', run: () => ctx.go('fleet') })
       if (fleetSelected) {
@@ -494,8 +526,9 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const tabsCompact = widthOf(false, false) > cols
     const actionsCompact = tabsCompact && widthOf(true, false) > cols
     const nodes: RenderElement[] = TABS.map(tab => {
-      // the diff page is the changes tab's
-      const current = tab.page === page || (page === 'changeDiff' && tab.page === 'changes')
+      // the diff page is the changes tab's, the role page the stats tab's
+      const current =
+        tab.page === page || (page === 'changeDiff' && tab.page === 'changes') || (page === 'roleDetail' && tab.page === 'stats')
       const text = tabText(tab, tabsCompact)
       return (
         <Button key={`tab-${tab.page}`} plain onPress={() => ctx.go(tab.page)}>
@@ -750,9 +783,20 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       ])
       return { w, color: ACCENT, lines: [[title(TITLE_ICON.dispatch, 'DISPATCH', ACCENT)], clip(brief, inner)] }
     }
+    // each row a press that opens its role's page, drawn as before
+    const roleRow = (r: RoleStat): Line => ({
+      h: 1,
+      node: (
+        <Box flexDirection="row">
+          <Button key={`role-${r.role}`} plain onPress={() => ctx.openRole?.(r.role)}>
+            {texts(clip(row(r), inner))}
+          </Button>
+        </Box>
+      ),
+    })
     const shown = cut === undefined ? statsRoles : statsRoles.slice(0, Math.max(0, cut - 1))
     const more: Seg[][] = cut === undefined ? [] : [[{ t: `… 還有 ${statsRoles.length - shown.length} 種`, color: FRAME }]]
-    return { w, color: ACCENT, lines: [[title(TITLE_ICON.dispatch, 'DISPATCH', ACCENT)], ...shown.map(row), ...more] }
+    return { w, color: ACCENT, lines: [[title(TITLE_ICON.dispatch, 'DISPATCH', ACCENT)], ...shown.map(roleRow), ...more] }
   }
 
   const modelsStatsSpec = (w: number): CardSpec => {
@@ -833,6 +877,27 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // a squad member's mark: MK-1, MK-2, ...
   const mkOf = (a: JarvisAgent) => `MK-${memberOf(a).n}`
 
+  const phase = (a: JarvisAgent) => phaseOf(a, view.now)
+  // a squad member's status icon; a compact card's scan sweep is one cell of it
+  const icon = (a: JarvisAgent, compact: boolean): string => {
+    const p = phase(a)
+    if (p === 'init') return compact ? [...ctx.scan][0] ?? '' : ctx.scan
+    return p === 'active'
+      ? ctx.frame
+      : p === 'waiting'
+        ? PHASE_ICON.waiting
+        : p === 'complete'
+          ? PHASE_ICON.complete
+          : p === 'failed'
+            ? PHASE_ICON.failed
+            : '?'
+  }
+  const markOf = (a: JarvisAgent) => {
+    const [open, close] = BRACKET[a.status === 'running' ? 'live' : 'done']
+    const n = memberOf(a).n
+    return `${open}${n < 1 ? 'MK' : `MK-${n}`}${close}`
+  }
+
   const agentBlock = (shownFinished: number, room: number): Block => {
     const inner = cols - 4
     const done = view.finished.filter(a => a.status === 'done').length
@@ -851,21 +916,6 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
     const items = listItems(shownFinished)
     const agentsShown = items.flatMap(x => (x.kind === 'agent' ? [x] : []))
-    const phase = (a: JarvisAgent) => phaseOf(a, view.now)
-    // a compact card's scan sweep is one cell of it
-    const icon = (a: JarvisAgent, compact: boolean): string => {
-      const p = phase(a)
-      if (p === 'init') return compact ? [...ctx.scan][0] ?? '' : ctx.scan
-      return p === 'active'
-        ? ctx.frame
-        : p === 'waiting'
-          ? PHASE_ICON.waiting
-          : p === 'complete'
-            ? PHASE_ICON.complete
-            : p === 'failed'
-              ? PHASE_ICON.failed
-              : '?'
-    }
     const iconW = (compact: boolean) => Math.max(1, ...agentsShown.map(x => cellWidth(icon(x.a, compact))))
     const nameText = (a: JarvisAgent) => withIcon(ROLE_ICON[dispatchRoleOf(a)], typeLabel(a.type))
     const nameW = Math.min(15, Math.max(4, ...agentsShown.filter(x => !x.member).map(x => cellWidth(nameText(x.a)))))
@@ -887,11 +937,6 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const metaW = Math.max(...agentsShown.map(x => cellWidth(metaOf(x.a))))
     const statusW = (full: boolean) => Math.max(...agentsShown.map(x => cellWidth(statusOf(x.a, full))))
     const width = inner
-    const markOf = (a: JarvisAgent) => {
-      const [open, close] = BRACKET[a.status === 'running' ? 'live' : 'done']
-      const n = memberOf(a).n
-      return `${open}${n < 1 ? 'MK' : `MK-${n}`}${close}`
-    }
     // every mark is padded to the widest, so the icons after them line up
     const markW = Math.max(...agentsShown.map(x => cellWidth(markOf(x.a))))
     // the left part before the description, and the right column: status, elapsed, tokens
@@ -1119,6 +1164,118 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       )
     }
     return cardRow([{ w: cols, color, lines }])
+  }
+
+  // ---- 角色頁 -------------------------------------------------------------
+
+  // a model's name as the dispatch card keys it: the family where it has one
+  const modelLabel = (model: string): { t: string; color: string } => {
+    const family = familyOf(model)
+    return family ? { t: FAMILY_NAME[family], color: FAMILY_COLOR[family] } : { t: shortModel(model), color: FRAME }
+  }
+
+  // One role, `room` rows tall at least: its runs by model, most first, then each run,
+  // newest first, a press away from its detail page.
+  const roleBlock = (role: Role, room: number): Block => {
+    const inner = cols - 4
+    const runs = listed
+      .map((a, i) => ({ a, i }))
+      .filter(x => dispatchRoleOf(x.a) === role)
+      .sort((x, y) => memberOf(y.a).n - memberOf(x.a).n || y.a.runStartedAt - x.a.runStartedAt || x.i - y.i)
+      .map(x => x.a)
+    const head = leftRight(
+      [{ t: withIcon(ROLE_ICON[role], ROLE_LABEL[role]), color: ROLE_COLOR[role], bold: true }],
+      [{ t: `${runs.length} 次`, color: FRAME }],
+      inner,
+    )
+    if (runs.length === 0) {
+      return card({ w: cols, color: ACCENT, lines: [head, [{ t: '這個角色還沒有派工', color: FRAME }]] }, Math.max(4, room))
+    }
+
+    const groups = roleBreakdown(listed, role, view.now)
+    const widest = (xs: string[]) => Math.max(0, ...xs.map(cellWidth))
+    const countText = (g: RoleModelStat) => `${g.count} 次`
+    const costText = (g: RoleModelStat) => (g.cost === undefined ? '未計價' : `≈${fmtUsd(g.cost)}`)
+    const avgText = (g: RoleModelStat) => `平均 ${fmtReadout(g.avgMs)}`
+    const failText = (g: RoleModelStat) => (g.failed > 0 ? `FAIL ${g.failed}` : '')
+    const labelW = Math.max(4, widest(groups.map(g => g.label)))
+    const countW = widest(groups.map(countText))
+    const tokW = widest(groups.map(g => fmtK(g.tokens)))
+    const costW = widest(groups.map(costText))
+    const avgW = widest(groups.map(avgText))
+    const failW = widest(groups.map(failText))
+    const fixed = (withCost: boolean, withAvg: boolean) =>
+      labelW + 1 + 1 + countW + 2 + tokW + (withCost ? 2 + costW : 0) + (withAvg ? 2 + avgW : 0) + (failW > 0 ? 2 + failW : 0)
+    // narrow, the mean elapsed gives way first, then the cost
+    const withAvg = inner - fixed(true, true) >= ROLE_BAR_MIN
+    const withCost = withAvg || inner - fixed(true, false) >= ROLE_BAR_MIN
+    const barW = Math.max(ROLE_BAR_MIN, inner - fixed(withCost, withAvg))
+    const modelRow = (g: RoleModelStat): Seg[] => [
+      { t: padCells(g.label, labelW), color: g.family ? FAMILY_COLOR[g.family] : FRAME, bold: true },
+      sp(1),
+      ...chartLine(rampBar(barW, g.count / runs.length, BURN_RAMP)),
+      sp(1),
+      { t: padCells(countText(g), countW, 'right'), color: BRIGHT, bold: true },
+      sp(2),
+      { t: padCells(fmtK(g.tokens), tokW, 'right'), color: PRIMARY },
+      ...(withCost ? [sp(2), { t: padCells(costText(g), costW, 'right'), color: g.cost === undefined ? FRAME : PRIMARY }] : []),
+      ...(withAvg ? [sp(2), { t: padCells(avgText(g), avgW, 'right'), color: FRAME }] : []),
+      ...(failW > 0 ? [sp(2), { t: failText(g), color: ERROR }] : []),
+    ]
+
+    const durOf = (a: JarvisAgent) => fmtReadout(elapsedMs(a, view.now))
+    const tokOf = (a: JarvisAgent) => {
+      const n = tokenTotal(tokensOf(a))
+      return a.status === 'running' && n === 0 ? '' : fmtK(n)
+    }
+    const markW = widest(runs.map(markOf))
+    const iconW = Math.max(1, widest(runs.map(a => icon(a, true))))
+    const modelW = widest(runs.map(a => modelLabel(a.model).t))
+    const durW = widest(runs.map(durOf))
+    const runTokW = widest(runs.map(tokOf))
+    // narrow, the description is cut first
+    const descW = Math.max(0, inner - (markW + 1 + iconW + 1 + modelW + 1) - (1 + durW + 2 + runTokW))
+    const runRow = (a: JarvisAgent): Line => {
+      const p = phase(a)
+      const live = p === 'init' || p === 'active' || p === 'waiting'
+      const { n, color } = memberOf(a)
+      const model = modelLabel(a.model)
+      const segs = clip(
+        [
+          { t: padCells(markOf(a), markW), color: live ? color : FRAME, bold: live },
+          sp(1),
+          { t: padCells(icon(a, true), iconW), color: live ? color : p === 'failed' ? ERROR : p === 'complete' ? SUCCESS : MUTED },
+          sp(1),
+          { t: padCells(model.t, modelW), color: model.color },
+          sp(1),
+          { t: padCells(a.description, descW), color: live ? PRIMARY : FRAME },
+          sp(1),
+          { t: padCells(durOf(a), durW, 'right'), ...(live ? { color: BRIGHT, bold: true } : { color: FRAME }) },
+          sp(2),
+          { t: padCells(tokOf(a), runTokW, 'right'), color: FRAME },
+        ],
+        inner,
+      )
+      return {
+        h: 1,
+        node: (
+          <Box flexDirection="row">
+            <Button key={`role-run-${n}`} plain onPress={() => ctx.open(a.id, 'roleDetail')}>
+              {texts(segs)}
+            </Button>
+          </Box>
+        ),
+      }
+    }
+
+    const top: Line[] = [head, ...groups.map(modelRow), [{ t: '─'.repeat(inner), color: MUTED }]]
+    const height = Math.max(room, top.length + 3)
+    const fit = Math.max(1, height - 2 - top.length)
+    const list: Line[] =
+      runs.length > fit
+        ? [...runs.slice(0, fit - 1).map(runRow), [{ t: `… 還有 ${runs.length - fit + 1} 個`, color: FRAME }]]
+        : runs.map(runRow)
+    return card({ w: cols, color: ACCENT, lines: [...top, ...list] }, height)
   }
 
   // ---- 艦隊 ---------------------------------------------------------------
@@ -1690,6 +1847,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       cols - 4,
     )
     blocks.push(eventCard(head, own, Math.max(MIN_EVENT_ROWS + 3, left()), '這個 subagent 還沒有工具呼叫', true, false))
+  } else if (page === 'roleDetail' && roleShown) {
+    blocks.push(roleBlock(roleShown, left()))
   } else if (page === 'fleet') {
     blocks.push(...fleetBlocks(left()))
   } else if (page === 'fleetDetail' && fleetSelected) {

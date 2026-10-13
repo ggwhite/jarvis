@@ -1116,7 +1116,14 @@ export const register: Register = on => {
       paused: shown.paused,
       fresh: shown.paused ? Math.max(0, total - shown.pausedTotal) : 0,
       go: (page: JarvisPage) => setUi(u => ({ ...u, page })),
-      open: (agentId: string) => setUi(u => ({ ...u, page: 'detail', agentId })),
+      open: (agentId: string, from?: JarvisPage) =>
+        setUi(u => {
+          const { detailFrom: _f, ...rest } = u
+          return { ...rest, page: 'detail', agentId, ...(from ? { detailFrom: from } : {}) }
+        }),
+      ...(shown.role === undefined ? {} : { role: shown.role }),
+      ...(shown.detailFrom === undefined ? {} : { detailFrom: shown.detailFrom }),
+      openRole: (role: string) => setUi(u => ({ ...u, page: 'roleDetail', role })),
       pause: () =>
         setUi((u, recorded) => (u.paused ? { ...u, paused: false } : { ...u, paused: true, pausedTotal: recorded })),
       fleet: await read($, fleet),
