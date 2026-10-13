@@ -1239,6 +1239,77 @@ describe('session mode: worktrees, scratch files and counts', () => {
     expect(w.runs.filter(r => r.includes(A))).toEqual([])
   })
 
+  describe('removed is judged when drawn, not by what was recorded', () => {
+    const legacyWorld = (on: On, dirs: string[]) =>
+      world(on, {
+        dirs,
+        files: { [A]: 1, [`${T}/.git`]: 1 },
+        results: { [A]: editResult(A, 'a') },
+        git: () => ({ exitCode: 1, stdout: '3\t1\t...\n' }),
+      })
+
+    test('a record without worktree fields whose worktree root is gone is one line, git not asked', async ($, on) => {
+      const dirs = [`${M}/.git`, T]
+      const w = legacyWorld(on, dirs)
+      await start($)
+      await edit($, A)
+      expect((await recorded(w))[0]?.worktree).toBeUndefined()
+      dirs.splice(dirs.indexOf(T), 1)
+      delete w.files[A]
+      delete w.files[`${T}/.git`]
+      const text = await pageText($)
+      expect(text).toContain('worktree x 已移除（1 檔）')
+      expect(text).not.toContain('a.go')
+      expect(text).not.toContain('已刪除')
+      expect(w.runs.filter(r => r.includes(A))).toEqual([])
+    })
+
+    test('a record without worktree fields whose worktree is still there is titled by the path', async ($, on) => {
+      legacyWorld(on, [`${M}/.git`, T])
+      await start($)
+      await edit($, A)
+      expect(await pageText($)).toContain(' dotfiles · worktree x')
+    })
+
+    test('a whole repo deleted is one removed line named after it', async ($, on) => {
+      const R = '/w/r'
+      const F = `${R}/a.go`
+      const dirs = [`${R}/.git`]
+      const w = world(on, {
+        dirs,
+        files: { [F]: 1 },
+        results: { [F]: editResult(F, 'a') },
+        git: () => ({ exitCode: 1, stdout: '3\t1\t...\n' }),
+      })
+      await start($)
+      await edit($, F)
+      dirs.splice(0, 1)
+      delete w.files[F]
+      const text = await pageText($)
+      expect(text).toContain('r 已移除（1 檔）')
+      expect(text).not.toContain('已刪除')
+      expect(w.runs.filter(r => r.includes(F))).toEqual([])
+    })
+
+    test('a repo still there with only a file deleted keeps the 已刪除 row', async ($, on) => {
+      const R = '/w/r'
+      const [F, D] = [`${R}/a.go`, `${R}/d.go`]
+      const w = world(on, {
+        dirs: [`${R}/.git`],
+        files: { [F]: 1, [D]: 1 },
+        results: { [F]: editResult(F, 'a'), [D]: editResult(D, 'd') },
+        git: argv => ({ exitCode: 1, stdout: argv.at(-1) === CREATED ? '0\t9\t...\n' : '3\t1\t...\n' }),
+      })
+      await start($)
+      await edit($, F)
+      await edit($, D)
+      delete w.files[D]
+      const text = await pageText($)
+      expect(text).not.toContain('已移除')
+      expect(text).toMatch(/d\.go\s+已刪除 −9/)
+    })
+  })
+
   test('a removed worktree is not listed in the unpushed mode and git is not asked of it', async ($, on) => {
     const B = `${M}/b.go`
     const dirs = [`${M}/.git`, T]
