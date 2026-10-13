@@ -753,6 +753,100 @@ describe('diff page', () => {
     expect(t).not.toContain('stale')
   })
 
+  // git for one repo in the unpushed mode: A changed since b4se, its diff `diffA()`; a diff
+  // that is undefined fails
+  const G = '/usr/bin/git'
+  const unpushedGit = (diffA: () => string | undefined) => (argv: string[]): Run => {
+    const asked = argv.join(' ')
+    if (asked === `${G} -C ${R} symbolic-ref -q --short refs/remotes/origin/HEAD`) return { exitCode: 0, stdout: 'origin/main\n' }
+    if (asked === `${G} -C ${R} merge-base HEAD origin/main`) return { exitCode: 0, stdout: 'b4se\n' }
+    if (asked === `${G} -C ${R} rev-list --count b4se..HEAD`) return { exitCode: 0, stdout: '1\n' }
+    if (asked === `${G} -C ${R} diff --numstat -z --no-renames b4se`) return { exitCode: 0, stdout: '1\t1\ta.go\x00' }
+    if (asked === `${G} -C ${R} ls-files --others --exclude-standard -z`) return { exitCode: 0, stdout: '' }
+    if (asked === `${G} -C ${R} diff --no-color --no-renames b4se -- ${A}`) {
+      const d = diffA()
+      return d === undefined ? { exitCode: 128 } : { exitCode: 0, stdout: d }
+    }
+    return { exitCode: 128 }
+  }
+  const toUnpushedDiff = async ($: Engine) => {
+    await start($)
+    await edit($, A)
+    await showChanges($)
+    await press($, 'chg-mode-unpushed')
+    await drawn($)
+    await settle()
+    await press($, `chg-u:${A}`)
+    await drawn($)
+    await settle()
+  }
+
+  test('in the unpushed mode the page diffs the file against the merge-base', async ($, on) => {
+    const w = world(on, { dirs: [`${R}/.git`], files: { [A]: 1 }, results: { [A]: editResult(A, 'a') }, git: unpushedGit(() => DIFF_A) })
+    await toUnpushedDiff($)
+    const t = await text($)
+    expect(t).toMatch(/r\/a\.go\s+主線\s+\+1 −1\s+未推送/)
+    expect(t).toMatch(/2\s+\+new/)
+    expect(w.runs).toContainEqual([G, '-C', R, 'diff', '--no-color', '--no-renames', 'b4se', '--', A])
+  })
+
+  test('a file that changes again is diffed again, in either mode', async ($, on) => {
+    let version = 'old'
+    const diff = () => `@@ -1 +1 @@\n-x\n+${version}\n`
+    const unpushed = unpushedGit(diff)
+    const w = world(on, {
+      dirs: [`${R}/.git`],
+      files: { [A]: 1 },
+      results: { [A]: editResult(A, 'a') },
+      git: argv => (argv.includes('--no-index') ? { exitCode: 1, stdout: argv.includes('--numstat') ? '1\t1\t...\n' : diff() } : unpushed(argv)),
+    })
+    await listed($, A)
+    await press($, `chg-s:${A}`)
+    await drawn($)
+    await settle()
+    expect(await text($)).toContain('+old')
+    version = 'session-new'
+    w.files[A] = 2
+    await drawn($)
+    await settle()
+    expect(await text($)).toContain('+session-new')
+    await press($, 'back')
+    await press($, 'chg-mode-unpushed')
+    await drawn($)
+    await settle()
+    await press($, `chg-u:${A}`)
+    await drawn($)
+    await settle()
+    expect(await text($)).toContain('+session-new')
+    version = 'unpushed-new'
+    w.files[A] = 3
+    await drawn($)
+    await settle()
+    expect(await text($)).toContain('+unpushed-new')
+  })
+
+  test('a failed diff shows its error, is not asked again every drawing, and 重新整理 retries it', async ($, on) => {
+    let ok = false
+    const w = world(on, { dirs: [`${R}/.git`], files: { [A]: 1 }, results: { [A]: editResult(A, 'a') }, git: unpushedGit(() => (ok ? DIFF_A : undefined)) })
+    await toUnpushedDiff($)
+    expect(await text($)).toContain('git diff 失敗')
+    const asked = () => w.runs.filter(r => r.includes('--no-color')).length
+    await drawn($)
+    await settle()
+    await drawn($)
+    await settle()
+    expect(asked()).toBe(1)
+    ok = true
+    await press($, 'back')
+    await press($, 'chg-refresh')
+    await drawn($)
+    await settle()
+    await press($, `chg-u:${A}`)
+    await drawn($)
+    await settle()
+    expect(await text($)).toMatch(/2\s+\+new/)
+  })
+
   test('long lines are cut to the pane width at 40, 60, 80 and 120 columns', async ($, on) => {
     setup(on, true)
     await listed($, A)

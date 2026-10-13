@@ -494,7 +494,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const tabsCompact = widthOf(false, false) > cols
     const actionsCompact = tabsCompact && widthOf(true, false) > cols
     const nodes: RenderElement[] = TABS.map(tab => {
-      const current = tab.page === page
+      // the diff page is the changes tab's
+      const current = tab.page === page || (page === 'changeDiff' && tab.page === 'changes')
       const text = tabText(tab, tabsCompact)
       return (
         <Button key={`tab-${tab.page}`} plain onPress={() => ctx.go(tab.page)}>

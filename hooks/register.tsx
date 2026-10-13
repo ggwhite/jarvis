@@ -186,11 +186,14 @@ type Opened =
   | { mode: 'session'; change: JarvisChange }
   | { mode: 'unpushed'; repo: string; base: string; file: UnpushedFile }
 
-// forgets the unpushed answers, those still coming included: the next drawing asks git again
+// forgets the unpushed answers and the diffs of unpushed files, those still coming
+// included: the next drawing asks git again
 const dropUnpushed = (cache: ChangesCache) => {
   cache.unpushedGen += 1
   cache.unpushedBusy = false
   cache.unpushed.clear()
+  for (const key of [...cache.diffs.keys()]) if (key.startsWith('u:')) cache.diffs.delete(key)
+  if (cache.diffBusy.startsWith('u:')) cache.diffBusy = ''
 }
 
 // What the changes page lists now: in the unpushed mode, each touched repo as git last
@@ -288,8 +291,10 @@ async function changesNow(
 }
 
 // The diff of the file the changes page's row `key` stands for, as git gave it at the
-// file's signature now; while git works a new one out in the background, the last one
-// it gave, else undefined. The page is redrawn when git has answered.
+// file's signature now (an unpushed file's also by the commit it is compared with); while
+// git works a new one out in the background, the last one it gave, else undefined. A
+// failure is kept until the signature moves or 重新整理 drops it. The page is redrawn when
+// git has answered.
 async function diffNow(
   $: Pick<EngineInterface, 'fs' | 'process' | 'ui'>,
   cache: ChangesCache,
@@ -298,12 +303,15 @@ async function diffNow(
   const item = cache.opened.get(key)
   if (!item) return undefined
   const gen = cache.gen
+  const unpushedGen = cache.unpushedGen
   const io = ioOf($)
   const s = await io.stat(item.mode === 'session' ? item.change.path : item.file.path)
-  const sig = item.mode === 'session' ? `${s?.mtimeMs ?? 'gone'}:${s?.size ?? 0}:${item.change.touches}` : item.base
+  const file = `${s?.mtimeMs ?? 'gone'}:${s?.size ?? 0}`
+  const sig = item.mode === 'session' ? `${file}:${item.change.touches}` : `${item.base}:${file}`
+  const current = () => cache.gen === gen && (item.mode === 'session' || cache.unpushedGen === unpushedGen)
   const hit = cache.diffs.get(key)
   if (hit && hit.sig === sig) return hit.rows
-  if (cache.diffBusy !== key && cache.gen === gen) {
+  if (cache.diffBusy !== key && current()) {
     cache.diffBusy = key
     void (async () => {
       let rows: DiffRow[] | Failed
@@ -312,7 +320,7 @@ async function diffNow(
       } catch {
         rows = { error: 'git diff 失敗' }
       }
-      if (cache.gen === gen) {
+      if (current()) {
         cache.diffs.set(key, { sig, rows })
         if (cache.diffBusy === key) cache.diffBusy = ''
       }
