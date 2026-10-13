@@ -76,7 +76,7 @@ export function parseDiff(stdout: string): DiffRow[] {
 // `git diff --no-index` exits 1 when the two differ, but also on errors (missing file,
 // a directory); only an `error:`/`fatal:` line in stderr means it failed, `warning:` lines
 // (e.g. CRLF under core.autocrlf) come with a real difference
-const answered = (r: { exitCode: number; stderr: string } | undefined, differs = false): r is { exitCode: number; stdout: string; stderr: string } =>
+export const answered = (r: { exitCode: number; stderr: string } | undefined, differs = false): r is { exitCode: number; stdout: string; stderr: string } =>
   r !== undefined && (r.exitCode === 0 || (differs && r.exitCode === 1 && !/^(error|fatal):/m.test(r.stderr)))
 
 type Source = Pick<JarvisChange, 'path' | 'repo' | 'orig'>
