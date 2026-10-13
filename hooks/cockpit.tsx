@@ -35,7 +35,7 @@ import {
   suitResting,
 } from './suit'
 import type { Readout } from './suit'
-import { PHASE_ICON, ROLE_ICON, TAB_ICON, TITLE_ICON, withIcon } from './icons'
+import { PHASE_ICON, ROLE_ICON, SECTION_ICON, TAB_ICON, TITLE_ICON, withIcon } from './icons'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
 import type { CardLines } from './fleetCards'
 import {
@@ -97,8 +97,6 @@ const BOOT_SUIT_H = 1 + SUIT_ROWS + 1 + 3
 const SCAN_FRAME_W = SUIT_CANVAS_COLS + 4
 // From this many columns a model badge carries its version: `[Sonnet 5.5]`.
 export const BADGE_FULL_COLS = 90
-// Cells a squad card's number takes before its brackets: `1: `.
-const NUMBER_W = 3
 // The most rows a page is drawn for, whatever the room says.
 const MAX_ROWS = 500
 // Cells between two buttons of the tab bar.
@@ -223,15 +221,15 @@ const frameLabel = (text: string) => `⎸${text}⎹`
 // The tag after a card's elapsed readout, left out when narrow.
 const ELAPSED = ' ELAPSED'
 
-// A card's corner brackets round its mark: the number drawn before them makes it MK-N, the
-// actor the events name. A compact card draws them tight.
+// A card's corner brackets round its mark, `⌜MK-N⌝` while it runs and `⌞MK-N⌟` once done: the
+// MK-N the events name. A workflow member, which has no number, draws a bare `MK`.
 const BRACKET = {
-  live: { wide: '⌜ MK ⌝', compact: '⌜MK⌝' },
-  done: { wide: '⌞ MK ⌟', compact: '⌞MK⌟' },
+  live: ['⌜', '⌝'],
+  done: ['⌞', '⌟'],
 } as const
 
 // How a squad card fits its width, roomiest first: the ELAPSED tag, the full status words,
-// the model badge, the type, the spaced brackets and full scan icon, the tokens. The first
+// the model badge, the type, the full scan icon and token gap, the tokens. The first
 // whose description keeps its least is drawn, else NARROWEST.
 type RowFit = { tag: boolean; full: boolean; badge: boolean; name: boolean; compact: boolean; tokens: boolean }
 const ROW_FITS: RowFit[] = [
@@ -861,10 +859,17 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const readW = Math.max(...agentsShown.map(x => cellWidth(readoutOf(x.a))))
     const metaW = Math.max(...agentsShown.map(x => cellWidth(metaOf(x.a))))
     const statusW = (full: boolean) => Math.max(...agentsShown.map(x => cellWidth(statusOf(x.a, full))))
-    const width = inner - NUMBER_W
+    const width = inner
+    const markOf = (a: JarvisAgent) => {
+      const [open, close] = BRACKET[a.status === 'running' ? 'live' : 'done']
+      const n = memberOf(a).n
+      return `${open}${n < 1 ? 'MK' : `MK-${n}`}${close}`
+    }
+    // every mark is padded to the widest, so the icons after them line up
+    const markW = Math.max(...agentsShown.map(x => cellWidth(markOf(x.a))))
     // the left part before the description, and the right column: status, elapsed, tokens
     const leftW = (f: RowFit) =>
-      cellWidth(f.compact ? BRACKET.live.compact : BRACKET.live.wide) +
+      markW +
       1 +
       iconW(f.compact) +
       1 +
@@ -883,7 +888,6 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const stW = statusW(full)
     const descW = Math.max(0, descOf(rowFit))
     const icW = iconW(compact)
-    const bracketOf = (kind: keyof typeof BRACKET) => (compact ? BRACKET[kind].compact : BRACKET[kind].wide)
 
     const row = (a: JarvisAgent, member?: 'mid' | 'last'): Line => {
       const p = phase(a)
@@ -911,11 +915,11 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       const b = badge(a.model)
       const left: Seg[] = [
         {
-          t: bracketOf(a.status === 'running' ? 'live' : 'done'),
+          t: markOf(a),
           color: lock === 'lost' ? ERROR : live ? color : FRAME,
           bold: live,
         },
-        sp(1),
+        sp(markW - cellWidth(markOf(a)) + 1),
         { t: padCells(icon(a, compact), icW), color: live ? color : p === 'failed' ? ERROR : p === 'complete' ? SUCCESS : MUTED },
         sp(1),
         ...(rowFit.name ? [name, sp(1)] : []),
@@ -932,12 +936,10 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       ]
       // too narrow for the left part whole: it gives way, the right column stays
       const segs = [...clip(left, Math.max(0, width - segsWidth(rightCol))), ...clip(rightCol, width)]
-      if (n < 1) return [sp(NUMBER_W), ...segs]
-      // Only the number and brackets are the Button, so a pointer over the card inverts them
-      // alone; the number's colon is dropped when it would not fit.
+      if (n < 1) return segs
+      // Only the mark is the Button, so a pointer over the card inverts it alone.
       const [mark, ...rest] = segs
-      const number = cellWidth(`${n}:`) <= NUMBER_W ? `${n}:` : String(n)
-      const chip: Seg[] = [{ t: padCells(number, NUMBER_W), color: FRAME }, mark && mark.t !== '' ? mark : sp(1)]
+      const chip: Seg[] = [mark && mark.t !== '' ? mark : sp(1)]
       return {
         h: 1,
         node: (
@@ -966,7 +968,6 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       ]
       const id = u.runId === '' ? '(無 id)' : fitCells(u.runId, 8)
       return [
-        sp(NUMBER_W),
         { t: '▾ ', color: ROLE_COLOR.workflow },
         { t: 'workflow', bold: true, color: ROLE_COLOR.workflow },
         { t: ` ${id}`, color: FRAME },
@@ -980,13 +981,13 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         : x.kind === 'group'
           ? groupHead(x.u)
           : x.kind === 'more'
-            ? [sp(NUMBER_W), { t: `… 還有 ${x.n} 個`, color: FRAME }]
+            ? [{ t: `… 還有 ${x.n} 個`, color: FRAME }]
             : row(x.a, x.member),
     )
     const fit = Math.max(4, room - 3)
     const lines =
       body.length > fit
-        ? [...body.slice(0, fit - 1), [sp(NUMBER_W), { t: `… 還有 ${body.length - fit + 1} 列未顯示`, color: FRAME }] as Seg[]]
+        ? [...body.slice(0, fit - 1), [{ t: `… 還有 ${body.length - fit + 1} 列未顯示`, color: FRAME }] as Seg[]]
         : body
     return cardRow([{ w: cols, color: LIST_COLOR, lines: [head, ...lines] }])
   }
@@ -1218,15 +1219,15 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const sections: Block[][] = []
     if (plan.gauge !== 'none' && q && wins.length > 0) {
       const gauges = wins.map(x => ({ label: x.label, used: x.w.usedPct, foot: windowFoot(x.w, q, now, plan.gauge === 'big') }))
-      sections.push([line(sectionHeader('ARC REACTOR', cols)), ...reactorRows(plan.gauge, gauges, cols).map(line)])
+      sections.push([line(sectionHeader(withIcon(SECTION_ICON.reactor, 'ARC REACTOR'), cols)), ...reactorRows(plan.gauge, gauges, cols).map(line)])
     }
     if (plan.burnRows > 0) {
       const w = plan.mode === 'wide' ? cols - 4 : plan.mode === 'mid' ? BURN_MID_W : BURN_NARROW_W
       const ticks = plan.mode === 'narrow' ? [0, 12] : [0, 6, 12, 18]
       const chart = burnChart(hourly, w, plan.burnRows, new Date(now).getHours(), ticks)
-      sections.push([line(sectionHeader('TODAY BURN', cols, sigma)), ...chart.map(r => line([sp(2), ...cellsToSegs(r)]))])
+      sections.push([line(sectionHeader(withIcon(SECTION_ICON.burn, 'TODAY BURN'), cols, sigma)), ...chart.map(r => line([sp(2), ...cellsToSegs(r)]))])
     }
-    sections.push([line(sectionHeader('IRON LEGION', cols, plan.burnRows === 0 ? sigma : undefined)), ...legionBlocks(plan, active, sec.idle)])
+    sections.push([line(sectionHeader(withIcon(SECTION_ICON.legion, 'IRON LEGION'), cols, plan.burnRows === 0 ? sigma : undefined)), ...legionBlocks(plan, active, sec.idle)])
     return sections.flatMap((s, i) => (i > 0 && plan.blanks ? [line(BLANK), ...s] : s))
   }
 

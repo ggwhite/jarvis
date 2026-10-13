@@ -4,6 +4,7 @@ import type { FleetQuota, FleetSession } from '../types'
 import { THEME, cellWidth } from '../hooks/jarvis'
 import { beatsOf, emptyHours } from '../hooks/fleet'
 import { brailleLine } from '../hooks/fleetChart'
+import { SECTION_ICON, withIcon } from '../hooks/icons'
 import {
   hourlyOf,
   idleHourMax,
@@ -58,6 +59,9 @@ describe('fleet cards', () => {
     expect(segsWidth(h)).toBe(50)
     expect(textOf(h)).toMatch(/^── TODAY BURN ─+ Σ 165 TOK ──$/)
     expect(segsWidth(sectionHeader('IRON LEGION', 40))).toBe(40)
+    const iconed = sectionHeader(withIcon(SECTION_ICON.legion, 'IRON LEGION'), 40, 'Σ 1 TOK')
+    expect(segsWidth(iconed)).toBe(40)
+    expect(textOf(iconed)).toMatch(/^── \uf132 IRON LEGION ─+ Σ 1 TOK ──$/)
   })
 
   test('a window foot: when it resets, when it runs out first, used up, stale', () => {

@@ -21,6 +21,12 @@ export const TITLE_ICON = {
   fleet: '\uf135',
 } as const
 
+export const SECTION_ICON = {
+  reactor: '\uf0e7',
+  burn: '\uf06d',
+  legion: '\uf132',
+} as const
+
 export const PHASE_ICON = {
   waiting: '\uf252',
   complete: '\uf058',

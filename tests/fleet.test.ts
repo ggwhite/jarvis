@@ -4,7 +4,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { FleetSession } from '../types'
 import { FAMILY_COLOR, THEME, cellWidth, costAt } from '../hooks/jarvis'
-import { TAB_ICON } from '../hooks/icons'
+import { SECTION_ICON, TAB_ICON } from '../hooks/icons'
 import { BURN_RAMP, GAUGE_RAMP } from '../hooks/fleetChart'
 import {
   BEATS,
@@ -1063,11 +1063,31 @@ describe('fleet page', () => {
     const lines = linesOf(await openFleet($, clock)).join('\n')
     expect(lines).toContain('IRON LEGION · 3 SUITS')
     const order: number[] = []
-    for (const t of ['ARC REACTOR', 'TODAY BURN', '── IRON LEGION', 'Alpha review', 'AWAITING', 'Bravo build', 'ACTIVE', 'Charlie docs', 'RETIRE']) {
+    for (const t of ['ARC REACTOR', 'TODAY BURN', `── ${SECTION_ICON.legion} IRON LEGION`, 'Alpha review', 'AWAITING', 'Bravo build', 'ACTIVE', 'Charlie docs', 'RETIRE']) {
       order.push(lines.indexOf(t, (order.at(-1) ?? -1) + 1))
     }
     expect(order.every(x => x >= 0)).toBe(true)
     expect(lines).not.toContain('Codex job')
+  })
+
+  test('the three section titles lead with their icon, a space and the title, in one color', async ($, on) => {
+    const w = sampleWorld()
+    const clock = fleetEngine(on, w)
+    const tree = await openFleet($, clock)
+    const lines = linesOf(tree)
+    for (const [icon, title] of [
+      ['\uf0e7', 'ARC REACTOR'],
+      ['\uf06d', 'TODAY BURN'],
+      ['\uf132', 'IRON LEGION'],
+    ] as const) {
+      expect(lines.some(l => l.startsWith(`── ${icon} ${title} `))).toBe(true)
+      const seg = allTexts(tree).filter(t => textOf(t) === `${icon} ${title}`)
+      expect(seg).toHaveLength(1)
+      expect(seg[0]?.props?.color).toBe(THEME.primary)
+    }
+    expect(SECTION_ICON).toEqual({ reactor: '\uf0e7', burn: '\uf06d', legion: '\uf132' })
+    // the rule still ends at the right edge, icon and space counted
+    for (const l of lines.filter(l => /^── [\uf0e7\uf06d\uf132] /.test(l))) expect(cellWidth(l)).toBeLessThanOrEqual(80)
   })
 
   test('ARC REACTOR: 92% weekly runs out before the reset, 5h resets, the burn adds up today', async ($, on) => {
@@ -1170,7 +1190,7 @@ describe('fleet page', () => {
     const w = sampleWorld({ panes: busy })
     const clock = fleetEngine(on, w)
     const lines = linesOf(await openFleet($, clock, 30, 65))
-    expect(lines.join('\n')).toContain('── TODAY BURN')
+    expect(lines.join('\n')).toContain(`── ${SECTION_ICON.burn} TODAY BURN`)
     expect(lines.filter(l => /Busy \d/.test(l))).toHaveLength(8)
     expect(lines.length).toBeLessThanOrEqual(30)
   })
@@ -1248,11 +1268,11 @@ describe('fleet page', () => {
     const w = sampleWorld()
     const clock = fleetEngine(on, w)
     const roomy = linesOf(await openFleet($, clock))
-    for (const head of ['── TODAY BURN', '── IRON LEGION']) {
+    for (const head of [`── ${SECTION_ICON.burn} TODAY BURN`, `── ${SECTION_ICON.legion} IRON LEGION`]) {
       expect(roomy[roomy.findIndex(l => l.startsWith(head)) - 1]?.trim()).toBe('')
     }
     const tight = linesOf(await draw($, 10, 80))
-    const legion = tight.findIndex(l => l.startsWith('── IRON LEGION'))
+    const legion = tight.findIndex(l => l.startsWith(`── ${SECTION_ICON.legion} IRON LEGION`))
     expect(tight[legion - 1]?.trim()).not.toBe('')
   })
 
@@ -1270,7 +1290,7 @@ describe('fleet page', () => {
     const clock = fleetEngine(on, w)
     const lines = linesOf(await openFleet($, clock, 10, 80))
     expect(lines.join('\n')).not.toContain('TODAY BURN')
-    expect(lines.find(l => l.includes('── IRON LEGION'))).toMatch(/Σ 165 TOK ──$/)
+    expect(lines.find(l => l.includes(`── ${SECTION_ICON.legion} IRON LEGION`))).toMatch(/Σ 165 TOK ──$/)
   })
 
   test('the idle cards draw today against one peak: a quiet suit stays low beside a busy one', async ($, on) => {
@@ -1298,7 +1318,7 @@ describe('fleet page', () => {
     const clock = fleetEngine(on, w)
     const lines = linesOf(await openFleet($, clock)).join('\n')
     expect(lines).not.toContain('ARC REACTOR')
-    expect(lines).toContain('── IRON LEGION')
+    expect(lines).toContain(`── ${SECTION_ICON.legion} IRON LEGION`)
   })
 
   test('one quota window draws one gauge; no quota file draws none, Σ stays', async ($, on) => {
@@ -1354,7 +1374,7 @@ describe('fleet detail page', () => {
     await clock.advance(10)
     expect(w.calls.some(c => c.join(' ') === 'herdr agent focus w2:p2')).toBe(true)
     await press($, 'back')
-    expect(linesOf(await draw($)).join('\n')).toContain('── IRON LEGION')
+    expect(linesOf(await draw($)).join('\n')).toContain(`── ${SECTION_ICON.legion} IRON LEGION`)
   })
 
   test('a failed jump says so on that suit only', async ($, on) => {
@@ -1379,7 +1399,7 @@ describe('fleet detail page', () => {
     await draw($)
     await clock.advance(FLEET_MS)
     const lines = linesOf(await draw($)).join('\n')
-    expect(lines).toContain('── IRON LEGION')
+    expect(lines).toContain(`── ${SECTION_ICON.legion} IRON LEGION`)
     expect(lines).not.toContain('最後提問')
   })
 
