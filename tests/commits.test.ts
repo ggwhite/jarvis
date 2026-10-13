@@ -64,6 +64,31 @@ describe('commitGraph', () => {
     expect(rows[1]?.cells[2]?.lane).toBe(3)
   })
 
+  test('a link to a lane already waiting ends in ├ or ┤', () => {
+    expect(commitGraph([c('x', 'q'), c('y', 'm'), c('m', 'a', 'q')]).map(txt)).toEqual(['●', '│ ●', '├─●'])
+    expect(commitGraph([c('n', 'm'), c('u', 'q'), c('m', 'a', 'q')]).map(txt)).toEqual(['●', '│ ●', '●─┤'])
+  })
+
+  test('a new lane opens to the left with ╭ when a free lane sits there', () => {
+    const rows = commitGraph([c('a', 'p'), c('b', 'q'), c('p'), c('q', 'r', 's')])
+    expect(txt(rows[3] as GraphRow)).toBe('╭─●')
+    expect(rows[3]?.cells.map(x => x.lane)).toEqual([0, 0, 1])
+  })
+
+  test('a row that closes one lane and opens another draws ┴ then ╮', () => {
+    const rows = commitGraph([c('a', 'm'), c('b', 'm'), c('m', 'p', 's')])
+    expect(txt(rows[2] as GraphRow)).toBe('●─┴─╮')
+  })
+
+  test('two links to waiting lanes cross each other as ┼', () => {
+    const rows = commitGraph([c('n', 'm'), c('u1', 'q1'), c('u2', 'q2'), c('m', 'a', 'q1', 'q2')])
+    expect(txt(rows[3] as GraphRow)).toBe('●─┼─┤')
+  })
+
+  test('a link through ┬ or ┴ leaves it as it is', () => {
+    expect(commitGraph([c('m', 'a', 'b', 'c', 'd')]).map(txt)[0]).toBe('●─┬─┬─╮')
+  })
+
   test('graphWidth is the widest row, an overflow mark counted', () => {
     expect(graphWidth(commitGraph([c('m', 'p', 'f'), c('f', 'b'), c('p', 'b'), c('b')]))).toBe(3)
     expect(graphWidth(commitGraph([c('m', 'a', 'b', 'c', 'd')], 2))).toBe(5)
@@ -181,6 +206,58 @@ describe('commitTreeOf', () => {
     expect(t.unpushed).toEqual([])
     expect(t.ahead).toBe(0)
     expect(io.runs.some(a => a.includes('rev-list'))).toBe(false)
+  })
+
+  test('the branch is asked of git, so HEAD outside the logged window still names it', async () => {
+    const noHead = `${SHA('2')}\x00\x00w\x0090\x00refs/remotes/origin/main\x00one\x1e\n`
+    const io = runIo({
+      [`${GIT} -C ${R} symbolic-ref --short -q HEAD`]: { exitCode: 0, stdout: 'main\n' },
+      [`${GIT} -C ${R} log --topo-order --decorate=full -n 40 ${LOG_FMT} HEAD`]: { exitCode: 0, stdout: noHead },
+    })
+    const t = await commitTreeOf(io, R)
+    if (isFailed(t)) throw new Error(t.error)
+    expect(t.branch).toBe('main')
+  })
+
+  test('a detached HEAD is its short sha, as the repo list shows it', async () => {
+    const io = runIo({
+      [`${GIT} -C ${R} symbolic-ref --short -q HEAD`]: { exitCode: 1 },
+      [`${GIT} -C ${R} rev-parse --short HEAD`]: { exitCode: 0, stdout: 'abc1234\n' },
+      [`${GIT} -C ${R} log --topo-order --decorate=full -n 40 ${LOG_FMT} HEAD`]: { exitCode: 0, stdout: log },
+    })
+    const t = await commitTreeOf(io, R)
+    if (isFailed(t)) throw new Error(t.error)
+    expect(t.branch).toBe('abc1234')
+  })
+
+  test('a failed unpushed query marks no commit and says so; no upstream does not', async () => {
+    const withUp = {
+      [`${GIT} -C ${R} rev-parse --abbrev-ref --symbolic-full-name @{u}`]: { exitCode: 0, stdout: 'origin/main\n' },
+      [`${GIT} -C ${R} log --topo-order --decorate=full -n 40 ${LOG_FMT} HEAD origin/main`]: { exitCode: 0, stdout: log },
+    }
+    const t = await commitTreeOf(runIo(withUp), R)
+    if (isFailed(t)) throw new Error(t.error)
+    expect(t.upstream).toBe('origin/main')
+    expect(t.unpushed).toEqual([])
+    expect(t.ahead).toBe(0)
+    expect(t.unpushedFailed).toBe(true)
+    const none = await commitTreeOf(runIo({ [`${GIT} -C ${R} log --topo-order --decorate=full -n 40 ${LOG_FMT} HEAD`]: { exitCode: 0, stdout: log } }), R)
+    if (isFailed(none)) throw new Error(none.error)
+    expect(none.unpushedFailed).toBeUndefined()
+  })
+
+  test('at most 1000 unpushed commits are kept', async () => {
+    const shas = Array.from({ length: 1500 }, (_, i) => String(i).padStart(40, '0'))
+    const io = runIo({
+      [`${GIT} -C ${R} rev-parse --abbrev-ref --symbolic-full-name @{u}`]: { exitCode: 0, stdout: 'origin/main\n' },
+      [`${GIT} -C ${R} log --topo-order --decorate=full -n 40 ${LOG_FMT} HEAD origin/main`]: { exitCode: 0, stdout: log },
+      [`${GIT} -C ${R} rev-list origin/main..HEAD`]: { exitCode: 0, stdout: `${shas.join('\n')}\n` },
+    })
+    const t = await commitTreeOf(io, R)
+    if (isFailed(t)) throw new Error(t.error)
+    expect(t.unpushed).toHaveLength(1000)
+    expect(t.ahead).toBe(1000)
+    expect(t.unpushedFailed).toBeUndefined()
   })
 
   test('a detached HEAD is (detached); a failed log is git log 失敗', async () => {

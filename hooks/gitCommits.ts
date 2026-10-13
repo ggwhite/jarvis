@@ -8,6 +8,8 @@ export const FIND = '/usr/bin/find'
 export const FIND_DEPTH = 4
 // the commits a repo's tree page shows
 export const MAX_COMMITS = 40
+// the unpushed commits a repo's tree page marks
+export const MAX_UNPUSHED = 1000
 
 // `time`: when it was committed, in ms; `refs`: `%D` with --decorate=full, split
 export type CommitInfo = { sha: string; parents: string[]; author: string; time: number; refs: string[]; subject: string }
@@ -16,8 +18,9 @@ export type CommitInfo = { sha: string; parents: string[]; author: string; time:
 // commits ahead of its upstream (absent without one), and when its last commit was made
 export type RepoSummary = { branch: string; ahead?: number; time: number }
 
-// a repo's newest commits, its upstream's among them, and those not pushed to it
-export type CommitTree = { branch: string; upstream?: string; ahead: number; commits: CommitInfo[]; unpushed: string[] }
+// a repo's newest commits, its upstream's among them, and those not pushed to it (at most
+// MAX_UNPUSHED); `unpushedFailed`: it has an upstream but git could not say what is unpushed
+export type CommitTree = { branch: string; upstream?: string; ahead: number; commits: CommitInfo[]; unpushed: string[]; unpushedFailed?: true }
 
 export type CommitFile = NumstatRow
 
@@ -65,6 +68,14 @@ const headBranch = (refs: readonly string[]): string | undefined => {
   return head === undefined ? undefined : head.slice('HEAD -> '.length).replace(/^refs\/heads\//, '')
 }
 
+// the branch HEAD is on, its short sha when detached; the logged commits may not reach HEAD
+const headName = async (io: Pick<ChangesIo, 'run'>, repo: string): Promise<string | undefined> => {
+  const b = await io.run([GIT, '-C', repo, 'symbolic-ref', '--short', '-q', 'HEAD'])
+  if (b?.exitCode === 0 && b.stdout.trim() !== '') return b.stdout.trim()
+  const s = await io.run([GIT, '-C', repo, 'rev-parse', '--short', 'HEAD'])
+  return s?.exitCode === 0 && s.stdout.trim() !== '' ? s.stdout.trim() : undefined
+}
+
 export async function repoSummary(io: Pick<ChangesIo, 'run'>, repo: string): Promise<RepoSummary | Failed> {
   const r = await io.run([GIT, '-C', repo, 'log', '-1', '--decorate=full', '--format=%ct%x00%h%x00%D', 'HEAD'])
   if (!answered(r)) return { error: 'git log 失敗' }
@@ -81,13 +92,15 @@ export async function commitTreeOf(io: Pick<ChangesIo, 'run'>, repo: string): Pr
   if (!answered(r)) return { error: 'git log 失敗' }
   const commits = parseLog(r.stdout)
   let unpushed: string[] = []
+  let unpushedFailed = false
   if (upstream !== undefined) {
     const p = await io.run([GIT, '-C', repo, 'rev-list', `${upstream}..HEAD`])
-    if (p?.exitCode === 0) unpushed = p.stdout.split('\n').map(s => s.trim()).filter(s => s !== '')
+    if (p?.exitCode === 0) unpushed = p.stdout.split('\n').map(s => s.trim()).filter(s => s !== '').slice(0, MAX_UNPUSHED)
+    else unpushedFailed = true
   }
   const refs = commits.flatMap(c => c.refs)
-  const branch = headBranch(refs) ?? (refs.includes('HEAD') ? '(detached)' : '?')
-  return { branch, ...(upstream !== undefined ? { upstream } : {}), ahead: unpushed.length, commits, unpushed }
+  const branch = (await headName(io, repo)) ?? headBranch(refs) ?? (refs.includes('HEAD') ? '(detached)' : '?')
+  return { branch, ...(upstream !== undefined ? { upstream } : {}), ahead: unpushed.length, commits, unpushed, ...(unpushedFailed ? { unpushedFailed: true as const } : {}) }
 }
 
 export async function commitFiles(io: Pick<ChangesIo, 'run'>, repo: string, c: Pick<CommitInfo, 'sha' | 'parents'>): Promise<CommitFile[] | Failed> {

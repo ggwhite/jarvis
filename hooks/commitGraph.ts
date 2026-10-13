@@ -15,8 +15,8 @@ export const MAX_LANES = 6
 
 const BLANK: GraphCell = { ch: ' ', lane: -1 }
 
-// what a glyph a link runs through becomes
-const CROSS: Record<string, string> = { '│': '┼', '╯': '┴', '╰': '┴', '╮': '┬', '╭': '┬' }
+// what a glyph a link runs through becomes; ┬ and ┴ already run left to right, so they stay
+const CROSS: Record<string, string> = { '│': '┼', '╯': '┴', '╰': '┴', '╮': '┬', '╭': '┬', '┤': '┼', '├': '┼' }
 
 // `commits` in `--topo-order`, newest first
 export function commitGraph(commits: readonly GraphCommit[], maxLanes = MAX_LANES): GraphRow[] {
