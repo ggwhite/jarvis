@@ -162,10 +162,12 @@ async function recordChange(
 
 // What the changes page keeps between drawings: what git last said of each changed file,
 // by the file's mtime, size and edit count; whether git is being asked; the files'
-// signatures as last read, at most once per CHANGES_SCAN_MS while drawn.
+// signatures as last read, at most once per CHANGES_SCAN_MS while drawn; `gen` counts the
+// resets, so git still answering for the last session stores nothing.
 type ChangesCache = {
   stats: Map<string, { sig: string; stat: FileStat | Failed }>
   busy: boolean
+  gen: number
   sigs: Map<string, string>
   scannedAt: number
 }
@@ -199,16 +201,19 @@ async function changesNow(
   })
   if (stale.length > 0 && !cache.busy) {
     cache.busy = true
+    const gen = cache.gen
     void (async () => {
       try {
         for (const c of stale) {
           const sig = cache.sigs.get(c.path) ?? `new:${c.touches}`
-          cache.stats.set(c.path, { sig, stat: await sessionStat(io, c) })
+          const stat = await sessionStat(io, c)
+          if (cache.gen !== gen) return
+          cache.stats.set(c.path, { sig, stat })
         }
       } catch {
         // the page shows what it has
       } finally {
-        cache.busy = false
+        if (cache.gen === gen) cache.busy = false
         try {
           $.ui.invalidate('ui.render')
         } catch {
@@ -328,10 +333,12 @@ export const register: Register = on => {
   const repoCache = new Map<string, string | null>()
   // each file's original as its first edit settles it
   const origs = new Map<string, Promise<string>>()
-  const changesCache: ChangesCache = { stats: new Map(), busy: false, sigs: new Map(), scannedAt: -Infinity }
+  const changesCache: ChangesCache = { stats: new Map(), busy: false, gen: 0, sigs: new Map(), scannedAt: -Infinity }
   const resetChanges = () => {
     repoCache.clear()
     origs.clear()
+    changesCache.gen += 1
+    changesCache.busy = false
     changesCache.stats.clear()
     changesCache.sigs = new Map()
     changesCache.scannedAt = -Infinity

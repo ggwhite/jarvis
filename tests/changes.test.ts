@@ -438,6 +438,37 @@ describe('changes page', () => {
     }
   })
 
+  test('a /clear drops the counts git was still working out for the last session', async ($, on) => {
+    let original = 'first'
+    let oldOrig = ''
+    // the first git call waits until let go; the rest answer at once
+    let release = () => {}
+    const gate = new Promise<void>(r => (release = r))
+    let held = 0
+    const w = world(on, {
+      dirs: ['/w/acme/payments/.git'],
+      files: { [A]: 5 },
+      results: { [A]: () => editResult(A, original) },
+      git: argv => ({ exitCode: 1, stdout: argv.includes(oldOrig) ? '99\t99\t...\n' : '30\t5\t...\n' }),
+      holdRun: () => (held++ === 0 ? gate : Promise.resolve()),
+    })
+    await start($)
+    await edit($, A)
+    oldOrig = (await recorded(w))[0]?.orig ?? ''
+    await showChanges($)
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    original = 'second'
+    await edit($, A)
+    expect((await recorded(w))[0]?.orig).not.toBe(oldOrig)
+    await drawn($)
+    await settle()
+    release()
+    await settle()
+    const text = (await drawn($)).join('\n')
+    expect(text).toMatch(/service\/order\.go\s+\+30 −5/)
+    expect(text).not.toContain('+99')
+  })
+
   test('no jarvis Button has a hotkey, the changes buttons included', async ($, on) => {
     setup(on)
     await start($)
