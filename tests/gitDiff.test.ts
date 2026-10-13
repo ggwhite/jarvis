@@ -97,6 +97,16 @@ describe('session mode', () => {
     const io = gitIo({ [`${GIT} diff --no-index --numstat -- /tmp/c/1.orig /w/r/文件 夾/a.go`]: { exitCode: 1, stdout: '3\t2\tx\n', stderr: '' } }, [change.path])
     expect(await sessionStat(io, change)).toEqual({ add: 3, del: 2, binary: false, deleted: false, vsHead: false })
   })
+  test('exit 1 with only warning lines is still a real difference', async () => {
+    const stderr = "warning: in the working copy of 'a.go', CRLF will be replaced by LF the next time Git touches it\n\n"
+    const io = gitIo({ [`${GIT} diff --no-index --numstat -- /tmp/c/1.orig /w/r/文件 夾/a.go`]: { exitCode: 1, stdout: '3\t2\tx\n', stderr } }, [change.path])
+    expect(await sessionStat(io, change)).toEqual({ add: 3, del: 2, binary: false, deleted: false, vsHead: false })
+  })
+  test('a warning line followed by an error line is an error', async () => {
+    const stderr = "warning: in the working copy of 'a.go', CRLF will be replaced by LF\nerror: Could not access '/tmp/c/1.orig'\n"
+    const io = gitIo({ [`${GIT} diff --no-index --numstat -- /tmp/c/1.orig /w/r/文件 夾/a.go`]: { exitCode: 1, stderr } }, [change.path])
+    expect(await sessionStat(io, change)).toEqual({ error: 'git diff 失敗' })
+  })
   test('the diff of a created file is against /dev/null', async () => {
     const io = gitIo({ [`${GIT} diff --no-index --no-color -- /dev/null /w/r/n.go`]: { exitCode: 1, stdout: '@@ -0,0 +1 @@\n+x\n' } }, ['/w/r/n.go'])
     expect(await sessionDiff(io, { path: '/w/r/n.go', repo: '/w/r', orig: '/dev/null' })).toEqual([
