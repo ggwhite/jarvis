@@ -153,6 +153,18 @@ export type FleetFile = {
 
 export type FleetCursor = Record<string, FleetFile>
 
+// A file this session's edit tools changed: the repo it stands in (null outside git), who
+// changed it in order, when it was first seen, how many edits, and its content before
+// the first: a cache file, '/dev/null' for a file the session created, '' when unknown.
+export type JarvisChange = {
+  path: string
+  repo: string | null
+  actors: string[]
+  seq: number
+  touches: number
+  orig: string
+}
+
 export type JarvisPage = 'now' | 'log' | 'stats' | 'detail' | 'fleet' | 'fleetDetail'
 
 // What the pane shows: the page, the subagent the detail page is about, and whether the
