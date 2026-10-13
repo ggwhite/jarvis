@@ -34,6 +34,9 @@ import { parseQuota } from './fleet'
 import { SUIT_REST_TICK_MS } from './suit'
 import { EMPTY_FLEET, FLEET_MS, FLEET_RUN_TIMEOUT_MS, LIMITS_PATH, focusArgv, refreshFleet, withJump } from './fleetSource'
 import type { FleetIo } from './fleetSource'
+import type { JarvisChange } from '../types'
+import { CREATED, UNKNOWN, editOf, noteChange, repoOf } from './changes'
+import type { ChangesIo } from './changes'
 
 const PANE = 'jarvis'
 const MAX_EARLY = 100
@@ -42,6 +45,8 @@ const MAX_EARLY = 100
 const FLEET_SEEN_MS = SEEN_MS + FLEET_MS
 // the standby suit reads the usagebar cache at most this often
 const QUOTA_EVERY_MS = 30_000
+// git and the cache writes the changes page runs, each given this long
+const CHANGES_RUN_TIMEOUT_MS = 5_000
 
 const agents = atom({ plugin: 'jarvis', key: 'agents' } as const, [])
 const main = atom({ plugin: 'jarvis', key: 'main' } as const, {
@@ -70,10 +75,72 @@ const fleet = atom({ plugin: 'jarvis', key: 'fleet' } as const, EMPTY_FLEET)
 const fleetCursor = atom({ plugin: 'jarvis', key: 'fleetCursor' } as const, {})
 const standbyQuota = atom({ plugin: 'jarvis', key: 'standbyQuota' } as const, null as FleetQuota | null)
 const suit = atom({ plugin: 'jarvis', key: 'suit' } as const, { n: 0 })
+const changes = atom({ plugin: 'jarvis', key: 'changes' } as const, [] as JarvisChange[])
 
 // Tool calls that last as long as the agents they start, whose own calls are tracked:
 // counting them in flight would hide a stuck subagent.
 const UNTRACKED = new Set(['Agent', 'Workflow'])
+
+// The changes page's hands on the machine, from a hook's own `$`; a failure reads as nothing.
+export function ioOf($: Pick<EngineInterface, 'fs' | 'process'>): ChangesIo {
+  return {
+    stat: async path => {
+      try {
+        const s = await $.fs.stat(path)
+        return { kind: s.kind, size: s.size, mtimeMs: s.mtimeMs }
+      } catch {
+        return undefined
+      }
+    },
+    write: async (path, text) => {
+      try {
+        await $.fs.write(path, text)
+        return true
+      } catch {
+        return false
+      }
+    },
+    run: async argv => {
+      try {
+        const r = await $.process.run(argv, { timeoutMs: CHANGES_RUN_TIMEOUT_MS })
+        return { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr }
+      } catch {
+        return undefined
+      }
+    },
+  }
+}
+
+// Records what an edit tool changed: its original cached under `cacheDir` the first time
+// the file is seen, its repo, and who changed it.
+async function recordChange(
+  $: Pick<EngineInterface, 'fs' | 'process' | 'state'>,
+  tool: string,
+  result: unknown,
+  actor: string,
+  cacheDir: string,
+  repoCache: Map<string, string | null>,
+): Promise<void> {
+  try {
+    const seen = editOf(tool, result)
+    if (!seen) return
+    const io = ioOf($)
+    let orig = (await read($, changes)).find(c => c.path === seen.path)?.orig
+    if (orig === undefined) {
+      if (seen.created) orig = CREATED
+      else if (seen.original === null || cacheDir === '') orig = UNKNOWN
+      else {
+        const file = `${cacheDir}/${crypto.randomUUID()}.orig`
+        orig = (await io.write(file, seen.original)) ? file : UNKNOWN
+      }
+    }
+    const repo = await repoOf(io, seen.path, repoCache)
+    const kept = orig
+    await update($, changes, l => noteChange(l, { path: seen.path, repo, actor, orig: kept }))
+  } catch {
+    // the edit itself already happened
+  }
+}
 
 // opens the pane, its boot screen from the time handed to boot (undefined: none); false when it could not open
 async function openPane($: Pick<EngineInterface, 'clock' | 'ui'>, boot: (at: number | undefined) => void): Promise<boolean> {
@@ -174,6 +241,15 @@ export const register: Register = on => {
   // ids the engine was asked about on a tool call and did not list: not asked again
   const unknown = new Set<string>()
   const listing = { fails: 0 }
+  // the changes page: where the session started, $HOME, where originals are cached, and
+  // which directory stands in which repo
+  let cwd = ''
+  let changesHome = ''
+  let cacheDir = ''
+  const repoCache = new Map<string, string | null>()
+  const resetChanges = () => {
+    repoCache.clear()
+  }
   let timer: Timer | undefined
   let period = 0
   // when the pane was last drawn: the tick animates only a pane in view
@@ -251,6 +327,14 @@ export const register: Register = on => {
       }
     } catch {
       // no Herdr row without a readable environment
+    }
+    cwd = e.cwd
+    changesHome = home
+    try {
+      const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/+$/, '') || '/tmp'
+      cacheDir = `${tmp}/claude-jarvis-changes/${crypto.randomUUID()}`
+    } catch {
+      cacheDir = ''
     }
 
     const slow = { at: -Infinity }
@@ -545,6 +629,7 @@ export const register: Register = on => {
     try {
       const out = await next(e)
       ok = out.isError !== true
+      if (ok && out.deny === undefined) await recordChange($, tool, out.result, id ?? MAIN_ACTOR, cacheDir, repoCache)
       return out
     } catch (err) {
       ok = false
@@ -630,6 +715,19 @@ export const register: Register = on => {
       // bookkeeping only
     }
 
+    return next(e)
+  })
+
+  // a new, cleared or resumed session starts the changes page empty; a compaction keeps it
+  on('classic.SessionStart', async ($, e, next) => {
+    if (e.source === 'startup' || e.source === 'clear' || e.source === 'resume') {
+      resetChanges()
+      try {
+        await update($, changes, () => [])
+      } catch {
+        // the page keeps what it showed
+      }
+    }
     return next(e)
   })
 

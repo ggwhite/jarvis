@@ -194,6 +194,8 @@ declare module 'claude-code' {
       // the usagebar cache as the standby suit last read it; null when it was not there
       standbyQuota: FleetQuota | null
       suit: JarvisSuit
+      // the files this session's edit tools changed, in the order first seen
+      changes: JarvisChange[]
     }
   }
 }

@@ -1,9 +1,12 @@
-import { describe, expect, test } from 'claude-code/testing'
+import type { On } from 'claude-code'
+import type { Engine } from 'claude-code/testing'
+import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { JarvisChange } from '../types'
 import { CREATED, dirOf, editOf, noteChange, relPath, repoName, repoOf, reposOf, tailCells } from '../hooks/changes'
 import type { ChangesIo } from '../hooks/changes'
 import { cellWidth } from '../hooks/jarvis'
+import { ioOf } from '../hooks/register'
 
 // a stat over a set of directories and files
 const statOf = (dirs: string[], files: string[] = []): Pick<ChangesIo, 'stat'> & { asked: string[] } => {
@@ -130,5 +133,182 @@ describe('names', () => {
     expect(cut.startsWith('…')).toBe(true)
     expect(cut.endsWith('.md')).toBe(true)
     expect(cellWidth(cut)).toBeLessThanOrEqual(12)
+  })
+})
+
+type Run = { exitCode: number; stdout?: string }
+type Git = Record<string, Run> | ((argv: string[]) => Run)
+
+type Node = { type?: string; props?: Record<string, unknown>; children?: (Node | string)[] }
+
+const textOf = (n: Node | string): string => (typeof n === 'string' ? n : (n.children ?? []).map(textOf).join(''))
+
+// One string per drawn row, a row's pieces joined with nothing between them.
+const linesOf = (n: Node | string): string[] => {
+  if (typeof n === 'string') return [n]
+  if (n.type === 'Text' || n.type === 'Button' || n.props?.['flexDirection'] === 'row') return [textOf(n)]
+  return (n.children ?? []).flatMap(linesOf)
+}
+
+// the test runtime's timer, which the mod's es2023 lib does not declare
+const later = (globalThis as unknown as { setTimeout: (f: () => void, ms: number) => unknown }).setTimeout
+export const settle = () => new Promise<void>(r => later(() => r(), 5))
+
+// The engine beneath jarvis for the changes page: a fake disk (directories, files by
+// mtime), git answering by argv (a map by argv joined with spaces, or a function), edit
+// results by file path; what it was asked is logged in order.
+export function world(
+  on: On,
+  opts: { dirs?: string[]; files?: Record<string, number>; git?: Git; results?: Record<string, unknown>; failWrites?: boolean } = {},
+) {
+  const log: string[] = []
+  const writes = new Map<string, string>()
+  const runs: string[][] = []
+  const opens: Record<string, unknown>[] = []
+  const closes: string[] = []
+  const files = { ...(opts.files ?? {}) }
+  // the changes record as the mod last wrote it
+  let changes: JarvisChange[] = []
+  const answer = (argv: string[]): Run => {
+    const git = opts.git
+    if (typeof git === 'function') return git(argv)
+    return git?.[argv.join(' ')] ?? { exitCode: 128, stdout: '' }
+  }
+  mock.clock(on, { now: 0 })
+  mock.env(on, { HOME: '/Users/u', TMPDIR: '/tmp/t/' })
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('state.set', { plugin: 'jarvis', key: 'changes' }, async (_$, e, next) => {
+    const out = await next(e)
+    if (out.value?.isSet === true) changes = [...e.value]
+    return out
+  })
+  on('classic.SessionStart', async () => ({}))
+  on('agent.list', async () => ({ value: [{ id: 'agent-1', status: 'running', type: 'worker', description: 'd' }] as never }))
+  on('ui.open', async (_$, e) => {
+    log.push(`open:${e.id}`)
+    opens.push(e as unknown as Record<string, unknown>)
+    return { value: { isPlaced: true as const } }
+  })
+  on('ui.close', async (_$, e) => {
+    closes.push(e.id)
+    return { value: undefined as void }
+  })
+  on('tool.call', async (_$, e) => {
+    const input = e as { file_path?: string; notebook_path?: string }
+    return { result: (opts.results?.[input.file_path ?? input.notebook_path ?? ''] ?? {}) as never }
+  })
+  on('fs.stat', async (_$, e) => {
+    log.push(`stat:${e.path}`)
+    if ((opts.dirs ?? []).includes(e.path)) return { value: { kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false } }
+    const m = files[e.path]
+    if (m === undefined) throw new Error('ENOENT')
+    return { value: { kind: 'file' as const, size: 10, mtimeMs: m, isLink: false } }
+  })
+  on('fs.write', async (_$, e) => {
+    log.push(`write:${e.path}`)
+    if (opts.failWrites) throw new Error('EACCES')
+    writes.set(e.path, e.text)
+    return { value: undefined as void }
+  })
+  on('process.run', async (_$, e) => {
+    log.push('run')
+    runs.push([...e.argv])
+    const a = answer([...e.argv])
+    return { value: { exitCode: a.exitCode, stdout: a.stdout ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  return { log, writes, runs, opens, closes, files, changes: () => changes }
+}
+
+export const start = ($: Engine, cwd = '/w') => $.session.start({ cwd, surface: 'terminal', isInteractive: true })
+
+export const edit = ($: Engine, path: string, agentId?: string) =>
+  $.tool.call({ tool: 'Edit', file_path: path, old_string: 'a', new_string: 'b', ...(agentId ? { agentId } : {}) } as never)
+
+export const recorded = async (w: { changes: () => JarvisChange[] }): Promise<JarvisChange[]> => w.changes()
+
+const editResult = (path: string, original: string | null) => ({
+  filePath: path,
+  oldString: 'a',
+  newString: 'b',
+  originalFile: original,
+  structuredPatch: [],
+  userModified: false,
+  replaceAll: false,
+})
+
+describe('recording', () => {
+  const A = '/w/acme/payments/service/order.go'
+  test('an Edit saves its original once and records the repo and actor', async ($, on) => {
+    const w = world(on, { dirs: ['/w/acme/payments/.git'], results: { [A]: editResult(A, 'a\n') } })
+    await start($)
+    await edit($, A)
+    await edit($, A)
+    const origs = [...w.writes.keys()].filter(p => p.startsWith('/tmp/t/claude-jarvis-changes/'))
+    expect(origs).toHaveLength(1)
+    expect(w.writes.get(origs[0] ?? '')).toBe('a\n')
+    expect(await recorded(w)).toEqual([{ path: A, repo: '/w/acme/payments', actors: ['main'], seq: 0, touches: 2, orig: origs[0] }])
+  })
+  test('the main loop and a subagent on the same file make one record with both actors', async ($, on) => {
+    const w = world(on, { dirs: ['/w/r/.git'], results: { '/w/r/a.go': editResult('/w/r/a.go', 'a') } })
+    await start($)
+    await Promise.all([edit($, '/w/r/a.go'), edit($, '/w/r/a.go', 'agent-1')])
+    const list = await recorded(w)
+    expect(list).toHaveLength(1)
+    expect([...(list[0]?.actors ?? [])].sort()).toEqual(['agent-1', 'main'])
+    expect(list[0]?.orig.startsWith('/tmp/t/claude-jarvis-changes/')).toBe(true)
+  })
+  test('a created file needs no cache; an unknown original is recorded as unknown', async ($, on) => {
+    const w = world(on, {
+      results: {
+        '/w/n.go': { type: 'create', filePath: '/w/n.go', content: 'x', structuredPatch: [], originalFile: null },
+        '/w/big.sql': { type: 'update', filePath: '/w/big.sql', content: 'x', structuredPatch: [], originalFile: null },
+      },
+    })
+    await start($)
+    await $.tool.call({ tool: 'Write', file_path: '/w/n.go', content: 'x' } as never)
+    await $.tool.call({ tool: 'Write', file_path: '/w/big.sql', content: 'x' } as never)
+    expect((await recorded(w)).map(c => [c.path, c.orig, c.repo])).toEqual([
+      ['/w/n.go', '/dev/null', null],
+      ['/w/big.sql', '', null],
+    ])
+    expect([...w.writes.keys()].some(p => p.includes('claude-jarvis-changes'))).toBe(false)
+  })
+  test('staged and non-edit calls are not recorded, and the tool result is untouched', async ($, on) => {
+    const w = world(on, { results: { '/w/a': { ...editResult('/w/a', 'a'), staged: true } } })
+    await start($)
+    const out = await edit($, '/w/a')
+    await $.tool.call({ tool: 'Read', file_path: '/w/a' } as never)
+    expect((out as { result?: { staged?: boolean } }).result?.staged).toBe(true)
+    expect(await recorded(w)).toEqual([])
+  })
+  test('a cache write that fails records the change as unknown', async ($, on) => {
+    const w = world(on, { results: { '/w/a': editResult('/w/a', 'a') }, failWrites: true })
+    await start($)
+    await edit($, '/w/a')
+    expect((await recorded(w))[0]?.orig).toBe('')
+  })
+  test('/clear empties the record; a compaction keeps it', async ($, on) => {
+    const w = world(on, { results: { '/w/a': editResult('/w/a', 'a') } })
+    await start($)
+    await edit($, '/w/a')
+    await $.classic.SessionStart({ source: 'compact' } as never)
+    expect(await recorded(w)).toHaveLength(1)
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    expect(await recorded(w)).toEqual([])
+  })
+  test("git's NUL-delimited output reaches the changes page intact, under the run timeout", async () => {
+    const stdout = '1\t0\ta b.go\u00002\t1\t說明.md\u0000'
+    const asked: { argv: string[]; timeoutMs?: number }[] = []
+    const engine = {
+      process: {
+        run: async (argv: readonly string[], init?: { timeoutMs?: number }) => {
+          asked.push({ argv: [...argv], timeoutMs: init?.timeoutMs })
+          return { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+        },
+      },
+    }
+    const out = await ioOf(engine as unknown as Parameters<typeof ioOf>[0]).run(['/usr/bin/git', '-C', '/w/r', 'diff', '-z'])
+    expect(out).toEqual({ exitCode: 0, stdout, stderr: '' })
+    expect(asked).toEqual([{ argv: ['/usr/bin/git', '-C', '/w/r', 'diff', '-z'], timeoutMs: 5_000 }])
   })
 })
