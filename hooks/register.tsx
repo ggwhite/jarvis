@@ -37,9 +37,9 @@ import type { FleetIo } from './fleetSource'
 import type { JarvisChange } from '../types'
 import { CREATED, UNKNOWN, editOf, noteChange, repoOf, reposOf } from './changes'
 import type { ChangeMode, ChangesIo, EditSeen } from './changes'
-import { sessionStat } from './gitDiff'
-import type { Failed, FileStat } from './gitDiff'
-import { MAX_LISTED, sessionGroups } from './changesView'
+import { sessionStat, unpushedOf } from './gitDiff'
+import type { Failed, FileStat, Unpushed } from './gitDiff'
+import { MAX_LISTED, sessionGroups, unpushedGroups } from './changesView'
 import type { ChangesView } from './changesView'
 
 const PANE = 'jarvis'
@@ -163,13 +163,25 @@ async function recordChange(
 // What the changes page keeps between drawings: what git last said of each changed file,
 // by the file's mtime, size and edit count; whether git is being asked; the files'
 // signatures as last read, at most once per CHANGES_SCAN_MS while drawn; `gen` counts the
-// resets, so git still answering for the last session stores nothing.
+// resets, so git still answering for the last session stores nothing. The unpushed mode
+// keeps what git said of each touched repo, asked on entering the mode and on 重新整理;
+// `unpushedGen` counts the drops, so an answer to an older ask stores nothing.
 type ChangesCache = {
   stats: Map<string, { sig: string; stat: FileStat | Failed }>
   busy: boolean
   gen: number
   sigs: Map<string, string>
   scannedAt: number
+  unpushed: Map<string, Unpushed | Failed>
+  unpushedBusy: boolean
+  unpushedGen: number
+}
+
+// forgets the unpushed answers, those still coming included: the next drawing asks git again
+const dropUnpushed = (cache: ChangesCache) => {
+  cache.unpushedGen += 1
+  cache.unpushedBusy = false
+  cache.unpushed.clear()
 }
 
 // What the changes page lists now: cached counts, a file whose signature moved asked
@@ -223,7 +235,31 @@ async function changesNow(
     })()
   }
   if (mode === 'session') return { mode, groups: sessionGroups(list, stats, names), pending: stale.length > 0, total: all.length }
-  return { mode, groups: [], pending: false, total: reposOf(list).length }
+  const repos = reposOf(all)
+  const missing = repos.filter(r => !cache.unpushed.has(r))
+  if (missing.length > 0 && !cache.unpushedBusy) {
+    cache.unpushedBusy = true
+    const gen = cache.unpushedGen
+    void (async () => {
+      try {
+        for (const repo of missing) {
+          const r = await unpushedOf(io, repo)
+          if (cache.unpushedGen !== gen) return
+          cache.unpushed.set(repo, r)
+        }
+      } catch {
+        // the page shows what it has
+      } finally {
+        if (cache.unpushedGen === gen) cache.unpushedBusy = false
+        try {
+          $.ui.invalidate('ui.render')
+        } catch {
+          // the next drawing shows it
+        }
+      }
+    })()
+  }
+  return { mode, groups: unpushedGroups(repos, cache.unpushed, all, names), pending: missing.length > 0, total: repos.length }
 }
 
 // opens the pane, its boot screen from the time handed to boot (undefined: none); false when it could not open
@@ -333,7 +369,16 @@ export const register: Register = on => {
   const repoCache = new Map<string, string | null>()
   // each file's original as its first edit settles it
   const origs = new Map<string, Promise<string>>()
-  const changesCache: ChangesCache = { stats: new Map(), busy: false, gen: 0, sigs: new Map(), scannedAt: -Infinity }
+  const changesCache: ChangesCache = {
+    stats: new Map(),
+    busy: false,
+    gen: 0,
+    sigs: new Map(),
+    scannedAt: -Infinity,
+    unpushed: new Map(),
+    unpushedBusy: false,
+    unpushedGen: 0,
+  }
   const resetChanges = () => {
     repoCache.clear()
     origs.clear()
@@ -342,6 +387,7 @@ export const register: Register = on => {
     changesCache.stats.clear()
     changesCache.sigs = new Map()
     changesCache.scannedAt = -Infinity
+    dropUnpushed(changesCache)
   }
   let timer: Timer | undefined
   let period = 0
@@ -919,7 +965,18 @@ export const register: Register = on => {
       toggleSuit,
       onStandby,
       ...(changesView ? { changes: changesView } : {}),
-      setChangesMode: (mode: ChangeMode) => setUi(u => ({ ...u, changesMode: mode })),
+      setChangesMode: (mode: ChangeMode) => {
+        if (mode === 'unpushed') dropUnpushed(changesCache)
+        setUi(u => ({ ...u, changesMode: mode }))
+      },
+      refreshChanges: () => {
+        dropUnpushed(changesCache)
+        try {
+          $.ui.invalidate('ui.render')
+        } catch {
+          // the next drawing asks again
+        }
+      },
     })
   })
 }

@@ -162,7 +162,7 @@ let worldClock: { advance: (ms: number) => Promise<unknown> } | undefined
 // results by file path; what it was asked is logged in order.
 export function world(
   on: On,
-  opts: { dirs?: string[]; files?: Record<string, number>; git?: Git; results?: Record<string, unknown>; failWrites?: boolean; holdWrite?: (text: string) => Promise<void> | undefined; holdRun?: () => Promise<void> } = {},
+  opts: { dirs?: string[]; files?: Record<string, number>; git?: Git; results?: Record<string, unknown>; failWrites?: boolean; holdWrite?: (text: string) => Promise<void> | undefined; holdRun?: (argv: string[]) => Promise<void> } = {},
 ) {
   const log: string[] = []
   const writes = new Map<string, string>()
@@ -218,7 +218,7 @@ export function world(
   on('process.run', async (_$, e) => {
     log.push('run')
     runs.push([...e.argv])
-    await opts.holdRun?.()
+    await opts.holdRun?.([...e.argv])
     const a = answer([...e.argv])
     return { value: { exitCode: a.exitCode, stdout: a.stdout ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
@@ -480,5 +480,111 @@ describe('changes page', () => {
     expect(buttons.some(b => b.key === 'tab-changes')).toBe(true)
     expect(buttons.some(b => b.key === 'chg-mode-unpushed')).toBe(true)
     expect(buttons.every(b => b.props['hotkey'] === undefined)).toBe(true)
+  })
+})
+
+describe('unpushed mode', () => {
+  const R = '/w/acme/payments'
+  const A = `${R}/service/order.go`
+  const G = '/usr/bin/git'
+  const answers: Record<string, Run> = {
+    [`${G} -C ${R} symbolic-ref -q --short refs/remotes/origin/HEAD`]: { exitCode: 0, stdout: 'origin/main\n' },
+    [`${G} -C ${R} merge-base HEAD origin/main`]: { exitCode: 0, stdout: 'b4se\n' },
+    [`${G} -C ${R} rev-list --count b4se..HEAD`]: { exitCode: 0, stdout: '2\n' },
+    [`${G} -C ${R} diff --numstat -z --no-renames b4se`]: { exitCode: 0, stdout: '30\t5\tservice/order.go\x003\t0\tREADME.md\x00' },
+    [`${G} -C ${R} ls-files --others --exclude-standard -z`]: { exitCode: 0, stdout: '' },
+  }
+  const press = async ($: Engine, key: string) => {
+    const ui = await pane($)
+    await ui.press({ key })
+    await ui.unmount()
+    await settle()
+  }
+  const toUnpushed = ($: Engine) => press($, 'chg-mode-unpushed')
+
+  test('lists every unpushed file of the repos touched, ↑ commits, 其他 for files the session did not touch', async ($, on) => {
+    world(on, { dirs: [`${R}/.git`], files: { [A]: 1 }, results: { [A]: editResult(A, 'a') }, git: answers })
+    await start($)
+    await edit($, A)
+    await showChanges($)
+    await toUnpushed($)
+    await drawn($)
+    await settle()
+    const text = (await drawn($)).join('\n')
+    expect(text).toMatch(/ acme\/payments\s*↑2/)
+    expect(text).toMatch(/其他\s+README\.md\s+\+3 −0/)
+    expect(text).toMatch(/主線\s+service\/order\.go\s+\+30 −5/)
+  })
+
+  test('git runs on entering the mode and on 重新整理, not on every drawing', async ($, on) => {
+    const w = world(on, { dirs: [`${R}/.git`], files: { [A]: 1 }, results: { [A]: editResult(A, 'a') }, git: answers })
+    await start($)
+    await edit($, A)
+    await showChanges($)
+    await toUnpushed($)
+    await drawn($)
+    await settle()
+    const asked = () => w.runs.filter(r => r.includes('merge-base')).length
+    const after = asked()
+    expect(after).toBe(1)
+    await drawn($)
+    await drawn($)
+    await settle()
+    expect(asked()).toBe(after)
+    await press($, 'chg-refresh')
+    await drawn($)
+    await settle()
+    expect(asked()).toBe(after + 1)
+    await press($, 'chg-mode-session')
+    await drawn($)
+    await settle()
+    await toUnpushed($)
+    await drawn($)
+    await settle()
+    expect(asked()).toBe(after + 2)
+  })
+
+  test('a repo whose git fails shows the error under its name', async ($, on) => {
+    world(on, { dirs: [`${R}/.git`], files: { [A]: 1 }, results: { [A]: editResult(A, 'a') } })
+    await start($)
+    await edit($, A)
+    await showChanges($)
+    await toUnpushed($)
+    await drawn($)
+    await settle()
+    expect((await drawn($)).join('\n')).toContain('git diff 失敗')
+  })
+
+  test('a /clear drops the unpushed files git was still working out for the last session', async ($, on) => {
+    // the last session's first ask of origin/HEAD waits until let go; whatever is asked
+    // after that answers 99/99
+    let release = () => {}
+    const gate = new Promise<void>(r => (release = r))
+    let held = 0
+    let late = false
+    const lateDiff = `${G} -C ${R} diff --numstat -z --no-renames b4se`
+    world(on, {
+      dirs: [`${R}/.git`],
+      files: { [A]: 1 },
+      results: { [A]: editResult(A, 'a') },
+      git: argv => (late && argv.join(' ') === lateDiff ? { exitCode: 0, stdout: '99\t99\tservice/order.go\x00' } : (answers[argv.join(' ')] ?? { exitCode: 128 })),
+      holdRun: argv => (argv.includes('symbolic-ref') && held++ === 0 ? gate : Promise.resolve()),
+    })
+    await start($)
+    await edit($, A)
+    await showChanges($)
+    await toUnpushed($)
+    await drawn($)
+    await settle()
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    await edit($, A)
+    await drawn($)
+    await settle()
+    late = true
+    release()
+    await settle()
+    const text = (await drawn($)).join('\n')
+    expect(text).toMatch(/主線\s+service\/order\.go\s+\+30 −5/)
+    expect(text).not.toContain('+99')
   })
 })

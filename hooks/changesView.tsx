@@ -2,7 +2,7 @@ import type { JarvisChange } from '../types'
 import { relPath, repoName } from './changes'
 import type { ChangeMode } from './changes'
 import { isFailed } from './gitDiff'
-import type { Failed, FileStat } from './gitDiff'
+import type { Failed, FileStat, Unpushed } from './gitDiff'
 
 export const MAX_LISTED = 200
 
@@ -62,4 +62,41 @@ export function sessionGroups(
     g.pending = g.pending || s === undefined
   }
   return groups
+}
+
+export function unpushedGroups(
+  repos: readonly string[],
+  results: ReadonlyMap<string, Unpushed | Failed>,
+  list: readonly JarvisChange[],
+  names: { cwd: string; home: string },
+): ChangeGroup[] {
+  return repos.map(repo => {
+    const name = repoName(repo, names.cwd, names.home)
+    const r = results.get(repo)
+    if (r === undefined) return { key: repo, name, entries: [], add: 0, del: 0, pending: true }
+    if (isFailed(r)) return { key: repo, name, error: r.error, entries: [], add: 0, del: 0, pending: false }
+    const entries: ChangeEntry[] = r.files.slice(0, MAX_LISTED).map(f => {
+      const note = f.binary ? '二進位' : undefined
+      return {
+        key: `u:${f.path}`,
+        path: f.path,
+        label: `${relPath(f.path, repo, names.home)}${f.untracked ? ' (新)' : ''}`,
+        actors: list.find(c => c.path === f.path)?.actors ?? [],
+        add: f.add,
+        del: f.del,
+        binary: f.binary,
+        ...(note ? { note } : {}),
+        pending: false,
+      }
+    })
+    return {
+      key: repo,
+      name,
+      ...(r.ahead > 0 ? { ahead: r.ahead } : {}),
+      entries,
+      add: entries.reduce((n, e) => n + e.add, 0),
+      del: entries.reduce((n, e) => n + e.del, 0),
+      pending: false,
+    }
+  })
 }
