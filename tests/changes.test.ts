@@ -1239,6 +1239,36 @@ describe('session mode: worktrees, scratch files and counts', () => {
     expect(w.runs.filter(r => r.includes(A))).toEqual([])
   })
 
+  test('a removed worktree is not listed in the unpushed mode and git is not asked of it', async ($, on) => {
+    const B = `${M}/b.go`
+    const dirs = [`${M}/.git`, T]
+    const w = world(on, {
+      dirs,
+      files: { [A]: 1, [B]: 1, [`${T}/.git`]: 1 },
+      texts: { [`${T}/.git`]: `gitdir: ${M}/.git/worktrees/x\n` },
+      results: { [A]: editResult(A, 'a'), [B]: editResult(B, 'b') },
+      git: () => ({ exitCode: 1, stdout: '' }),
+    })
+    await start($)
+    await edit($, A)
+    await edit($, B)
+    dirs.splice(dirs.indexOf(T), 1)
+    delete w.files[A]
+    delete w.files[`${T}/.git`]
+    await showChanges($)
+    const ui = await pane($)
+    await ui.press({ key: 'chg-mode-unpushed' })
+    await ui.unmount()
+    await settle()
+    await drawn($)
+    await settle()
+    const text = (await drawn($)).join('\n')
+    expect(text).toContain(' dotfiles')
+    expect(text).not.toContain('worktrees/x')
+    expect(w.runs.filter(r => r.includes(T))).toEqual([])
+    expect(w.runs.some(r => r.includes(M))).toBe(true)
+  })
+
   test('a scratch file outside git that is gone is hidden, its group with it when none is left', async ($, on) => {
     const S = '/tmp/s/scratch.json'
     const K = '/tmp/s/keep.txt'

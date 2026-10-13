@@ -186,7 +186,8 @@ async function recordChange(
 // page: what each listed file's key stands for, each key's diff by the signature it was
 // taken at, and the key git is diffing; `gen` drops those too. `bashRepos`: the repos
 // the session's Bash calls touched, listed in the unpushed mode beside the recorded ones.
-// `gone`: the changed files and worktree roots the last read found missing.
+// `gone`: the changed files and worktree roots the last read found missing. `unpushedLive`:
+// whether each touched repo was still on disk when the unpushed mode first listed it.
 type ChangesCache = {
   stats: Map<string, { sig: string; stat: FileStat | Failed }>
   busy: boolean
@@ -195,6 +196,7 @@ type ChangesCache = {
   gone: Set<string>
   scannedAt: number
   unpushed: Map<string, Unpushed | Failed>
+  unpushedLive: Map<string, boolean>
   unpushedBusy: boolean
   unpushedGen: number
   opened: Map<string, Opened>
@@ -242,6 +244,7 @@ const dropUnpushed = (cache: ChangesCache) => {
   cache.unpushedGen += 1
   cache.unpushedBusy = false
   cache.unpushed.clear()
+  cache.unpushedLive.clear()
   for (const key of [...cache.diffs.keys()]) if (key.startsWith('u:')) cache.diffs.delete(key)
   if (cache.diffBusy.startsWith('u:')) cache.diffBusy = ''
 }
@@ -260,8 +263,14 @@ async function changesNow(
   const io = ioOf($)
   const all = await read($, changes)
   if (mode === 'unpushed') {
-    const repos = reposOf(all)
-    for (const repo of cache.bashRepos) if (!repos.includes(repo)) repos.push(repo)
+    const touched = reposOf(all)
+    for (const repo of cache.bashRepos) if (!touched.includes(repo)) touched.push(repo)
+    // a repo whose `.git` is gone with its root (a removed worktree) is not listed: git has
+    // nothing to say of it
+    for (const repo of touched) {
+      if (!cache.unpushedLive.has(repo)) cache.unpushedLive.set(repo, (await io.stat(`${repo === '/' ? '' : repo}/.git`)) !== undefined)
+    }
+    const repos = touched.filter(r => cache.unpushedLive.get(r) === true)
     const missing = repos.filter(r => !cache.unpushed.has(r))
     if (missing.length > 0 && !cache.unpushedBusy) {
       cache.unpushedBusy = true
@@ -509,6 +518,7 @@ export const register: Register = on => {
     gone: new Set(),
     scannedAt: -Infinity,
     unpushed: new Map(),
+    unpushedLive: new Map(),
     unpushedBusy: false,
     unpushedGen: 0,
     opened: new Map(),
