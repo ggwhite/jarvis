@@ -36,7 +36,7 @@ import { EMPTY_FLEET, FLEET_MS, FLEET_RUN_TIMEOUT_MS, LIMITS_PATH, focusArgv, re
 import type { FleetIo } from './fleetSource'
 import type { JarvisChange } from '../types'
 import { CREATED, UNKNOWN, editOf, noteChange, repoOf } from './changes'
-import type { ChangesIo } from './changes'
+import type { ChangesIo, EditSeen } from './changes'
 
 const PANE = 'jarvis'
 const MAX_EARLY = 100
@@ -111,8 +111,24 @@ export function ioOf($: Pick<EngineInterface, 'fs' | 'process'>): ChangesIo {
   }
 }
 
+// A file's `orig` the first time an edit to it is seen: the record's own when it already
+// has one, else its content before cached under `cacheDir`.
+async function firstOrig($: Pick<EngineInterface, 'fs' | 'process' | 'state'>, seen: EditSeen, cacheDir: string): Promise<string> {
+  try {
+    const had = (await read($, changes)).find(c => c.path === seen.path)?.orig
+    if (had !== undefined) return had
+    if (seen.created) return CREATED
+    if (seen.original === null || cacheDir === '') return UNKNOWN
+    const file = `${cacheDir}/${crypto.randomUUID()}.orig`
+    return (await ioOf($).write(file, seen.original)) ? file : UNKNOWN
+  } catch {
+    return UNKNOWN
+  }
+}
+
 // Records what an edit tool changed: its original cached under `cacheDir` the first time
-// the file is seen, its repo, and who changed it.
+// the file is seen, its repo, and who changed it. The first edit to reach here owns the
+// file's original: `origs` holds it from before any await, so a later edit only joins.
 async function recordChange(
   $: Pick<EngineInterface, 'fs' | 'process' | 'state'>,
   tool: string,
@@ -120,23 +136,19 @@ async function recordChange(
   actor: string,
   cacheDir: string,
   repoCache: Map<string, string | null>,
+  origs: Map<string, Promise<string>>,
 ): Promise<void> {
   try {
     const seen = editOf(tool, result)
     if (!seen) return
-    const io = ioOf($)
-    let orig = (await read($, changes)).find(c => c.path === seen.path)?.orig
-    if (orig === undefined) {
-      if (seen.created) orig = CREATED
-      else if (seen.original === null || cacheDir === '') orig = UNKNOWN
-      else {
-        const file = `${cacheDir}/${crypto.randomUUID()}.orig`
-        orig = (await io.write(file, seen.original)) ? file : UNKNOWN
-      }
+    let first = origs.get(seen.path)
+    if (first === undefined) {
+      first = firstOrig($, seen, cacheDir)
+      origs.set(seen.path, first)
     }
-    const repo = await repoOf(io, seen.path, repoCache)
-    const kept = orig
-    await update($, changes, l => noteChange(l, { path: seen.path, repo, actor, orig: kept }))
+    const orig = await first
+    const repo = await repoOf(ioOf($), seen.path, repoCache)
+    await update($, changes, l => noteChange(l, { path: seen.path, repo, actor, orig }))
   } catch {
     // the edit itself already happened
   }
@@ -247,8 +259,11 @@ export const register: Register = on => {
   let changesHome = ''
   let cacheDir = ''
   const repoCache = new Map<string, string | null>()
+  // each file's original as its first edit settles it
+  const origs = new Map<string, Promise<string>>()
   const resetChanges = () => {
     repoCache.clear()
+    origs.clear()
   }
   let timer: Timer | undefined
   let period = 0
@@ -629,7 +644,7 @@ export const register: Register = on => {
     try {
       const out = await next(e)
       ok = out.isError !== true
-      if (ok && out.deny === undefined) await recordChange($, tool, out.result, id ?? MAIN_ACTOR, cacheDir, repoCache)
+      if (ok && out.deny === undefined) await recordChange($, tool, out.result, id ?? MAIN_ACTOR, cacheDir, repoCache, origs)
       return out
     } catch (err) {
       ok = false

@@ -159,7 +159,7 @@ export const settle = () => new Promise<void>(r => later(() => r(), 5))
 // results by file path; what it was asked is logged in order.
 export function world(
   on: On,
-  opts: { dirs?: string[]; files?: Record<string, number>; git?: Git; results?: Record<string, unknown>; failWrites?: boolean } = {},
+  opts: { dirs?: string[]; files?: Record<string, number>; git?: Git; results?: Record<string, unknown>; failWrites?: boolean; holdWrite?: (text: string) => Promise<void> | undefined } = {},
 ) {
   const log: string[] = []
   const writes = new Map<string, string>()
@@ -195,7 +195,8 @@ export function world(
   })
   on('tool.call', async (_$, e) => {
     const input = e as { file_path?: string; notebook_path?: string }
-    return { result: (opts.results?.[input.file_path ?? input.notebook_path ?? ''] ?? {}) as never }
+    const r = opts.results?.[input.file_path ?? input.notebook_path ?? '']
+    return { result: (typeof r === 'function' ? r(e) : (r ?? {})) as never }
   })
   on('fs.stat', async (_$, e) => {
     log.push(`stat:${e.path}`)
@@ -207,6 +208,7 @@ export function world(
   on('fs.write', async (_$, e) => {
     log.push(`write:${e.path}`)
     if (opts.failWrites) throw new Error('EACCES')
+    await opts.holdWrite?.(e.text)
     writes.set(e.path, e.text)
     return { value: undefined as void }
   })
@@ -256,6 +258,21 @@ describe('recording', () => {
     expect(list).toHaveLength(1)
     expect([...(list[0]?.actors ?? [])].sort()).toEqual(['agent-1', 'main'])
     expect(list[0]?.orig.startsWith('/tmp/t/claude-jarvis-changes/')).toBe(true)
+  })
+  test('the edit that reaches the record first owns the original, however long its cache write takes', async ($, on) => {
+    const w = world(on, {
+      dirs: ['/w/r/.git'],
+      results: {
+        '/w/r/a.go': (e: { agentId?: string }) => editResult('/w/r/a.go', e.agentId === undefined ? 'ORIGINAL' : 'AFTER-MAIN'),
+      },
+      holdWrite: text => (text === 'ORIGINAL' ? settle() : undefined),
+    })
+    await start($)
+    await Promise.all([edit($, '/w/r/a.go'), edit($, '/w/r/a.go', 'agent-1')])
+    const list = await recorded(w)
+    expect(list).toHaveLength(1)
+    expect(w.writes.get(list[0]?.orig ?? '')).toBe('ORIGINAL')
+    expect([...w.writes.keys()].filter(p => p.includes('claude-jarvis-changes'))).toHaveLength(1)
   })
   test('a created file needs no cache; an unknown original is recorded as unknown', async ($, on) => {
     const w = world(on, {
