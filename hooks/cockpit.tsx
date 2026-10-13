@@ -1561,6 +1561,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     }
     for (const g of cv.groups) {
       body.push(groupLine(g))
+      if (g.note !== undefined) body.push([sp(1), { t: g.note, color: MUTED }])
       if (g.error !== undefined) body.push([sp(1), { t: g.error, color: MUTED }])
       else if (g.entries.length === 0) body.push([sp(1), { t: g.pending ? '計算中…' : '沒有未推送的改動', color: MUTED }])
       for (const e of g.entries) body.push(fileLine(e))

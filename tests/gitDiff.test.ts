@@ -125,7 +125,20 @@ describe('unpushed mode', () => {
       [`${GIT} -C ${R} diff --numstat -z --no-renames HEAD`]: { exitCode: 0, stdout: '1\t1\ta.go\x00' },
       [`${GIT} -C ${R} ls-files --others --exclude-standard -z`]: { exitCode: 0, stdout: '' },
     })
-    expect(await unpushedOf(io, R)).toEqual({ base: 'HEAD', ahead: 0, files: [{ path: `${R}/a.go`, add: 1, del: 1, binary: false, untracked: false }] })
+    expect(await unpushedOf(io, R)).toEqual({
+      base: 'HEAD',
+      ahead: 0,
+      files: [{ path: `${R}/a.go`, add: 1, del: 1, binary: false, untracked: false }],
+      note: '找不到 origin，只比 HEAD',
+    })
+  })
+  test('a failing merge-base compares with HEAD and says so', async () => {
+    const io = gitIo({
+      [`${GIT} -C ${R} symbolic-ref -q --short refs/remotes/origin/HEAD`]: { exitCode: 0, stdout: 'origin/main\n' },
+      [`${GIT} -C ${R} diff --numstat -z --no-renames HEAD`]: { exitCode: 0, stdout: '' },
+      [`${GIT} -C ${R} ls-files --others --exclude-standard -z`]: { exitCode: 0, stdout: '' },
+    })
+    expect(await unpushedOf(io, R)).toEqual({ target: 'origin/main', base: 'HEAD', ahead: 0, files: [], note: 'merge-base 失敗，只比 HEAD' })
   })
   test('a failing diff is an error', async () => {
     expect(await unpushedOf(gitIo({}), R)).toEqual({ error: 'git diff 失敗' })

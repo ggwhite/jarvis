@@ -184,8 +184,10 @@ const dropUnpushed = (cache: ChangesCache) => {
   cache.unpushed.clear()
 }
 
-// What the changes page lists now: cached counts, a file whose signature moved asked
-// again in the background, the page redrawn when git has answered.
+// What the changes page lists now: in the unpushed mode, each touched repo as git last
+// said, a repo not yet asked asked in the background; in the session mode, cached
+// counts, a file whose signature moved asked again in the background. The page is
+// redrawn when git has answered.
 async function changesNow(
   $: Pick<EngineInterface, 'fs' | 'process' | 'state' | 'ui'>,
   cache: ChangesCache,
@@ -195,6 +197,36 @@ async function changesNow(
 ): Promise<ChangesView> {
   const io = ioOf($)
   const all = await read($, changes)
+  if (mode === 'unpushed') {
+    const repos = reposOf(all)
+    const missing = repos.filter(r => !cache.unpushed.has(r))
+    if (missing.length > 0 && !cache.unpushedBusy) {
+      cache.unpushedBusy = true
+      const gen = cache.unpushedGen
+      void (async () => {
+        try {
+          for (const repo of missing) {
+            let r: Unpushed | Failed
+            try {
+              r = await unpushedOf(io, repo)
+            } catch {
+              r = { error: 'git diff 失敗' }
+            }
+            if (cache.unpushedGen !== gen) return
+            cache.unpushed.set(repo, r)
+          }
+        } finally {
+          if (cache.unpushedGen === gen) cache.unpushedBusy = false
+          try {
+            $.ui.invalidate('ui.render')
+          } catch {
+            // the next drawing shows it
+          }
+        }
+      })()
+    }
+    return { mode, groups: unpushedGroups(repos, cache.unpushed, all, names), pending: missing.length > 0, total: repos.length }
+  }
   const list = all.slice(0, MAX_LISTED)
   if (now - cache.scannedAt >= CHANGES_SCAN_MS) {
     cache.scannedAt = now
@@ -234,32 +266,7 @@ async function changesNow(
       }
     })()
   }
-  if (mode === 'session') return { mode, groups: sessionGroups(list, stats, names), pending: stale.length > 0, total: all.length }
-  const repos = reposOf(all)
-  const missing = repos.filter(r => !cache.unpushed.has(r))
-  if (missing.length > 0 && !cache.unpushedBusy) {
-    cache.unpushedBusy = true
-    const gen = cache.unpushedGen
-    void (async () => {
-      try {
-        for (const repo of missing) {
-          const r = await unpushedOf(io, repo)
-          if (cache.unpushedGen !== gen) return
-          cache.unpushed.set(repo, r)
-        }
-      } catch {
-        // the page shows what it has
-      } finally {
-        if (cache.unpushedGen === gen) cache.unpushedBusy = false
-        try {
-          $.ui.invalidate('ui.render')
-        } catch {
-          // the next drawing shows it
-        }
-      }
-    })()
-  }
-  return { mode, groups: unpushedGroups(repos, cache.unpushed, all, names), pending: missing.length > 0, total: repos.length }
+  return { mode, groups: sessionGroups(list, stats, names), pending: stale.length > 0, total: all.length }
 }
 
 // opens the pane, its boot screen from the time handed to boot (undefined: none); false when it could not open

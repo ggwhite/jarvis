@@ -17,7 +17,8 @@ export type Failed = { error: string }
 
 export type UnpushedFile = { path: string; add: number; del: number; binary: boolean; untracked: boolean }
 
-export type Unpushed = { target?: string; base: string; ahead: number; files: UnpushedFile[] }
+// `note` says why it compares with HEAD when it was meant to compare with origin
+export type Unpushed = { target?: string; base: string; ahead: number; files: UnpushedFile[]; note?: string }
 
 export const isFailed = (x: unknown): x is Failed =>
   typeof x === 'object' && x !== null && typeof (x as { error?: unknown }).error === 'string'
@@ -120,9 +121,11 @@ export async function pickTarget(io: ChangesIo, repo: string): Promise<string | 
 export async function unpushedOf(io: ChangesIo, repo: string): Promise<Unpushed | Failed> {
   const target = await pickTarget(io, repo)
   let base = 'HEAD'
+  let note = '找不到 origin，只比 HEAD'
   if (target !== undefined) {
     const mb = await io.run([GIT, '-C', repo, 'merge-base', 'HEAD', target])
     if (mb?.exitCode === 0 && mb.stdout.trim() !== '') base = mb.stdout.trim()
+    note = base === 'HEAD' ? 'merge-base 失敗，只比 HEAD' : ''
   }
   let ahead = 0
   if (base !== 'HEAD') {
@@ -141,7 +144,7 @@ export async function unpushedOf(io: ChangesIo, repo: string): Promise<Unpushed 
     files.push({ path, add: row?.add ?? 0, del: 0, binary: row?.binary ?? false, untracked: true })
   }
   files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
-  return { ...(target !== undefined ? { target } : {}), base, ahead, files }
+  return { ...(target !== undefined ? { target } : {}), base, ahead, files, ...(note !== '' ? { note } : {}) }
 }
 
 export async function unpushedDiff(io: ChangesIo, repo: string, base: string, f: UnpushedFile): Promise<DiffRow[] | Failed> {

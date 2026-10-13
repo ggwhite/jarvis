@@ -544,6 +544,49 @@ describe('unpushed mode', () => {
     expect(asked()).toBe(after + 2)
   })
 
+  test('the session counts are not worked out in the unpushed mode', async ($, on) => {
+    const w = world(on, { dirs: [`${R}/.git`], files: { [A]: 1 }, results: { [A]: editResult(A, 'a') }, git: answers })
+    await start($)
+    await edit($, A)
+    await showChanges($)
+    await toUnpushed($)
+    await drawn($)
+    await settle()
+    const before = w.runs.filter(r => r.includes('--no-index')).length
+    w.files[A] = 2
+    await edit($, A)
+    await worldClock?.advance(5_000)
+    await drawn($)
+    await settle()
+    await drawn($)
+    await settle()
+    expect(w.runs.filter(r => r.includes('--no-index')).length).toBe(before)
+    expect(w.runs.filter(r => r.includes('merge-base')).length).toBe(1)
+  })
+
+  test('a repo without origin, or whose merge-base fails, says it compares with HEAD', async ($, on) => {
+    const noOrigin: Record<string, Run> = {
+      [`${G} -C ${R} diff --numstat -z --no-renames HEAD`]: { exitCode: 0, stdout: '1\t0\tservice/order.go\x00' },
+      [`${G} -C ${R} ls-files --others --exclude-standard -z`]: { exitCode: 0, stdout: '' },
+    }
+    let git = noOrigin
+    world(on, { dirs: [`${R}/.git`], files: { [A]: 1 }, results: { [A]: editResult(A, 'a') }, git: argv => git[argv.join(' ')] ?? { exitCode: 128 } })
+    await start($)
+    await edit($, A)
+    await showChanges($)
+    await toUnpushed($)
+    await drawn($)
+    await settle()
+    const first = (await drawn($)).join('\n')
+    expect(first).toMatch(/acme\/payments[^\n]*\n\s*找不到 origin，只比 HEAD/)
+    expect(first).not.toContain('↑')
+    git = { ...noOrigin, [`${G} -C ${R} symbolic-ref -q --short refs/remotes/origin/HEAD`]: { exitCode: 0, stdout: 'origin/main\n' } }
+    await press($, 'chg-refresh')
+    await drawn($)
+    await settle()
+    expect((await drawn($)).join('\n')).toMatch(/acme\/payments[^\n]*\n\s*merge-base 失敗，只比 HEAD/)
+  })
+
   test('a repo whose git fails shows the error under its name', async ($, on) => {
     world(on, { dirs: [`${R}/.git`], files: { [A]: 1 }, results: { [A]: editResult(A, 'a') } })
     await start($)

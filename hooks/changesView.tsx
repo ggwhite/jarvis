@@ -26,6 +26,7 @@ export type ChangeGroup = {
   name: string
   ahead?: number
   error?: string
+  note?: string
   entries: ChangeEntry[]
   add: number
   del: number
@@ -93,6 +94,7 @@ export function unpushedGroups(
       key: repo,
       name,
       ...(r.ahead > 0 ? { ahead: r.ahead } : {}),
+      ...(r.note !== undefined ? { note: r.note } : {}),
       entries,
       add: entries.reduce((n, e) => n + e.add, 0),
       del: entries.reduce((n, e) => n + e.del, 0),
