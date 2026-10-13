@@ -35,7 +35,11 @@ import {
   suitResting,
 } from './suit'
 import type { Readout } from './suit'
-import { PHASE_ICON, ROLE_ICON, SECTION_ICON, TAB_ICON, TITLE_ICON, withIcon } from './icons'
+import { CHANGE_ICON, PHASE_ICON, ROLE_ICON, SECTION_ICON, TAB_ICON, TITLE_ICON, withIcon } from './icons'
+import { MAX_LISTED } from './changesView'
+import type { ChangeEntry, ChangeGroup, ChangesView } from './changesView'
+import { tailCells } from './changes'
+import type { ChangeMode } from './changes'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
 import type { CardLines } from './fleetCards'
 import {
@@ -153,6 +157,12 @@ export type Ctx = {
   toggleSuit?: () => void
   // told each drawing whether the standby suit was drawn, and drawn and playing, its frame time
   onStandby?: (drawn: boolean, periodMs?: number) => void
+  // the changes page: what it lists, and the presses that switch its mode, ask git again
+  // and open one file's diff
+  changes?: ChangesView
+  setChangesMode?: (mode: ChangeMode) => void
+  refreshChanges?: () => void
+  openDiff?: (key: string) => void
 }
 
 const FRAME = THEME.frame
@@ -252,6 +262,7 @@ const TABS: { page: JarvisPage; icon: string; label: string }[] = [
   { page: 'log', icon: TAB_ICON.log, label: '事件流' },
   { page: 'stats', icon: TAB_ICON.stats, label: '統計' },
   { page: 'fleet', icon: TAB_ICON.fleet, label: '艦隊' },
+  { page: 'changes', icon: TAB_ICON.changes, label: '異動' },
 ]
 
 // The burn chart's width at each breakpoint but wide (which takes the pane less 4).
@@ -1442,6 +1453,133 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     )
   }
 
+  // ---- 異動 ---------------------------------------------------------------
+
+  const CHANGE_MODES: { mode: ChangeMode; label: string }[] = [
+    { mode: 'session', label: '本次 session' },
+    { mode: 'unpushed', label: '未推送' },
+  ]
+
+  // who changed a file: the main loop by name, a squad member by its card's mark, more
+  // than one as the first and `+N`; `其他` for an unpushed file this session did not touch
+  const changeActor = (actors: readonly string[]): Seg[] => {
+    const [first] = actors
+    if (first === undefined) return [{ t: '其他', color: MUTED }]
+    const more: Seg[] = actors.length > 1 ? [{ t: `+${actors.length - 1}`, color: FRAME }] : []
+    if (first === MAIN_ACTOR) return [{ t: '主線', color: MAIN_COLOR, bold: true }, ...more]
+    const member = view.roster.get(first)
+    if (!member) return [{ t: 'MK', color: FRAME }, ...more]
+    const [open, close] = view.running.some(a => a.id === first) ? BRACKET.live : BRACKET.done
+    return [{ t: `${open}MK-${member.n}${close}`, color: member.color }, ...more]
+  }
+
+  const countSegs = (e: Pick<ChangeEntry, 'add' | 'del' | 'note' | 'pending'>): Seg[] =>
+    e.pending
+      ? [{ t: '…', color: FRAME }]
+      : e.note !== undefined
+        ? [{ t: e.note, color: MUTED }]
+        : [
+            { t: `+${e.add}`, color: SUCCESS },
+            { t: ' ' },
+            { t: `−${e.del}`, color: ERROR },
+          ]
+
+  const changesBlock = (room: number): Block => {
+    const inner = cols - 4
+    const cv = ctx.changes ?? { mode: 'session' as const, groups: [], pending: false, total: 0 }
+    const files = cv.groups.reduce((n, g) => n + g.entries.length, 0)
+    const head = leftRight([title(TAB_ICON.changes, '異動', PRIMARY)], [{ t: `${files} 檔`, color: FRAME }], inner)
+    const modeRow = (
+      <Box flexDirection="row" gap={TAB_GAP}>
+        {CHANGE_MODES.map(m => (
+          <Button key={`chg-mode-${m.mode}`} plain onPress={() => ctx.setChangesMode?.(m.mode)}>
+            {m.mode === cv.mode ? (
+              <Text bold inverse color={ACCENT}>
+                {m.label}
+              </Text>
+            ) : (
+              <Text color={FRAME}>{m.label}</Text>
+            )}
+          </Button>
+        ))}
+        {cv.mode === 'unpushed' ? (
+          <Button key="chg-refresh" plain onPress={() => ctx.refreshChanges?.()}>
+            <Text color={FRAME}>重新整理</Text>
+          </Button>
+        ) : null}
+      </Box>
+    )
+    const lines: Line[] = [head, { node: modeRow, h: 1 }]
+    const markW = Math.max(
+      cellWidth('主線'),
+      ...cv.groups.flatMap(g => g.entries.map(e => segsWidth(changeActor(e.actors)))),
+    )
+    const countW = Math.max(1, ...cv.groups.flatMap(g => g.entries.map(e => segsWidth(countSegs(e)))))
+    const pathW = Math.max(4, inner - 1 - markW - 1 - 1 - countW)
+    const groupLine = (g: ChangeGroup): Seg[] =>
+      leftRight(
+        [
+          { t: withIcon(CHANGE_ICON.repo, g.name), color: PRIMARY, bold: true },
+          ...(g.ahead ? [{ t: ` ↑${g.ahead}`, color: ACCENT, bold: true }] : []),
+        ],
+        [
+          { t: `${g.entries.length} 檔  `, color: FRAME },
+          { t: `+${g.add}`, color: SUCCESS },
+          { t: ' ' },
+          { t: `−${g.del}`, color: ERROR },
+        ],
+        inner,
+      )
+    const fileLine = (e: ChangeEntry): Line => {
+      const actor = changeActor(e.actors)
+      const segs: Seg[] = [
+        sp(1),
+        ...actor,
+        sp(markW - segsWidth(actor) + 1),
+        { t: padCells(tailCells(e.label, pathW), pathW) },
+        sp(1),
+        sp(countW - segsWidth(countSegs(e))),
+        ...countSegs(e),
+      ]
+      return {
+        h: 1,
+        node: (
+          <Button key={`chg-${e.key}`} plain onPress={() => ctx.openDiff?.(e.key)}>
+            <Text>{texts(clip(segs, inner))}</Text>
+          </Button>
+        ),
+      }
+    }
+    const body: Line[] = []
+    if (cv.groups.length === 0) {
+      body.push([
+        {
+          t: cv.mode === 'session' ? '這個 session 還沒改過檔案' : '這個 session 還沒碰過任何 git repo',
+          color: FRAME,
+        },
+      ])
+    }
+    for (const g of cv.groups) {
+      body.push(groupLine(g))
+      if (g.error !== undefined) body.push([sp(1), { t: g.error, color: MUTED }])
+      else if (g.entries.length === 0) body.push([sp(1), { t: g.pending ? '計算中…' : '沒有未推送的改動', color: MUTED }])
+      for (const e of g.entries) body.push(fileLine(e))
+    }
+    const height = Math.max(6, room)
+    const fit = Math.max(1, height - 2 - lines.length)
+    // file rows are the ready nodes (Buttons); a cut list says how many files it left out,
+    // those past MAX_LISTED included
+    const beyond = cv.mode === 'session' ? Math.max(0, cv.total - MAX_LISTED) : 0
+    if (body.length + (beyond > 0 ? 1 : 0) > fit) {
+      const shownFiles = body.slice(0, fit - 1).filter(l => !Array.isArray(l)).length
+      lines.push(...body.slice(0, fit - 1), [{ t: `… 還有 ${files - shownFiles + beyond} 檔`, color: FRAME }])
+    } else {
+      lines.push(...body)
+      if (beyond > 0) lines.push([{ t: `… 還有 ${beyond} 檔`, color: FRAME }])
+    }
+    return card({ w: cols, color: FRAME, lines }, height)
+  }
+
   // ---- 組版 ---------------------------------------------------------------
 
   const blocks: Block[] = [titleBar(), tabBar()]
@@ -1498,6 +1636,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     blocks.push(...fleetBlocks(left()))
   } else if (page === 'fleetDetail' && fleetSelected) {
     blocks.push(fleetDetailBlock(fleetSelected))
+  } else if (page === 'changes') {
+    blocks.push(changesBlock(left()))
   } else {
     const hint = view.summary.groups.length === 0
     const plan = planStats({ cols, room: left() - (hint ? 1 : 0), roles: statsRoles.length, models: view.models.length })

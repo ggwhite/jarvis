@@ -5,7 +5,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { JarvisChange } from '../types'
 import { CREATED, dirOf, editOf, noteChange, relPath, repoName, repoOf, reposOf, tailCells } from '../hooks/changes'
 import type { ChangesIo } from '../hooks/changes'
-import { cellWidth } from '../hooks/jarvis'
+import { BOOT_MS, cellWidth } from '../hooks/jarvis'
 import { ioOf } from '../hooks/register'
 
 // a stat over a set of directories and files
@@ -154,12 +154,15 @@ const linesOf = (n: Node | string): string[] => {
 const later = (globalThis as unknown as { setTimeout: (f: () => void, ms: number) => unknown }).setTimeout
 export const settle = () => new Promise<void>(r => later(() => r(), 5))
 
+// the clock the last world() mocked: start() plays the pane's boot out on it
+let worldClock: { advance: (ms: number) => Promise<unknown> } | undefined
+
 // The engine beneath jarvis for the changes page: a fake disk (directories, files by
 // mtime), git answering by argv (a map by argv joined with spaces, or a function), edit
 // results by file path; what it was asked is logged in order.
 export function world(
   on: On,
-  opts: { dirs?: string[]; files?: Record<string, number>; git?: Git; results?: Record<string, unknown>; failWrites?: boolean; holdWrite?: (text: string) => Promise<void> | undefined } = {},
+  opts: { dirs?: string[]; files?: Record<string, number>; git?: Git; results?: Record<string, unknown>; failWrites?: boolean; holdWrite?: (text: string) => Promise<void> | undefined; holdRun?: () => Promise<void> } = {},
 ) {
   const log: string[] = []
   const writes = new Map<string, string>()
@@ -174,7 +177,7 @@ export function world(
     if (typeof git === 'function') return git(argv)
     return git?.[argv.join(' ')] ?? { exitCode: 128, stdout: '' }
   }
-  mock.clock(on, { now: 0 })
+  worldClock = mock.clock(on, { now: 0 })
   mock.env(on, { HOME: '/Users/u', TMPDIR: '/tmp/t/' })
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
   on('state.set', { plugin: 'jarvis', key: 'changes' }, async (_$, e, next) => {
@@ -215,13 +218,17 @@ export function world(
   on('process.run', async (_$, e) => {
     log.push('run')
     runs.push([...e.argv])
+    await opts.holdRun?.()
     const a = answer([...e.argv])
     return { value: { exitCode: a.exitCode, stdout: a.stdout ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   return { log, writes, runs, opens, closes, files, changes: () => changes }
 }
 
-export const start = ($: Engine, cwd = '/w') => $.session.start({ cwd, surface: 'terminal', isInteractive: true })
+export const start = async ($: Engine, cwd = '/w') => {
+  await $.session.start({ cwd, surface: 'terminal', isInteractive: true })
+  await worldClock?.advance(BOOT_MS)
+}
 
 export const edit = ($: Engine, path: string, agentId?: string) =>
   $.tool.call({ tool: 'Edit', file_path: path, old_string: 'a', new_string: 'b', ...(agentId ? { agentId } : {}) } as never)
@@ -327,5 +334,120 @@ describe('recording', () => {
     const out = await ioOf(engine as unknown as Parameters<typeof ioOf>[0]).run(['/usr/bin/git', '-C', '/w/r', 'diff', '-z'])
     expect(out).toEqual({ exitCode: 0, stdout, stderr: '' })
     expect(asked).toEqual([{ argv: ['/usr/bin/git', '-C', '/w/r', 'diff', '-z'], timeoutMs: 5_000 }])
+  })
+})
+
+const pane = async ($: Engine, cols = 80, rows = 30) => {
+  const ui = await $.ui.mount({
+    plugin: 'jarvis',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'jarvis',
+    props: { title: 'Jarvis', isFocused: true, bodyColumns: cols, placement: 'dock' as const, scroll: { offset: 0, bodyRows: rows }, view: {} },
+    viewport: { columns: cols + 20, rows: rows + 10 },
+  })
+  return ui
+}
+
+export const showChanges = async ($: Engine, cols = 80, rows = 30) => {
+  const ui = await pane($, cols, rows)
+  await ui.press({ key: 'tab-changes' })
+  await ui.unmount()
+  // a press writes the page from a detached task
+  await settle()
+}
+
+export const drawn = async ($: Engine, cols = 80, rows = 30): Promise<string[]> => {
+  const ui = await pane($, cols, rows)
+  const tree = (await ui.drawn()) as unknown as Node
+  await ui.unmount()
+  return linesOf(tree)
+}
+
+describe('changes page', () => {
+  const A = '/w/acme/payments/service/order.go'
+  const B = '/w/legacy/billing/api/pay.go'
+  // git answers the session numstat: 30/5 for A against its cached original, 10/0 for B against /dev/null
+  const setup = (on: On, holdRun?: () => Promise<void>) =>
+    world(on, {
+      dirs: ['/w/acme/payments/.git', '/w/legacy/billing/.git'],
+      files: { [A]: 5, [B]: 5 },
+      results: { [A]: editResult(A, 'a'), [B]: { type: 'create', filePath: B, content: 'x', structuredPatch: [], originalFile: null } },
+      git: argv => ({ exitCode: 1, stdout: argv.at(-1) === A ? '30\t5\t...\n' : '10\t0\t...\n' }),
+      ...(holdRun ? { holdRun } : {}),
+    })
+
+  test('the tab bar has 異動 with its icon', async ($, on) => {
+    setup(on)
+    await start($)
+    expect((await drawn($)).join('\n')).toContain('\uf47f 異動')
+  })
+
+  test('an empty session says so', async ($, on) => {
+    setup(on)
+    await start($)
+    await showChanges($)
+    expect((await drawn($)).join('\n')).toContain('這個 session 還沒改過檔案')
+  })
+
+  test('files are grouped by repo with who changed them and +/- once git answers', async ($, on) => {
+    // git answers only once let go, as a real one answers after the drawing that asked
+    let release = () => {}
+    const gate = new Promise<void>(r => (release = r))
+    setup(on, () => gate)
+    await start($)
+    await edit($, A)
+    await $.tool.call({ tool: 'Write', file_path: B, content: 'x' } as never)
+    await showChanges($)
+    const first = (await drawn($)).join('\n')
+    expect(first).toContain('\uf401 acme/payments')
+    expect(first).toContain('…')
+    release()
+    await settle()
+    const lines = await drawn($)
+    const text = lines.join('\n')
+    expect(text).toContain('\uf401 acme/payments')
+    expect(text).toContain('\uf401 legacy/billing')
+    expect(text).toMatch(/主線\s+service\/order\.go\s+\+30 −5/)
+    expect(text).toMatch(/api\/pay\.go\s+\+10 −0/)
+    expect(text.indexOf('acme/payments')).toBeLessThan(text.indexOf('legacy/billing'))
+  })
+
+  test('an unknown original outside git reads 無原始內容', async ($, on) => {
+    world(on, { files: { '/tmp/x.txt': 1 }, results: { '/tmp/x.txt': editResult('/tmp/x.txt', null) } })
+    await start($)
+    await edit($, '/tmp/x.txt')
+    await showChanges($)
+    await drawn($)
+    await settle()
+    const text = (await drawn($)).join('\n')
+    expect(text).toContain('(非 git)')
+    expect(text).toContain('無原始內容')
+  })
+
+  test('no line is wider than the pane at 40, 60, 80 and 120 columns', async ($, on) => {
+    setup(on)
+    await start($)
+    await edit($, A)
+    await $.tool.call({ tool: 'Write', file_path: B, content: 'x' } as never)
+    await showChanges($)
+    for (const cols of [40, 60, 80, 120]) {
+      await drawn($, cols)
+      await settle()
+      for (const line of await drawn($, cols)) expect(cellWidth(line)).toBeLessThanOrEqual(cols)
+    }
+  })
+
+  test('no jarvis Button has a hotkey, the changes buttons included', async ($, on) => {
+    setup(on)
+    await start($)
+    await edit($, A)
+    await showChanges($)
+    const ui = await pane($)
+    const buttons = await ui.findAll({ type: 'Button' })
+    await ui.unmount()
+    expect(buttons.some(b => b.key === 'tab-changes')).toBe(true)
+    expect(buttons.some(b => b.key === 'chg-mode-unpushed')).toBe(true)
+    expect(buttons.every(b => b.props['hotkey'] === undefined)).toBe(true)
   })
 })

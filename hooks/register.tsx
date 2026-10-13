@@ -35,8 +35,12 @@ import { SUIT_REST_TICK_MS } from './suit'
 import { EMPTY_FLEET, FLEET_MS, FLEET_RUN_TIMEOUT_MS, LIMITS_PATH, focusArgv, refreshFleet, withJump } from './fleetSource'
 import type { FleetIo } from './fleetSource'
 import type { JarvisChange } from '../types'
-import { CREATED, UNKNOWN, editOf, noteChange, repoOf } from './changes'
-import type { ChangesIo, EditSeen } from './changes'
+import { CREATED, UNKNOWN, editOf, noteChange, repoOf, reposOf } from './changes'
+import type { ChangeMode, ChangesIo, EditSeen } from './changes'
+import { sessionStat } from './gitDiff'
+import type { Failed, FileStat } from './gitDiff'
+import { MAX_LISTED, sessionGroups } from './changesView'
+import type { ChangesView } from './changesView'
 
 const PANE = 'jarvis'
 const MAX_EARLY = 100
@@ -47,6 +51,8 @@ const FLEET_SEEN_MS = SEEN_MS + FLEET_MS
 const QUOTA_EVERY_MS = 30_000
 // git and the cache writes the changes page runs, each given this long
 const CHANGES_RUN_TIMEOUT_MS = 5_000
+// the changes page reads its files' mtimes at most this often while drawn
+const CHANGES_SCAN_MS = 2_000
 
 const agents = atom({ plugin: 'jarvis', key: 'agents' } as const, [])
 const main = atom({ plugin: 'jarvis', key: 'main' } as const, {
@@ -152,6 +158,67 @@ async function recordChange(
   } catch {
     // the edit itself already happened
   }
+}
+
+// What the changes page keeps between drawings: what git last said of each changed file,
+// by the file's mtime, size and edit count; whether git is being asked; the files'
+// signatures as last read, at most once per CHANGES_SCAN_MS while drawn.
+type ChangesCache = {
+  stats: Map<string, { sig: string; stat: FileStat | Failed }>
+  busy: boolean
+  sigs: Map<string, string>
+  scannedAt: number
+}
+
+// What the changes page lists now: cached counts, a file whose signature moved asked
+// again in the background, the page redrawn when git has answered.
+async function changesNow(
+  $: Pick<EngineInterface, 'fs' | 'process' | 'state' | 'ui'>,
+  cache: ChangesCache,
+  mode: ChangeMode,
+  now: number,
+  names: { cwd: string; home: string },
+): Promise<ChangesView> {
+  const io = ioOf($)
+  const all = await read($, changes)
+  const list = all.slice(0, MAX_LISTED)
+  if (now - cache.scannedAt >= CHANGES_SCAN_MS) {
+    cache.scannedAt = now
+    const next = new Map<string, string>()
+    for (const c of list) {
+      const s = await io.stat(c.path)
+      next.set(c.path, `${s?.mtimeMs ?? 'gone'}:${s?.size ?? 0}:${c.touches}`)
+    }
+    cache.sigs = next
+  }
+  const stats = new Map<string, FileStat | Failed>()
+  const stale = list.filter(c => {
+    const hit = cache.stats.get(c.path)
+    if (hit) stats.set(c.path, hit.stat)
+    return hit?.sig !== (cache.sigs.get(c.path) ?? `new:${c.touches}`)
+  })
+  if (stale.length > 0 && !cache.busy) {
+    cache.busy = true
+    void (async () => {
+      try {
+        for (const c of stale) {
+          const sig = cache.sigs.get(c.path) ?? `new:${c.touches}`
+          cache.stats.set(c.path, { sig, stat: await sessionStat(io, c) })
+        }
+      } catch {
+        // the page shows what it has
+      } finally {
+        cache.busy = false
+        try {
+          $.ui.invalidate('ui.render')
+        } catch {
+          // the next drawing shows it
+        }
+      }
+    })()
+  }
+  if (mode === 'session') return { mode, groups: sessionGroups(list, stats, names), pending: stale.length > 0, total: all.length }
+  return { mode, groups: [], pending: false, total: reposOf(list).length }
 }
 
 // opens the pane, its boot screen from the time handed to boot (undefined: none); false when it could not open
@@ -261,9 +328,13 @@ export const register: Register = on => {
   const repoCache = new Map<string, string | null>()
   // each file's original as its first edit settles it
   const origs = new Map<string, Promise<string>>()
+  const changesCache: ChangesCache = { stats: new Map(), busy: false, sigs: new Map(), scannedAt: -Infinity }
   const resetChanges = () => {
     repoCache.clear()
     origs.clear()
+    changesCache.stats.clear()
+    changesCache.sigs = new Map()
+    changesCache.scannedAt = -Infinity
   }
   let timer: Timer | undefined
   let period = 0
@@ -772,6 +843,9 @@ export const register: Register = on => {
     drawnAt = now
     if (view.running.some(a => a.waiting !== true) || boot !== undefined) pace?.(ANIM_MS)
     const shown = await read($, ui)
+    const changesMode: ChangeMode = shown.changesMode ?? 'session'
+    const changesView =
+      shown.page === 'changes' ? await changesNow($, changesCache, changesMode, now, { cwd, home: changesHome }) : undefined
     if (shown.page === 'fleet' || shown.page === 'fleetDetail') fleetOn?.(now)
     const quota = await read($, standbyQuota)
     const frame = await read($, suit)
@@ -837,6 +911,8 @@ export const register: Register = on => {
       suitPaused: frame.paused === true,
       toggleSuit,
       onStandby,
+      ...(changesView ? { changes: changesView } : {}),
+      setChangesMode: (mode: ChangeMode) => setUi(u => ({ ...u, changesMode: mode })),
     })
   })
 }

@@ -165,7 +165,7 @@ export type JarvisChange = {
   orig: string
 }
 
-export type JarvisPage = 'now' | 'log' | 'stats' | 'detail' | 'fleet' | 'fleetDetail'
+export type JarvisPage = 'now' | 'log' | 'stats' | 'detail' | 'fleet' | 'fleetDetail' | 'changes'
 
 // What the pane shows: the page, the subagent the detail page is about, and whether the
 // event stream is paused at `pausedTotal` events recorded.
@@ -176,6 +176,8 @@ export type JarvisUi = {
   pausedTotal: number
   // the session the fleet detail page is about
   paneId: string
+  // the changes page's mode; absent is the session's own changes
+  changesMode?: 'session' | 'unpushed'
 }
 
 declare module 'claude-code' {
