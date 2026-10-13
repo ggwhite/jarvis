@@ -27,7 +27,7 @@ export function editOf(tool: string, result: unknown): EditSeen | undefined {
   if (r['staged'] === true) return undefined
   if (tool === 'NotebookEdit') {
     const path = r['notebook_path']
-    if (typeof path !== 'string' || typeof r['error'] === 'string') return undefined
+    if (typeof path !== 'string' || typeof r['error'] === 'string' && r['error'] !== '') return undefined
     return { path, original: typeof r['original_file'] === 'string' ? r['original_file'] : null, created: false }
   }
   const path = r['filePath']

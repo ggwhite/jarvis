@@ -48,6 +48,13 @@ describe('editOf', () => {
       created: false,
     })
   })
+  test('a successful NotebookEdit carrying an empty error is recorded', () => {
+    expect(editOf('NotebookEdit', { notebook_path: '/w/n.ipynb', original_file: '{}', error: '' })).toEqual({
+      path: '/w/n.ipynb',
+      original: '{}',
+      created: false,
+    })
+  })
   test('staged edits, errors, other tools and odd results are not changes', () => {
     expect(editOf('Edit', { filePath: '/w/a', originalFile: 'a', staged: true })).toBeUndefined()
     expect(editOf('NotebookEdit', { notebook_path: '/w/n.ipynb', error: 'no cell' })).toBeUndefined()
