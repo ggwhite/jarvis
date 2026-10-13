@@ -11,6 +11,7 @@ const gitIo = (answers: Record<string, Out>, files: string[] = []): ChangesIo & 
   return {
     runs,
     stat: async path => (files.includes(path) ? { kind: 'file', size: 1, mtimeMs: 1 } : undefined),
+    read: async () => undefined,
     write: async () => true,
     run: async argv => {
       runs.push(argv)

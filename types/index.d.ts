@@ -156,6 +156,7 @@ export type FleetCursor = Record<string, FleetFile>
 // A file this session's edit tools changed: the repo it stands in (null outside git), who
 // changed it in order, when it was first seen, how many edits, and its content before
 // the first: a cache file, '/dev/null' for a file the session created, '' when unknown.
+// A repo that is a linked worktree also names the repo it was added from and its name.
 export type JarvisChange = {
   path: string
   repo: string | null
@@ -163,6 +164,8 @@ export type JarvisChange = {
   seq: number
   touches: number
   orig: string
+  mainRepo?: string
+  worktree?: string
 }
 
 export type JarvisPage = 'now' | 'log' | 'stats' | 'detail' | 'fleet' | 'fleetDetail' | 'changes' | 'changeDiff'

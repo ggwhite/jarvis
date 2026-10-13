@@ -3,8 +3,10 @@ import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { JarvisChange } from '../types'
-import { CREATED, bashPaths, dirOf, editOf, noteChange, relPath, repoName, repoOf, reposOf, tailCells } from '../hooks/changes'
+import { CREATED, bashPaths, dirOf, editOf, noteChange, parseGitdir, relPath, repoName, repoOf, reposOf, tailCells, worktreeOf } from '../hooks/changes'
 import type { ChangesIo } from '../hooks/changes'
+import { sessionGroups } from '../hooks/changesView'
+import type { FileStat } from '../hooks/gitDiff'
 import { BOOT_MS, cellWidth } from '../hooks/jarvis'
 import { ioOf } from '../hooks/register'
 
@@ -169,6 +171,93 @@ describe('noteChange', () => {
     list = noteChange(list, { path: '/w/b/z', repo: '/w/b', actor: 'main', orig: '' })
     expect(reposOf(list)).toEqual(['/w/b', '/w/a'])
   })
+  test("a change in a worktree keeps the repo it was added from and the worktree's name", () => {
+    const wt = { mainRepo: '/w/d', name: 'x' }
+    const list = noteChange([], { path: '/w/d/.claude/worktrees/x/a', repo: '/w/d/.claude/worktrees/x', actor: 'main', orig: '', worktree: wt })
+    expect(list[0]?.mainRepo).toBe('/w/d')
+    expect(list[0]?.worktree).toBe('x')
+  })
+})
+
+describe('worktreeOf', () => {
+  const ioOfTexts = (texts: Record<string, string>) => ({ read: async (path: string) => texts[path] })
+  test("a .git file's gitdir names the main repo and the worktree", async () => {
+    const io = ioOfTexts({ '/w/d/.claude/worktrees/x/.git': 'gitdir: /w/d/.git/worktrees/x\n' })
+    expect(await worktreeOf(io, '/w/d/.claude/worktrees/x')).toEqual({ mainRepo: '/w/d', name: 'x' })
+  })
+  test('a relative gitdir is read from the worktree', async () => {
+    expect(parseGitdir('gitdir: ../../../.git/worktrees/y', '/w/d/.claude/worktrees/y')).toEqual({ mainRepo: '/w/d', name: 'y' })
+  })
+  test("a .git directory, a submodule's .git file and odd text are no worktree", async () => {
+    expect(await worktreeOf(ioOfTexts({}), '/w/d')).toBeUndefined()
+    expect(parseGitdir('gitdir: ../.git/modules/sub', '/w/d/sub')).toBeUndefined()
+    expect(parseGitdir('hello', '/w/d')).toBeUndefined()
+  })
+})
+
+describe('sessionGroups', () => {
+  const names = { cwd: '/w', home: '/Users/u' }
+  const change = (path: string, repo: string | null, extra: Partial<JarvisChange> = {}): JarvisChange => ({
+    path,
+    repo,
+    actors: ['main'],
+    seq: 0,
+    touches: 1,
+    orig: '/tmp/c/1.orig',
+    ...extra,
+  })
+  const stat = (add: number, del: number, more: Partial<FileStat> = {}): FileStat => ({ add, del, binary: false, deleted: false, vsHead: false, ...more })
+  const T = '/w/d/.claude/worktrees/x'
+  const wt = { mainRepo: '/w/d', worktree: 'x' }
+
+  test("a worktree still on disk is titled by its main repo and its name", () => {
+    const [g] = sessionGroups([change(`${T}/a.go`, T, wt)], new Map([[`${T}/a.go`, stat(2, 1)]]), names)
+    expect(g?.name).toBe('d · worktree x')
+    expect(g?.entries.map(e => e.label)).toEqual(['a.go'])
+  })
+  test('a removed worktree is one group counting its files, none listed and nothing added up', () => {
+    const list = [change(`${T}/a.go`, T, wt), change(`${T}/b.go`, T, wt), change('/w/d/c.go', '/w/d')]
+    const groups = sessionGroups(list, new Map([['/w/d/c.go', stat(1, 0)]]), names, new Set([T, `${T}/a.go`, `${T}/b.go`]))
+    expect(groups.map(g => [g.name, g.removed, g.entries.length, g.add, g.del])).toEqual([
+      ['worktree x', 2, 0, 0, 0],
+      ['d', undefined, 1, 1, 0],
+    ])
+  })
+  test('a file outside git that is gone is not listed nor counted', () => {
+    const list = [change('/tmp/s/a.txt', null), change('/tmp/s/b.txt', null), change('/tmp/s/c.txt', null)]
+    const stats = new Map([
+      ['/tmp/s/a.txt', stat(0, 7, { deleted: true })],
+      ['/tmp/s/c.txt', stat(3, 1)],
+    ])
+    const [g, ...rest] = sessionGroups(list, stats, names, new Set(['/tmp/s/b.txt']))
+    expect(rest).toEqual([])
+    expect(g?.entries.map(e => e.path)).toEqual(['/tmp/s/c.txt'])
+    expect([g?.add, g?.del]).toEqual([3, 1])
+  })
+  test('no group outside git is drawn when all its files are gone', () => {
+    const groups = sessionGroups([change('/tmp/s/a.txt', null), change('/w/r/a.go', '/w/r')], new Map([['/w/r/a.go', stat(1, 1)]]), names, new Set(['/tmp/s/a.txt']))
+    expect(groups.map(g => g.name)).toEqual(['r'])
+  })
+  test("the rows' counts add up to the group's, a deleted file's and one against HEAD included", () => {
+    const list = [change('/w/r/a.go', '/w/r'), change('/w/r/d.go', '/w/r'), change('/w/r/h.go', '/w/r'), change('/w/r/p.png', '/w/r')]
+    const stats = new Map([
+      ['/w/r/a.go', stat(30, 5)],
+      ['/w/r/d.go', stat(0, 9, { deleted: true })],
+      ['/w/r/h.go', stat(4, 2, { vsHead: true })],
+      ['/w/r/p.png', stat(0, 0, { binary: true })],
+    ])
+    const [g] = sessionGroups(list, stats, names, new Set(['/w/r/d.go']))
+    expect(g?.entries.map(e => [e.mark, e.deleted, e.note])).toEqual([
+      [undefined, undefined, undefined],
+      ['已刪除', true, undefined],
+      ['對 HEAD', undefined, undefined],
+      [undefined, undefined, '二進位'],
+    ])
+    const shownAdd = (g?.entries ?? []).reduce((n, e) => n + (e.note !== undefined || e.deleted ? 0 : e.add), 0)
+    const shownDel = (g?.entries ?? []).reduce((n, e) => n + (e.note !== undefined ? 0 : e.del), 0)
+    expect([g?.add, g?.del]).toEqual([shownAdd, shownDel])
+    expect([g?.add, g?.del]).toEqual([34, 16])
+  })
 })
 
 describe('names', () => {
@@ -218,7 +307,7 @@ let worldClock: { advance: (ms: number) => Promise<unknown> } | undefined
 // results by file path; what it was asked is logged in order.
 export function world(
   on: On,
-  opts: { dirs?: string[]; files?: Record<string, number>; git?: Git; results?: Record<string, unknown>; failWrites?: boolean; holdWrite?: (text: string) => Promise<void> | undefined; holdRun?: (argv: string[]) => Promise<void>; denied?: string[]; holdStat?: (path: string) => Promise<void> | undefined; shellCwd?: () => string } = {},
+  opts: { dirs?: string[]; files?: Record<string, number>; texts?: Record<string, string>; git?: Git; results?: Record<string, unknown>; failWrites?: boolean; holdWrite?: (text: string) => Promise<void> | undefined; holdRun?: (argv: string[]) => Promise<void>; denied?: string[]; holdStat?: (path: string) => Promise<void> | undefined; shellCwd?: () => string } = {},
 ) {
   const log: string[] = []
   const writes = new Map<string, string>()
@@ -269,6 +358,11 @@ export function world(
     const m = files[e.path]
     if (m === undefined) throw new Error('ENOENT')
     return { value: { kind: 'file' as const, size: 10, mtimeMs: m, isLink: false } }
+  })
+  on('fs.read', async (_$, e) => {
+    const t = opts.texts?.[e.path]
+    if (t === undefined) throw new Error('ENOENT')
+    return { value: t }
   })
   on('fs.write', async (_$, e) => {
     log.push(`write:${e.path}`)
@@ -1092,5 +1186,100 @@ describe('diff page', () => {
       expect(lines.join('\n')).toContain('…')
       for (const line of lines) expect(cellWidth(line)).toBeLessThanOrEqual(cols)
     }
+  })
+})
+
+describe('session mode: worktrees, scratch files and counts', () => {
+  const M = '/w/dotfiles'
+  const T = `${M}/.claude/worktrees/x`
+  const A = `${T}/a.go`
+  const worktreeWorld = (on: On, dirs: string[]) =>
+    world(on, {
+      dirs,
+      files: { [A]: 1, [`${T}/.git`]: 1 },
+      texts: { [`${T}/.git`]: `gitdir: ${M}/.git/worktrees/x\n` },
+      results: { [A]: editResult(A, 'a') },
+      git: () => ({ exitCode: 1, stdout: '3\t1\t...\n' }),
+    })
+  const pageText = async ($: Engine) => {
+    await showChanges($)
+    await drawn($)
+    await settle()
+    return (await drawn($)).join('\n')
+  }
+
+  test('an edit in a worktree records the repo it was added from', async ($, on) => {
+    const w = worktreeWorld(on, [`${M}/.git`, T])
+    await start($)
+    await edit($, A)
+    expect((await recorded(w))[0]).toMatchObject({ repo: T, mainRepo: M, worktree: 'x' })
+  })
+
+  test("a worktree still on disk is titled by its main repo and the worktree's name", async ($, on) => {
+    worktreeWorld(on, [`${M}/.git`, T])
+    await start($)
+    await edit($, A)
+    const text = await pageText($)
+    expect(text).toContain(' dotfiles · worktree x')
+    expect(text).toMatch(/主線\s+a\.go\s+\+3 −1/)
+  })
+
+  test('a removed worktree is one dim line, its files neither listed nor diffed', async ($, on) => {
+    const dirs = [`${M}/.git`, T]
+    const w = worktreeWorld(on, dirs)
+    await start($)
+    await edit($, A)
+    dirs.splice(dirs.indexOf(T), 1)
+    delete w.files[A]
+    delete w.files[`${T}/.git`]
+    const text = await pageText($)
+    expect(text).toContain('worktree x 已移除（1 檔）')
+    expect(text).not.toContain('a.go')
+    expect(text).not.toContain('已刪除')
+    expect(w.runs.filter(r => r.includes(A))).toEqual([])
+  })
+
+  test('a scratch file outside git that is gone is hidden, its group with it when none is left', async ($, on) => {
+    const S = '/tmp/s/scratch.json'
+    const K = '/tmp/s/keep.txt'
+    const w = world(on, {
+      files: { [S]: 1, [K]: 1 },
+      results: { [S]: editResult(S, 's'), [K]: editResult(K, 'k') },
+      git: () => ({ exitCode: 1, stdout: '2\t0\t...\n' }),
+    })
+    await start($)
+    await edit($, S)
+    await edit($, K)
+    delete w.files[S]
+    let text = await pageText($)
+    expect(text).toContain('(非 git)')
+    expect(text).not.toContain('scratch.json')
+    expect(text).toMatch(/\(非 git\)\s+1 檔\s+\+2 −0/)
+    delete w.files[K]
+    await worldClock?.advance(2_000)
+    text = await pageText($)
+    expect(text).not.toContain('(非 git)')
+    expect(text).not.toContain('已刪除')
+  })
+
+  test("each row shows its counts and they add up to the group's, deleted and HEAD rows included", async ($, on) => {
+    const R = '/w/r'
+    const [F, D, H] = [`${R}/a.go`, `${R}/d.go`, `${R}/h.go`]
+    const w = world(on, {
+      dirs: [`${R}/.git`],
+      files: { [F]: 1, [D]: 1, [H]: 1 },
+      results: { [F]: editResult(F, 'a'), [D]: editResult(D, 'd'), [H]: editResult(H, null) },
+      git: argv => ({ exitCode: 1, stdout: argv.includes('HEAD') ? '4\t2\t...\n' : argv.at(-1) === CREATED ? '0\t9\t...\n' : '30\t5\t...\n' }),
+    })
+    await start($)
+    await edit($, F)
+    await edit($, D)
+    await edit($, H)
+    delete w.files[D]
+    const text = await pageText($)
+    expect(text).toMatch(/r\s+3 檔\s+\+34 −16/)
+    expect(text).toMatch(/a\.go\s+\+30 −5/)
+    expect(text).toMatch(/d\.go\s+已刪除 −9/)
+    expect(text).toMatch(/h\.go\s+對 HEAD \+4 −2/)
   })
 })

@@ -1489,14 +1489,14 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return [{ t: `${open}MK-${member.n}${close}`, color: member.color }, ...more]
   }
 
-  const countSegs = (e: Pick<ChangeEntry, 'add' | 'del' | 'note' | 'pending'>): Seg[] =>
+  const countSegs = (e: Pick<ChangeEntry, 'add' | 'del' | 'note' | 'mark' | 'deleted' | 'pending'>): Seg[] =>
     e.pending
       ? [{ t: '…', color: FRAME }]
       : e.note !== undefined
         ? [{ t: e.note, color: MUTED }]
         : [
-            { t: `+${e.add}`, color: SUCCESS },
-            { t: ' ' },
+            ...(e.mark !== undefined ? [{ t: `${e.mark} `, color: MUTED }] : []),
+            ...(e.deleted ? [] : [{ t: `+${e.add}`, color: SUCCESS }, { t: ' ' }]),
             { t: `−${e.del}`, color: ERROR },
           ]
 
@@ -1576,6 +1576,10 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       ])
     }
     for (const g of cv.groups) {
+      if (g.removed !== undefined) {
+        body.push([{ t: fitCells(`${g.name} 已移除（${g.removed} 檔）`, inner), color: MUTED }])
+        continue
+      }
       body.push(groupLine(g))
       if (g.note !== undefined) body.push([sp(1), { t: g.note, color: MUTED }])
       if (g.error !== undefined) body.push([sp(1), { t: g.error, color: MUTED }])

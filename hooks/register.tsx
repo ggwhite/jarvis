@@ -35,8 +35,8 @@ import { SUIT_REST_TICK_MS } from './suit'
 import { EMPTY_FLEET, FLEET_MS, FLEET_RUN_TIMEOUT_MS, LIMITS_PATH, focusArgv, refreshFleet, withJump } from './fleetSource'
 import type { FleetIo } from './fleetSource'
 import type { JarvisChange } from '../types'
-import { CREATED, UNKNOWN, bashPaths, editOf, noteChange, repoOf, reposOf } from './changes'
-import type { ChangeMode, ChangesIo, EditSeen } from './changes'
+import { CREATED, UNKNOWN, bashPaths, editOf, noteChange, repoOf, reposOf, worktreeOf } from './changes'
+import type { ChangeMode, ChangesIo, EditSeen, Worktree } from './changes'
 import { isFailed, sessionDiff, sessionStat, unpushedDiff, unpushedOf } from './gitDiff'
 import type { DiffRow, Failed, FileStat, Unpushed, UnpushedFile } from './gitDiff'
 import { MAX_LISTED, sessionGroups, unpushedGroups } from './changesView'
@@ -98,6 +98,14 @@ export function ioOf($: Pick<EngineInterface, 'fs' | 'process'>): ChangesIo {
         return undefined
       }
     },
+    read: async path => {
+      try {
+        const t = await $.fs.read(path)
+        return typeof t === 'string' ? t : undefined
+      } catch {
+        return undefined
+      }
+    },
     write: async (path, text) => {
       try {
         await $.fs.write(path, text)
@@ -133,8 +141,9 @@ async function firstOrig($: Pick<EngineInterface, 'fs' | 'process' | 'state'>, s
 }
 
 // Records what an edit tool changed: its original cached under `cacheDir` the first time
-// the file is seen, its repo, and who changed it. The first edit to reach here owns the
-// file's original: `origs` holds it from before any await, so a later edit only joins.
+// the file is seen, its repo (and the repo a worktree was added from, `worktrees` caching
+// each repo's), and who changed it. The first edit to reach here owns the file's original:
+// `origs` holds it from before any await, so a later edit only joins.
 async function recordChange(
   $: Pick<EngineInterface, 'fs' | 'process' | 'state'>,
   tool: string,
@@ -143,6 +152,7 @@ async function recordChange(
   cacheDir: string,
   repoCache: Map<string, string | null>,
   origs: Map<string, Promise<string>>,
+  worktrees: Map<string, Worktree | null>,
 ): Promise<void> {
   try {
     const seen = editOf(tool, result)
@@ -153,8 +163,15 @@ async function recordChange(
       origs.set(seen.path, first)
     }
     const orig = await first
-    const repo = await repoOf(ioOf($), seen.path, repoCache)
-    await update($, changes, l => noteChange(l, { path: seen.path, repo, actor, orig }))
+    const io = ioOf($)
+    const repo = await repoOf(io, seen.path, repoCache)
+    let worktree: Worktree | null = null
+    if (repo !== null) {
+      const hit = worktrees.get(repo)
+      worktree = hit !== undefined ? hit : ((await worktreeOf(io, repo)) ?? null)
+      worktrees.set(repo, worktree)
+    }
+    await update($, changes, l => noteChange(l, { path: seen.path, repo, actor, orig, ...(worktree ? { worktree } : {}) }))
   } catch {
     // the edit itself already happened
   }
@@ -169,11 +186,13 @@ async function recordChange(
 // page: what each listed file's key stands for, each key's diff by the signature it was
 // taken at, and the key git is diffing; `gen` drops those too. `bashRepos`: the repos
 // the session's Bash calls touched, listed in the unpushed mode beside the recorded ones.
+// `gone`: the changed files and worktree roots the last read found missing.
 type ChangesCache = {
   stats: Map<string, { sig: string; stat: FileStat | Failed }>
   busy: boolean
   gen: number
   sigs: Map<string, string>
+  gone: Set<string>
   scannedAt: number
   unpushed: Map<string, Unpushed | Failed>
   unpushedBusy: boolean
@@ -282,14 +301,21 @@ async function changesNow(
   if (now - cache.scannedAt >= CHANGES_SCAN_MS) {
     cache.scannedAt = now
     const next = new Map<string, string>()
+    const gone = new Set<string>()
     for (const c of list) {
       const s = await io.stat(c.path)
       next.set(c.path, `${s?.mtimeMs ?? 'gone'}:${s?.size ?? 0}:${c.touches}`)
+      if (s === undefined) gone.add(c.path)
     }
+    const roots = new Set(list.flatMap(c => (c.repo !== null && c.worktree !== undefined ? [c.repo] : [])))
+    for (const root of roots) if ((await io.stat(root)) === undefined) gone.add(root)
     cache.sigs = next
+    cache.gone = gone
   }
   const stats = new Map<string, FileStat | Failed>()
+  // a removed worktree's files are only counted: git is not asked of them
   const stale = list.filter(c => {
+    if (c.repo !== null && c.worktree !== undefined && cache.gone.has(c.repo)) return false
     const hit = cache.stats.get(c.path)
     if (hit) stats.set(c.path, hit.stat)
     return hit?.sig !== (cache.sigs.get(c.path) ?? `new:${c.touches}`)
@@ -317,7 +343,7 @@ async function changesNow(
       }
     })()
   }
-  const groups = sessionGroups(list, stats, names)
+  const groups = sessionGroups(list, stats, names, cache.gone)
   cache.opened = new Map(list.map(c => [`s:${c.path}`, { mode: 'session' as const, change: c }]))
   return { mode, groups, pending: stale.length > 0, total: all.length }
 }
@@ -473,11 +499,14 @@ export const register: Register = on => {
   const repoCache = new Map<string, string | null>()
   // each file's original as its first edit settles it
   const origs = new Map<string, Promise<string>>()
+  // each repo's worktree, as its .git file names it
+  const worktrees = new Map<string, Worktree | null>()
   const changesCache: ChangesCache = {
     stats: new Map(),
     busy: false,
     gen: 0,
     sigs: new Map(),
+    gone: new Set(),
     scannedAt: -Infinity,
     unpushed: new Map(),
     unpushedBusy: false,
@@ -490,10 +519,12 @@ export const register: Register = on => {
   const resetChanges = () => {
     repoCache.clear()
     origs.clear()
+    worktrees.clear()
     changesCache.gen += 1
     changesCache.busy = false
     changesCache.stats.clear()
     changesCache.sigs = new Map()
+    changesCache.gone = new Set()
     changesCache.scannedAt = -Infinity
     dropUnpushed(changesCache)
     changesCache.opened = new Map()
@@ -891,7 +922,7 @@ export const register: Register = on => {
     try {
       const out = await next(e)
       ok = out.isError !== true
-      if (ok && out.deny === undefined) await recordChange($, tool, out.result, id ?? MAIN_ACTOR, cacheDir, repoCache, origs)
+      if (ok && out.deny === undefined) await recordChange($, tool, out.result, id ?? MAIN_ACTOR, cacheDir, repoCache, origs, worktrees)
       if (tool === 'Bash' && out.deny === undefined)
         await recordBash($, (e as unknown as Record<string, unknown>)['command'], shell, { cwd, home: changesHome }, changesCache, repoCache)
       return out
