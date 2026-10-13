@@ -153,7 +153,19 @@ export type FleetFile = {
 
 export type FleetCursor = Record<string, FleetFile>
 
-export type JarvisPage = 'now' | 'log' | 'stats' | 'detail' | 'fleet' | 'fleetDetail'
+// A file this session's edit tools changed: the repo it stands in (null outside git), who
+// changed it in order, when it was first seen, how many edits, and its content before
+// the first: a cache file, '/dev/null' for a file the session created, '' when unknown.
+export type JarvisChange = {
+  path: string
+  repo: string | null
+  actors: string[]
+  seq: number
+  touches: number
+  orig: string
+}
+
+export type JarvisPage = 'now' | 'log' | 'stats' | 'detail' | 'fleet' | 'fleetDetail' | 'changes' | 'changeDiff'
 
 // What the pane shows: the page, the subagent the detail page is about, and whether the
 // event stream is paused at `pausedTotal` events recorded.
@@ -164,6 +176,10 @@ export type JarvisUi = {
   pausedTotal: number
   // the session the fleet detail page is about
   paneId: string
+  // the changes page's mode; absent is the session's own changes
+  changesMode?: 'session' | 'unpushed'
+  // the changes page's file the diff page is about, by its row's key
+  diffKey?: string
 }
 
 declare module 'claude-code' {
@@ -182,6 +198,8 @@ declare module 'claude-code' {
       // the usagebar cache as the standby suit last read it; null when it was not there
       standbyQuota: FleetQuota | null
       suit: JarvisSuit
+      // the files this session's edit tools changed, in the order first seen
+      changes: JarvisChange[]
     }
   }
 }

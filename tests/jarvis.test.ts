@@ -1860,6 +1860,7 @@ describe('pages', () => {
       ['tab-log', undefined, true, `${TAB_ICON.log} 事件流`],
       ['tab-stats', undefined, true, `${TAB_ICON.stats} 統計`],
       ['tab-fleet', undefined, true, `${TAB_ICON.fleet} 艦隊`],
+      ['tab-changes', undefined, true, `${TAB_ICON.changes} 異動`],
     ])
     // the page shown is the marked tab: its label in the accent gold, the rest in the frame teal
     expect((await ui.find({ key: 'tab-now' }))?.children).toEqual([
@@ -1888,12 +1889,16 @@ describe('pages', () => {
     engineAll(on)
     await press($, 'tab-log', 30, 40)
     let ui = await mountPane($, 30, 40)
-    expect((await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('tab-')).map(b => b.text)).toEqual([
-      `${TAB_ICON.now} 現況`,
+    // five tabs and 暫停 are too wide for 40 columns with every label: the tabs not shown keep their icon
+    const bar = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('tab-') || b.key === 'pause')
+    expect(bar.filter(b => b.key?.startsWith('tab-')).map(b => b.text)).toEqual([
+      `${TAB_ICON.now} `,
       `${TAB_ICON.log} 事件流`,
-      `${TAB_ICON.stats} 統計`,
-      `${TAB_ICON.fleet} 艦隊`,
+      `${TAB_ICON.stats} `,
+      `${TAB_ICON.fleet} `,
+      `${TAB_ICON.changes} `,
     ])
+    expect(bar.reduce((n, b) => n + cellWidth(b.text ?? ''), 0) + (bar.length - 1) * 2).toBeLessThanOrEqual(40)
     await ui.unmount()
     ui = await mountPane($, 30, 26)
     const tabs = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('tab-'))
@@ -1902,6 +1907,7 @@ describe('pages', () => {
       ['tab-log', `${TAB_ICON.log} 事件流`],
       ['tab-stats', `${TAB_ICON.stats} `],
       ['tab-fleet', `${TAB_ICON.fleet} `],
+      ['tab-changes', `${TAB_ICON.changes} `],
     ])
     await ui.unmount()
   })
@@ -2006,6 +2012,7 @@ describe('subagent list and detail page', () => {
       ['tab-log', undefined],
       ['tab-stats', undefined],
       ['tab-fleet', undefined],
+      ['tab-changes', undefined],
       ['back', undefined],
     ])
     await ui.unmount()
@@ -5649,7 +5656,7 @@ describe('nerd font icons', () => {
     engineAll(on)
     const ui = await mountPane($, 30, 100)
     const tabs = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('tab-'))
-    expect(tabs.map(b => b.text)).toEqual([`${TAB_ICON.now} 現況`, `${TAB_ICON.log} 事件流`, `${TAB_ICON.stats} 統計`, `${TAB_ICON.fleet} 艦隊`])
+    expect(tabs.map(b => b.text)).toEqual([`${TAB_ICON.now} 現況`, `${TAB_ICON.log} 事件流`, `${TAB_ICON.stats} 統計`, `${TAB_ICON.fleet} 艦隊`, `${TAB_ICON.changes} 異動`])
     await ui.unmount()
   })
 

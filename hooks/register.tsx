@@ -34,6 +34,13 @@ import { parseQuota } from './fleet'
 import { SUIT_REST_TICK_MS } from './suit'
 import { EMPTY_FLEET, FLEET_MS, FLEET_RUN_TIMEOUT_MS, LIMITS_PATH, focusArgv, refreshFleet, withJump } from './fleetSource'
 import type { FleetIo } from './fleetSource'
+import type { JarvisChange } from '../types'
+import { CREATED, UNKNOWN, editOf, noteChange, repoOf, reposOf } from './changes'
+import type { ChangeMode, ChangesIo, EditSeen } from './changes'
+import { isFailed, sessionDiff, sessionStat, unpushedDiff, unpushedOf } from './gitDiff'
+import type { DiffRow, Failed, FileStat, Unpushed, UnpushedFile } from './gitDiff'
+import { MAX_LISTED, sessionGroups, unpushedGroups } from './changesView'
+import type { ChangesView } from './changesView'
 
 const PANE = 'jarvis'
 const MAX_EARLY = 100
@@ -42,6 +49,10 @@ const MAX_EARLY = 100
 const FLEET_SEEN_MS = SEEN_MS + FLEET_MS
 // the standby suit reads the usagebar cache at most this often
 const QUOTA_EVERY_MS = 30_000
+// git and the cache writes the changes page runs, each given this long
+const CHANGES_RUN_TIMEOUT_MS = 5_000
+// the changes page reads its files' mtimes at most this often while drawn
+const CHANGES_SCAN_MS = 2_000
 
 const agents = atom({ plugin: 'jarvis', key: 'agents' } as const, [])
 const main = atom({ plugin: 'jarvis', key: 'main' } as const, {
@@ -70,10 +81,258 @@ const fleet = atom({ plugin: 'jarvis', key: 'fleet' } as const, EMPTY_FLEET)
 const fleetCursor = atom({ plugin: 'jarvis', key: 'fleetCursor' } as const, {})
 const standbyQuota = atom({ plugin: 'jarvis', key: 'standbyQuota' } as const, null as FleetQuota | null)
 const suit = atom({ plugin: 'jarvis', key: 'suit' } as const, { n: 0 })
+const changes = atom({ plugin: 'jarvis', key: 'changes' } as const, [] as JarvisChange[])
 
 // Tool calls that last as long as the agents they start, whose own calls are tracked:
 // counting them in flight would hide a stuck subagent.
 const UNTRACKED = new Set(['Agent', 'Workflow'])
+
+// The changes page's hands on the machine, from a hook's own `$`; a failure reads as nothing.
+export function ioOf($: Pick<EngineInterface, 'fs' | 'process'>): ChangesIo {
+  return {
+    stat: async path => {
+      try {
+        const s = await $.fs.stat(path)
+        return { kind: s.kind, size: s.size, mtimeMs: s.mtimeMs }
+      } catch {
+        return undefined
+      }
+    },
+    write: async (path, text) => {
+      try {
+        await $.fs.write(path, text)
+        return true
+      } catch {
+        return false
+      }
+    },
+    run: async argv => {
+      try {
+        const r = await $.process.run(argv, { timeoutMs: CHANGES_RUN_TIMEOUT_MS })
+        return { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr }
+      } catch {
+        return undefined
+      }
+    },
+  }
+}
+
+// A file's `orig` the first time an edit to it is seen: the record's own when it already
+// has one, else its content before cached under `cacheDir`.
+async function firstOrig($: Pick<EngineInterface, 'fs' | 'process' | 'state'>, seen: EditSeen, cacheDir: string): Promise<string> {
+  try {
+    const had = (await read($, changes)).find(c => c.path === seen.path)?.orig
+    if (had !== undefined) return had
+    if (seen.created) return CREATED
+    if (seen.original === null || cacheDir === '') return UNKNOWN
+    const file = `${cacheDir}/${crypto.randomUUID()}.orig`
+    return (await ioOf($).write(file, seen.original)) ? file : UNKNOWN
+  } catch {
+    return UNKNOWN
+  }
+}
+
+// Records what an edit tool changed: its original cached under `cacheDir` the first time
+// the file is seen, its repo, and who changed it. The first edit to reach here owns the
+// file's original: `origs` holds it from before any await, so a later edit only joins.
+async function recordChange(
+  $: Pick<EngineInterface, 'fs' | 'process' | 'state'>,
+  tool: string,
+  result: unknown,
+  actor: string,
+  cacheDir: string,
+  repoCache: Map<string, string | null>,
+  origs: Map<string, Promise<string>>,
+): Promise<void> {
+  try {
+    const seen = editOf(tool, result)
+    if (!seen) return
+    let first = origs.get(seen.path)
+    if (first === undefined) {
+      first = firstOrig($, seen, cacheDir)
+      origs.set(seen.path, first)
+    }
+    const orig = await first
+    const repo = await repoOf(ioOf($), seen.path, repoCache)
+    await update($, changes, l => noteChange(l, { path: seen.path, repo, actor, orig }))
+  } catch {
+    // the edit itself already happened
+  }
+}
+
+// What the changes page keeps between drawings: what git last said of each changed file,
+// by the file's mtime, size and edit count; whether git is being asked; the files'
+// signatures as last read, at most once per CHANGES_SCAN_MS while drawn; `gen` counts the
+// resets, so git still answering for the last session stores nothing. The unpushed mode
+// keeps what git said of each touched repo, asked on entering the mode and on 重新整理;
+// `unpushedGen` counts the drops, so an answer to an older ask stores nothing. The diff
+// page: what each listed file's key stands for, each key's diff by the signature it was
+// taken at, and the key git is diffing; `gen` drops those too.
+type ChangesCache = {
+  stats: Map<string, { sig: string; stat: FileStat | Failed }>
+  busy: boolean
+  gen: number
+  sigs: Map<string, string>
+  scannedAt: number
+  unpushed: Map<string, Unpushed | Failed>
+  unpushedBusy: boolean
+  unpushedGen: number
+  opened: Map<string, Opened>
+  diffs: Map<string, { sig: string; rows: DiffRow[] | Failed }>
+  diffBusy: string
+}
+
+type Opened =
+  | { mode: 'session'; change: JarvisChange }
+  | { mode: 'unpushed'; repo: string; base: string; file: UnpushedFile }
+
+// forgets the unpushed answers and the diffs of unpushed files, those still coming
+// included: the next drawing asks git again
+const dropUnpushed = (cache: ChangesCache) => {
+  cache.unpushedGen += 1
+  cache.unpushedBusy = false
+  cache.unpushed.clear()
+  for (const key of [...cache.diffs.keys()]) if (key.startsWith('u:')) cache.diffs.delete(key)
+  if (cache.diffBusy.startsWith('u:')) cache.diffBusy = ''
+}
+
+// What the changes page lists now: in the unpushed mode, each touched repo as git last
+// said, a repo not yet asked asked in the background; in the session mode, cached
+// counts, a file whose signature moved asked again in the background. The page is
+// redrawn when git has answered.
+async function changesNow(
+  $: Pick<EngineInterface, 'fs' | 'process' | 'state' | 'ui'>,
+  cache: ChangesCache,
+  mode: ChangeMode,
+  now: number,
+  names: { cwd: string; home: string },
+): Promise<ChangesView> {
+  const io = ioOf($)
+  const all = await read($, changes)
+  if (mode === 'unpushed') {
+    const repos = reposOf(all)
+    const missing = repos.filter(r => !cache.unpushed.has(r))
+    if (missing.length > 0 && !cache.unpushedBusy) {
+      cache.unpushedBusy = true
+      const gen = cache.unpushedGen
+      void (async () => {
+        try {
+          for (const repo of missing) {
+            let r: Unpushed | Failed
+            try {
+              r = await unpushedOf(io, repo)
+            } catch {
+              r = { error: 'git diff 失敗' }
+            }
+            if (cache.unpushedGen !== gen) return
+            cache.unpushed.set(repo, r)
+          }
+        } finally {
+          if (cache.unpushedGen === gen) cache.unpushedBusy = false
+          try {
+            $.ui.invalidate('ui.render')
+          } catch {
+            // the next drawing shows it
+          }
+        }
+      })()
+    }
+    const groups = unpushedGroups(repos, cache.unpushed, all, names)
+    cache.opened = new Map()
+    for (const repo of repos) {
+      const r = cache.unpushed.get(repo)
+      if (r === undefined || isFailed(r)) continue
+      for (const f of r.files) cache.opened.set(`u:${f.path}`, { mode: 'unpushed', repo, base: r.base, file: f })
+    }
+    return { mode, groups, pending: missing.length > 0, total: repos.length }
+  }
+  const list = all.slice(0, MAX_LISTED)
+  if (now - cache.scannedAt >= CHANGES_SCAN_MS) {
+    cache.scannedAt = now
+    const next = new Map<string, string>()
+    for (const c of list) {
+      const s = await io.stat(c.path)
+      next.set(c.path, `${s?.mtimeMs ?? 'gone'}:${s?.size ?? 0}:${c.touches}`)
+    }
+    cache.sigs = next
+  }
+  const stats = new Map<string, FileStat | Failed>()
+  const stale = list.filter(c => {
+    const hit = cache.stats.get(c.path)
+    if (hit) stats.set(c.path, hit.stat)
+    return hit?.sig !== (cache.sigs.get(c.path) ?? `new:${c.touches}`)
+  })
+  if (stale.length > 0 && !cache.busy) {
+    cache.busy = true
+    const gen = cache.gen
+    void (async () => {
+      try {
+        for (const c of stale) {
+          const sig = cache.sigs.get(c.path) ?? `new:${c.touches}`
+          const stat = await sessionStat(io, c)
+          if (cache.gen !== gen) return
+          cache.stats.set(c.path, { sig, stat })
+        }
+      } catch {
+        // the page shows what it has
+      } finally {
+        if (cache.gen === gen) cache.busy = false
+        try {
+          $.ui.invalidate('ui.render')
+        } catch {
+          // the next drawing shows it
+        }
+      }
+    })()
+  }
+  const groups = sessionGroups(list, stats, names)
+  cache.opened = new Map(list.map(c => [`s:${c.path}`, { mode: 'session' as const, change: c }]))
+  return { mode, groups, pending: stale.length > 0, total: all.length }
+}
+
+// The diff of the file the changes page's row `key` stands for, as git gave it at the
+// file's signature now (an unpushed file's also by the commit it is compared with); while
+// git works a new one out in the background, the last one it gave, else undefined. A
+// failure is kept until the signature moves or 重新整理 drops it. The page is redrawn when
+// git has answered.
+async function diffNow(
+  $: Pick<EngineInterface, 'fs' | 'process' | 'ui'>,
+  cache: ChangesCache,
+  key: string,
+): Promise<DiffRow[] | Failed | undefined> {
+  const item = cache.opened.get(key)
+  if (!item) return undefined
+  const gen = cache.gen
+  const unpushedGen = cache.unpushedGen
+  const io = ioOf($)
+  const s = await io.stat(item.mode === 'session' ? item.change.path : item.file.path)
+  const file = `${s?.mtimeMs ?? 'gone'}:${s?.size ?? 0}`
+  const sig = item.mode === 'session' ? `${file}:${item.change.touches}` : `${item.base}:${file}`
+  const current = () => cache.gen === gen && (item.mode === 'session' || cache.unpushedGen === unpushedGen)
+  const hit = cache.diffs.get(key)
+  if (hit && hit.sig === sig) return hit.rows
+  if (cache.diffBusy !== key && current()) {
+    cache.diffBusy = key
+    void (async () => {
+      let rows: DiffRow[] | Failed
+      try {
+        rows = item.mode === 'session' ? await sessionDiff(io, item.change) : await unpushedDiff(io, item.repo, item.base, item.file)
+      } catch {
+        rows = { error: 'git diff 失敗' }
+      }
+      if (current()) {
+        cache.diffs.set(key, { sig, rows })
+        if (cache.diffBusy === key) cache.diffBusy = ''
+      }
+      try {
+        $.ui.invalidate('ui.render')
+      } catch {
+        // the next drawing shows it
+      }
+    })()
+  }
+  return hit && !isFailed(hit.rows) ? hit.rows : undefined
+}
 
 // opens the pane, its boot screen from the time handed to boot (undefined: none); false when it could not open
 async function openPane($: Pick<EngineInterface, 'clock' | 'ui'>, boot: (at: number | undefined) => void): Promise<boolean> {
@@ -174,6 +433,40 @@ export const register: Register = on => {
   // ids the engine was asked about on a tool call and did not list: not asked again
   const unknown = new Set<string>()
   const listing = { fails: 0 }
+  // the changes page: where the session started, $HOME, where originals are cached, and
+  // which directory stands in which repo
+  let cwd = ''
+  let changesHome = ''
+  let cacheDir = ''
+  const repoCache = new Map<string, string | null>()
+  // each file's original as its first edit settles it
+  const origs = new Map<string, Promise<string>>()
+  const changesCache: ChangesCache = {
+    stats: new Map(),
+    busy: false,
+    gen: 0,
+    sigs: new Map(),
+    scannedAt: -Infinity,
+    unpushed: new Map(),
+    unpushedBusy: false,
+    unpushedGen: 0,
+    opened: new Map(),
+    diffs: new Map(),
+    diffBusy: '',
+  }
+  const resetChanges = () => {
+    repoCache.clear()
+    origs.clear()
+    changesCache.gen += 1
+    changesCache.busy = false
+    changesCache.stats.clear()
+    changesCache.sigs = new Map()
+    changesCache.scannedAt = -Infinity
+    dropUnpushed(changesCache)
+    changesCache.opened = new Map()
+    changesCache.diffs.clear()
+    changesCache.diffBusy = ''
+  }
   let timer: Timer | undefined
   let period = 0
   // when the pane was last drawn: the tick animates only a pane in view
@@ -251,6 +544,14 @@ export const register: Register = on => {
       }
     } catch {
       // no Herdr row without a readable environment
+    }
+    cwd = e.cwd
+    changesHome = home
+    try {
+      const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/+$/, '') || '/tmp'
+      cacheDir = `${tmp}/claude-jarvis-changes/${crypto.randomUUID()}`
+    } catch {
+      cacheDir = ''
     }
 
     const slow = { at: -Infinity }
@@ -545,6 +846,7 @@ export const register: Register = on => {
     try {
       const out = await next(e)
       ok = out.isError !== true
+      if (ok && out.deny === undefined) await recordChange($, tool, out.result, id ?? MAIN_ACTOR, cacheDir, repoCache, origs)
       return out
     } catch (err) {
       ok = false
@@ -633,6 +935,19 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // a new, cleared or resumed session starts the changes page empty; a compaction keeps it
+  on('classic.SessionStart', async ($, e, next) => {
+    if (e.source === 'startup' || e.source === 'clear' || e.source === 'resume') {
+      resetChanges()
+      try {
+        await update($, changes, () => [])
+      } catch {
+        // the page keeps what it showed
+      }
+    }
+    return next(e)
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const elements = $.ui.resolve(e)
     const t = await read($, tick)
@@ -659,6 +974,11 @@ export const register: Register = on => {
     drawnAt = now
     if (view.running.some(a => a.waiting !== true) || boot !== undefined) pace?.(ANIM_MS)
     const shown = await read($, ui)
+    const changesMode: ChangeMode = shown.changesMode ?? 'session'
+    const onChanges = shown.page === 'changes' || shown.page === 'changeDiff'
+    const changesView = onChanges ? await changesNow($, changesCache, changesMode, now, { cwd, home: changesHome }) : undefined
+    const diffKey = shown.diffKey ?? ''
+    const diff = shown.page === 'changeDiff' ? { key: diffKey, rows: await diffNow($, changesCache, diffKey) } : undefined
     if (shown.page === 'fleet' || shown.page === 'fleetDetail') fleetOn?.(now)
     const quota = await read($, standbyQuota)
     const frame = await read($, suit)
@@ -724,6 +1044,21 @@ export const register: Register = on => {
       suitPaused: frame.paused === true,
       toggleSuit,
       onStandby,
+      ...(changesView ? { changes: changesView } : {}),
+      ...(diff ? { diff } : {}),
+      setChangesMode: (mode: ChangeMode) => {
+        if (mode === 'unpushed') dropUnpushed(changesCache)
+        setUi(u => ({ ...u, changesMode: mode }))
+      },
+      refreshChanges: () => {
+        dropUnpushed(changesCache)
+        try {
+          $.ui.invalidate('ui.render')
+        } catch {
+          // the next drawing asks again
+        }
+      },
+      openDiff: (key: string) => setUi(u => ({ ...u, page: 'changeDiff', diffKey: key })),
     })
   })
 }

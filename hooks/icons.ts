@@ -8,6 +8,7 @@ export const TAB_ICON = {
   log: '\uf03a',
   stats: '\uf080',
   fleet: '\uf135',
+  changes: '\uf47f',
 } as const
 
 export const TITLE_ICON = {
@@ -42,5 +43,9 @@ export const ROLE_ICON: Record<Role, string> = {
   workflow: '\uf0e8',
   other: '\uf007',
 }
+
+export const CHANGE_ICON = {
+  repo: '\uf401',
+} as const
 
 export const withIcon = (icon: string, text: string): string => `${icon} ${text}`
