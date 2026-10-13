@@ -36,8 +36,10 @@ import {
 } from './suit'
 import type { Readout } from './suit'
 import { CHANGE_ICON, PHASE_ICON, ROLE_ICON, SECTION_ICON, TAB_ICON, TITLE_ICON, withIcon } from './icons'
-import { MAX_LISTED } from './changesView'
+import { MAX_LISTED, diffLines } from './changesView'
 import type { ChangeEntry, ChangeGroup, ChangesView } from './changesView'
+import { isFailed } from './gitDiff'
+import type { DiffRow, Failed } from './gitDiff'
 import { tailCells } from './changes'
 import type { ChangeMode } from './changes'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
@@ -158,11 +160,14 @@ export type Ctx = {
   // told each drawing whether the standby suit was drawn, and drawn and playing, its frame time
   onStandby?: (drawn: boolean, periodMs?: number) => void
   // the changes page: what it lists, and the presses that switch its mode, ask git again
-  // and open one file's diff
+  // and open one file's diff page
   changes?: ChangesView
   setChangesMode?: (mode: ChangeMode) => void
   refreshChanges?: () => void
   openDiff?: (key: string) => void
+  // the diff page: the row's key it is about, and its diff as git gave it; undefined
+  // while git works it out
+  diff?: { key: string; rows: DiffRow[] | Failed | undefined }
 }
 
 const FRAME = THEME.frame
@@ -425,9 +430,18 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const fleetSelected = ctx.page === 'fleetDetail' ? fleetView.sessions.find(s => s.paneId === ctx.paneId) : undefined
   const listed = [...view.running, ...view.stale, ...view.finished]
   const selected = ctx.page === 'detail' ? listed.find(a => a.id === ctx.agentId) : undefined
-  // a detail page whose subagent or session left the list is its list page
+  // the changes page's rows in the order listed, and the one the diff page is about
+  const diffOrder = (ctx.changes?.groups ?? []).flatMap(g => g.entries.map(e => ({ g, e })))
+  const diffAt = ctx.page === 'changeDiff' && ctx.diff ? diffOrder.findIndex(x => x.e.key === ctx.diff?.key) : -1
+  // a detail page whose subagent, session or file left the list is its list page
   const page: JarvisPage =
-    ctx.page === 'detail' && !selected ? 'now' : ctx.page === 'fleetDetail' && !fleetSelected ? 'fleet' : ctx.page
+    ctx.page === 'detail' && !selected
+      ? 'now'
+      : ctx.page === 'fleetDetail' && !fleetSelected
+        ? 'fleet'
+        : ctx.page === 'changeDiff' && diffAt < 0
+          ? 'changes'
+          : ctx.page
   const onFleet = page === 'fleet' || page === 'fleetDetail'
 
   // ---- 標題列 -------------------------------------------------------------
@@ -465,6 +479,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         actions.push({ key: 'jump', label: '跳轉', run: () => ctx.jump(paneId) })
       }
     }
+    if (page === 'changeDiff') actions.push({ key: 'back', label: '返回', run: () => ctx.go('changes') })
     if (page === 'log') actions.push({ key: 'pause', label: ctx.paused ? '繼續' : '暫停', run: ctx.pause })
     const tabText = (tab: (typeof TABS)[number], compact: boolean) =>
       compact && tab.page !== page ? withIcon(tab.icon, '') : withIcon(tab.icon, tab.label)
@@ -1581,6 +1596,43 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return card({ w: cols, color: FRAME, lines }, height)
   }
 
+  // One file's diff, `room` rows tall at least and taller when the diff is: its path, who
+  // changed it, its counts and the mode, ‹ › to the files listed beside it, then the diff
+  // with line numbers.
+  const diffBlock = (room: number): Block => {
+    const inner = cols - 4
+    const { g, e } = diffOrder[diffAt] ?? { g: undefined, e: undefined }
+    if (!g || !e) return card({ w: cols, color: FRAME, lines: [] }, Math.max(3, room))
+    const mode = CHANGE_MODES.find(m => m.mode === (ctx.changes?.mode ?? 'session'))?.label ?? ''
+    const right: Seg[] = [...changeActor(e.actors), sp(2), ...countSegs(e), sp(2), { t: mode, color: FRAME }]
+    const pathW = Math.max(1, inner - segsWidth(right) - 1)
+    const head = leftRight([{ t: tailCells(`${g.name}/${e.label}`, pathW), color: PRIMARY, bold: true }], right, inner)
+    const step = (by: number) => () => {
+      const next = diffOrder[diffAt + by]
+      if (next) ctx.openDiff?.(next.e.key)
+    }
+    const nav = (
+      <Box flexDirection="row" gap={TAB_GAP}>
+        <Button key="diff-prev" plain onPress={step(-1)}>
+          <Text color={FRAME}>‹</Text>
+        </Button>
+        <Text color={FRAME}>{`${diffAt + 1} / ${diffOrder.length}`}</Text>
+        <Button key="diff-next" plain onPress={step(1)}>
+          <Text color={FRAME}>›</Text>
+        </Button>
+      </Box>
+    )
+    const rows = ctx.diff?.rows
+    const body: Line[] =
+      rows === undefined
+        ? [[{ t: '計算中…', color: MUTED }]]
+        : isFailed(rows)
+          ? [[{ t: rows.error, color: MUTED }]]
+          : diffLines(rows, inner)
+    const lines: Line[] = [head, { node: nav, h: 1 }, ...body]
+    return card({ w: cols, color: FRAME, lines }, Math.max(room, 2 + lines.length))
+  }
+
   // ---- 組版 ---------------------------------------------------------------
 
   const blocks: Block[] = [titleBar(), tabBar()]
@@ -1639,6 +1691,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     blocks.push(fleetDetailBlock(fleetSelected))
   } else if (page === 'changes') {
     blocks.push(changesBlock(left()))
+  } else if (page === 'changeDiff') {
+    blocks.push(diffBlock(left()))
   } else {
     const hint = view.summary.groups.length === 0
     const plan = planStats({ cols, room: left() - (hint ? 1 : 0), roles: statsRoles.length, models: view.models.length })

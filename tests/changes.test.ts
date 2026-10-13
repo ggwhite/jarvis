@@ -632,7 +632,7 @@ describe('unpushed mode', () => {
   })
 })
 
-describe('diff pane', () => {
+describe('diff page', () => {
   const R = '/w/r'
   const A = `${R}/a.go`
   const B = `${R}/b.go`
@@ -656,92 +656,67 @@ describe('diff pane', () => {
               : '@@ -1 +1 @@\n-b\n+c\n',
       }),
     })
-  const DIFF_PROPS = (cols = 96, rows = 32) => ({
-    plugin: 'jarvis',
-    surface: 'terminal' as const,
-    component: 'Pane' as const,
-    requestId: 'jarvis-diff',
-    props: { title: '異動 diff', isFocused: true, bodyColumns: cols, placement: 'inline' as const, scroll: { offset: 0, bodyRows: rows }, view: {} },
-    viewport: { columns: 120, rows: 40 },
-  })
-  const openFile = async ($: Engine, w: ReturnType<typeof world>, key: string) => {
-    const ui = await $.ui.mount({
-      plugin: 'jarvis',
-      surface: 'terminal',
-      component: 'Pane',
-      requestId: 'jarvis',
-      props: { title: 'Jarvis', isFocused: true, bodyColumns: 80, placement: 'dock' as const, scroll: { offset: 0, bodyRows: 30 }, view: {} },
-      viewport: { columns: 120, rows: 40 },
-    })
-    w.log.length = 0
+  const press = async ($: Engine, key: string) => {
+    const ui = await pane($)
     await ui.press({ key })
     await ui.unmount()
+    await settle()
   }
-  const diffText = async ($: Engine) => {
-    const ui = await $.ui.mount(DIFF_PROPS())
-    const lines = linesOf((await ui.drawn()) as unknown as Node)
-    await ui.unmount()
-    return lines.join('\n')
-  }
-
-  test('pressing a file opens jarvis-diff before anything else, sized to the window', async ($, on) => {
-    const w = setup(on)
+  // the changes page listing, its numstat answered
+  const listed = async ($: Engine, ...files: string[]) => {
     await start($)
-    await edit($, A)
+    for (const f of files) await edit($, f)
     await showChanges($)
     await drawn($)
     await settle()
-    await openFile($, w, `chg-s:${A}`)
-    expect(w.log[0]).toBe('open:jarvis-diff')
-    expect(w.opens.at(-1)).toMatchObject({ id: 'jarvis-diff', focus: true, closeOnEscape: true, columns: 96, rows: 32 })
+  }
+  const text = async ($: Engine) => (await drawn($)).join('\n')
+
+  test('clicking a file shows its diff page in the jarvis pane, no other pane opened', async ($, on) => {
+    const w = setup(on)
+    await listed($, A)
+    await press($, `chg-s:${A}`)
+    await drawn($)
+    await settle()
+    const t = await text($)
+    expect(t).toContain('r/a.go')
+    expect(t).toContain('返回')
+    expect(t).not.toContain('本次 session未推送')
+    expect(w.opens.filter(o => o['id'] !== 'jarvis')).toEqual([])
   })
 
-  test('the pane shows the file, who changed it, and the diff with line numbers and colors', async ($, on) => {
+  test('the page shows the file, who changed it, its counts, the mode and the diff with line numbers', async ($, on) => {
     // the diff answers only once let go, as a real git answers after the drawing that asked
     let release = () => {}
     const gate = new Promise<void>(r => (release = r))
-    const w = setup(on, false, argv => (argv.includes('--no-color') ? gate : Promise.resolve()))
-    await start($)
-    await edit($, A)
-    await showChanges($)
-    await drawn($)
-    await settle()
-    await openFile($, w, `chg-s:${A}`)
-    expect(await diffText($)).toContain('計算中…')
+    setup(on, false, argv => (argv.includes('--no-color') ? gate : Promise.resolve()))
+    await listed($, A)
+    await press($, `chg-s:${A}`)
+    expect(await text($)).toContain('計算中…')
     release()
     await settle()
-    const text = await diffText($)
-    expect(text).toContain('r/a.go')
-    expect(text).toContain('主線')
-    expect(text).toMatch(/1\s+1\s+ keep/)
-    expect(text).toMatch(/2\s+-old/)
-    expect(text).toMatch(/2\s+\+new/)
+    const t = await text($)
+    expect(t).toMatch(/r\/a\.go\s+主線\s+\+1 −1\s+本次 session/)
+    expect(t).toMatch(/1\s+1\s+ keep/)
+    expect(t).toMatch(/2\s+-old/)
+    expect(t).toMatch(/2\s+\+new/)
   })
 
-  test('‹ › walk the listed files and stop at the ends; ✕ closes', async ($, on) => {
-    const w = setup(on)
-    await start($)
-    await edit($, A)
-    await edit($, B)
-    await showChanges($)
+  test('‹ › walk the listed files and stop at the ends; 返回 goes back to the list', async ($, on) => {
+    setup(on)
+    await listed($, A, B)
+    await press($, `chg-s:${A}`)
+    await press($, 'diff-prev')
+    expect(await text($)).toContain('1 / 2')
+    await press($, 'diff-next')
     await drawn($)
     await settle()
-    await openFile($, w, `chg-s:${A}`)
-    const press = async (key: string) => {
-      const ui = await $.ui.mount(DIFF_PROPS())
-      await ui.press({ key })
-      await ui.unmount()
-      await settle()
-    }
-    await press('diff-prev')
-    expect(await diffText($)).toContain('1 / 2')
-    await press('diff-next')
-    expect(await diffText($)).toContain('2 / 2')
-    expect(await diffText($)).toContain('r/b.go')
-    await press('diff-next')
-    expect(await diffText($)).toContain('2 / 2')
-    await press('diff-close')
-    expect(w.closes).toContain('jarvis-diff')
+    expect(await text($)).toContain('2 / 2')
+    expect(await text($)).toMatch(/1\s+\+c/)
+    await press($, 'diff-next')
+    expect(await text($)).toContain('2 / 2')
+    await press($, 'back')
+    expect(await text($)).toContain('本次 session未推送')
   })
 
   test('a /clear drops the diff git was still working out for the last session', async ($, on) => {
@@ -750,7 +725,7 @@ describe('diff pane', () => {
     const gate = new Promise<void>(r => (release = r))
     let held = 0
     let late = false
-    const w = world(on, {
+    world(on, {
       dirs: [`${R}/.git`],
       files: { [A]: 1 },
       results: { [A]: editResult(A, 'a') },
@@ -760,38 +735,34 @@ describe('diff pane', () => {
       }),
       holdRun: argv => (argv.includes('--no-color') && held++ === 0 ? gate : Promise.resolve()),
     })
-    await start($)
-    await edit($, A)
-    await showChanges($)
+    await listed($, A)
+    await press($, `chg-s:${A}`)
     await drawn($)
-    await settle()
-    await openFile($, w, `chg-s:${A}`)
-    await diffText($)
     await $.classic.SessionStart({ source: 'clear' } as never)
+    // the page is still on A's diff, now the new session's
     await edit($, A)
     await drawn($)
     await settle()
-    await openFile($, w, `chg-s:${A}`)
-    await diffText($)
+    await drawn($)
     await settle()
     late = true
     release()
     await settle()
-    const text = await diffText($)
-    expect(text).toMatch(/2\s+-old/)
-    expect(text).not.toContain('stale')
+    const t = await text($)
+    expect(t).toMatch(/2\s+-old/)
+    expect(t).not.toContain('stale')
   })
 
-  test('long lines are cut to the pane width', async ($, on) => {
-    const w = setup(on, true)
-    await start($)
-    await edit($, A)
-    await showChanges($)
+  test('long lines are cut to the pane width at 40, 60, 80 and 120 columns', async ($, on) => {
+    setup(on, true)
+    await listed($, A)
+    await press($, `chg-s:${A}`)
     await drawn($)
     await settle()
-    await openFile($, w, `chg-s:${A}`)
-    await diffText($)
-    await settle()
-    for (const line of (await diffText($)).split('\n')) expect(cellWidth(line)).toBeLessThanOrEqual(96)
+    for (const cols of [40, 60, 80, 120]) {
+      const lines = await drawn($, cols)
+      expect(lines.join('\n')).toContain('…')
+      for (const line of lines) expect(cellWidth(line)).toBeLessThanOrEqual(cols)
+    }
   })
 })
