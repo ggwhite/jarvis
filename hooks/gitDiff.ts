@@ -73,9 +73,10 @@ export function parseDiff(stdout: string): DiffRow[] {
   return rows
 }
 
-// `git diff --no-index` exits 1 when the two differ
-const answered = (r: { exitCode: number } | undefined, differs = false): r is { exitCode: number; stdout: string; stderr: string } =>
-  r !== undefined && (r.exitCode === 0 || (differs && r.exitCode === 1))
+// `git diff --no-index` exits 1 when the two differ, but also on errors (missing file,
+// a directory); a real difference leaves stderr empty
+const answered = (r: { exitCode: number; stderr: string } | undefined, differs = false): r is { exitCode: number; stdout: string; stderr: string } =>
+  r !== undefined && (r.exitCode === 0 || (differs && r.exitCode === 1 && r.stderr.trim() === ''))
 
 type Source = Pick<JarvisChange, 'path' | 'repo' | 'orig'>
 

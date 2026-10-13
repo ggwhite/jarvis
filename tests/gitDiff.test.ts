@@ -3,7 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { ChangesIo } from '../hooks/changes'
 import { GIT, isFailed, parseDiff, parseNumstat, pickTarget, sessionDiff, sessionStat, unpushedDiff, unpushedOf } from '../hooks/gitDiff'
 
-type Out = { exitCode: number; stdout?: string }
+type Out = { exitCode: number; stdout?: string; stderr?: string }
 
 // an io whose git answers by argv joined with spaces; anything else exits 128
 const gitIo = (answers: Record<string, Out>, files: string[] = []): ChangesIo & { runs: string[][] } => {
@@ -15,7 +15,7 @@ const gitIo = (answers: Record<string, Out>, files: string[] = []): ChangesIo & 
     run: async argv => {
       runs.push(argv)
       const a = answers[argv.join(' ')] ?? { exitCode: 128, stdout: '' }
-      return { exitCode: a.exitCode, stdout: a.stdout ?? '', stderr: '' }
+      return { exitCode: a.exitCode, stdout: a.stdout ?? '', stderr: a.stderr ?? '' }
     },
   }
 }
@@ -83,6 +83,19 @@ describe('session mode', () => {
   test('git failing is an error, not a throw', async () => {
     const r = await sessionStat(gitIo({}, [change.path]), change)
     expect(isFailed(r)).toBe(true)
+  })
+  test('exit 1 with stderr (cache file gone) is an error, not +0 -0', async () => {
+    const err = { exitCode: 1, stderr: 'error: Could not access \'/tmp/c/1.orig\'\n' }
+    const io = gitIo({
+      [`${GIT} diff --no-index --numstat -- /tmp/c/1.orig /w/r/文件 夾/a.go`]: err,
+      [`${GIT} diff --no-index --no-color -- /tmp/c/1.orig /w/r/文件 夾/a.go`]: err,
+    }, [change.path])
+    expect(await sessionStat(io, change)).toEqual({ error: 'git diff 失敗' })
+    expect(await sessionDiff(io, change)).toEqual({ error: 'git diff 失敗' })
+  })
+  test('exit 1 with empty stderr is a real difference', async () => {
+    const io = gitIo({ [`${GIT} diff --no-index --numstat -- /tmp/c/1.orig /w/r/文件 夾/a.go`]: { exitCode: 1, stdout: '3\t2\tx\n', stderr: '' } }, [change.path])
+    expect(await sessionStat(io, change)).toEqual({ add: 3, del: 2, binary: false, deleted: false, vsHead: false })
   })
   test('the diff of a created file is against /dev/null', async () => {
     const io = gitIo({ [`${GIT} diff --no-index --no-color -- /dev/null /w/r/n.go`]: { exitCode: 1, stdout: '@@ -0,0 +1 @@\n+x\n' } }, ['/w/r/n.go'])
