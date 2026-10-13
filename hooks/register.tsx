@@ -186,7 +186,7 @@ async function recordChange(
 // page: what each listed file's key stands for, each key's diff by the signature it was
 // taken at, and the key git is diffing; `gen` drops those too. `bashRepos`: the repos
 // the session's Bash calls touched, listed in the unpushed mode beside the recorded ones.
-// `gone`: the changed files and worktree roots the last read found missing. `unpushedLive`:
+// `gone`: the changed files and repo roots the last read found missing. `unpushedLive`:
 // whether each touched repo was still on disk when the unpushed mode first listed it.
 type ChangesCache = {
   stats: Map<string, { sig: string; stat: FileStat | Failed }>
@@ -316,15 +316,15 @@ async function changesNow(
       next.set(c.path, `${s?.mtimeMs ?? 'gone'}:${s?.size ?? 0}:${c.touches}`)
       if (s === undefined) gone.add(c.path)
     }
-    const roots = new Set(list.flatMap(c => (c.repo !== null && c.worktree !== undefined ? [c.repo] : [])))
-    for (const root of roots) if ((await io.stat(root)) === undefined) gone.add(root)
+    const roots = new Set(list.flatMap(c => (c.repo !== null ? [c.repo] : [])))
+    for (const root of roots) if ((await io.stat(`${root === '/' ? '' : root}/.git`)) === undefined) gone.add(root)
     cache.sigs = next
     cache.gone = gone
   }
   const stats = new Map<string, FileStat | Failed>()
-  // a removed worktree's files are only counted: git is not asked of them
+  // a removed repo's files are only counted: git is not asked of them
   const stale = list.filter(c => {
-    if (c.repo !== null && c.worktree !== undefined && cache.gone.has(c.repo)) return false
+    if (c.repo !== null && cache.gone.has(c.repo)) return false
     const hit = cache.stats.get(c.path)
     if (hit) stats.set(c.path, hit.stat)
     return hit?.sig !== (cache.sigs.get(c.path) ?? `new:${c.touches}`)

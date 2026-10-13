@@ -28,7 +28,7 @@ export type ChangeEntry = {
   pending: boolean
 }
 
-// `removed`: a worktree no longer on disk, drawn as one line saying how many of its files
+// `removed`: a repo no longer on disk (a removed worktree, a deleted checkout), drawn as one line saying how many of its files
 // the session changed, none listed.
 export type ChangeGroup = {
   key: string
@@ -45,8 +45,8 @@ export type ChangeGroup = {
 
 export type ChangesView = { mode: ChangeMode; groups: ChangeGroup[]; pending: boolean; total: number }
 
-// `gone`: the changed files and worktree roots no longer on disk. A file outside git that
-// is gone was scratch and is not listed; a removed worktree's files are only counted.
+// `gone`: the changed files and repo roots no longer on disk. A file outside git that
+// is gone was scratch and is not listed; a removed repo's files are only counted.
 // The counts a group's rows show add up to the group's.
 export function sessionGroups(
   list: readonly JarvisChange[],
@@ -61,10 +61,12 @@ export function sessionGroups(
     const key = c.repo ?? ''
     let g = groups.find(x => x.key === key)
     if (!g) {
-      const main = c.repo !== null && c.worktree !== undefined ? c.mainRepo : undefined
-      if (main !== undefined && gone.has(key)) g = { key, name: `worktree ${c.worktree}`, removed: 0, entries: [], add: 0, del: 0, pending: false }
+      const where = c.repo !== null && c.worktree === undefined ? /^(.*?)\/(?:\.claude\/worktrees|\.worktrees)\/([^/]+)/.exec(c.repo) : null
+      const wtName = c.worktree ?? where?.[2]
+      if (c.repo !== null && gone.has(key)) g = { key, name: wtName !== undefined ? `worktree ${wtName}` : repoName(c.repo, names.cwd, names.home), removed: 0, entries: [], add: 0, del: 0, pending: false }
       else {
-        const name = main !== undefined ? `${repoName(main, names.cwd, names.home)} · worktree ${c.worktree}` : repoName(c.repo, names.cwd, names.home)
+        const main = c.repo !== null && c.worktree !== undefined ? c.mainRepo : where?.[1] ? where[1] : undefined
+        const name = main !== undefined && wtName !== undefined ? `${repoName(main, names.cwd, names.home)} · worktree ${wtName}` : wtName !== undefined ? `worktree ${wtName}` : repoName(c.repo, names.cwd, names.home)
         g = { key, name, entries: [], add: 0, del: 0, pending: false }
       }
       groups.push(g)
