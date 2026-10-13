@@ -1,9 +1,9 @@
 import { repoName } from './changes'
 import { commitGraph } from './commitGraph'
 import type { GraphRow } from './commitGraph'
-import type { CommitInfo, CommitTree, RepoSummary } from './gitCommits'
+import type { CommitFile, CommitInfo, CommitTree, RepoSummary } from './gitCommits'
 import { isFailed } from './gitDiff'
-import type { Failed } from './gitDiff'
+import type { DiffRow, Failed } from './gitDiff'
 import { COMMIT_ICON } from './icons'
 import { JARVIS_PALETTE, THEME } from './jarvis'
 
@@ -111,6 +111,13 @@ export type CommitsCtx = {
   now: number
   startedAt?: number
   list?: RepoList
+  // the tree page: the repo, its name and its tree as git gave it, undefined while asked
+  repo?: { path: string; name: string; tree: CommitTree | Failed | undefined }
+  // the commit's diff page: the commit, its files, the file shown and that file's diff
+  diff?: { commit: CommitInfo; files: CommitFile[] | Failed | undefined; file?: CommitFile; rows: DiffRow[] | Failed | undefined }
   openRepo: (repo: string) => void
+  openCommit: (sha: string) => void
+  openFile: (path: string) => void
   refreshList: () => void
+  refreshTree: () => void
 }

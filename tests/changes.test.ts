@@ -7,7 +7,8 @@ import { CREATED, bashPaths, dirOf, editOf, noteChange, parseGitdir, relPath, re
 import type { ChangesIo } from '../hooks/changes'
 import { sessionGroups } from '../hooks/changesView'
 import type { FileStat } from '../hooks/gitDiff'
-import { BOOT_MS, cellWidth } from '../hooks/jarvis'
+import { COMMIT_ICON } from '../hooks/icons'
+import { BOOT_MS, THEME, cellWidth } from '../hooks/jarvis'
 import { ioOf } from '../hooks/register'
 
 // a stat over a set of directories and files
@@ -1531,5 +1532,202 @@ describe('commits mode: repo list', () => {
     await ui.unmount()
     expect(buttons.filter(b => b.key?.startsWith('cm-repo-')).length).toBe(3)
     expect(buttons.every(b => b.props['hotkey'] === undefined)).toBe(true)
+  })
+})
+
+describe('commits mode: tree and diff pages', () => {
+  const G = '/usr/bin/git'
+  const FIND_LINE = '/usr/bin/find /w -maxdepth 4 ( -name node_modules -o -name Library -o -name .Trash -o -name .cache -o -path */.claude/worktrees ) -prune -o -name .git -print -prune'
+  const R = '/w/a'
+  const M = '1'.repeat(40)
+  const F = '2'.repeat(40)
+  const P = '3'.repeat(40)
+  const B0 = '4'.repeat(40)
+  const LOG = `${G} -C ${R} log --topo-order --decorate=full -n 40 --format=%H%x00%P%x00%an%x00%ct%x00%D%x00%s%x1e HEAD origin/main`
+  const log = (first = "Merge branch 'feat-x'") =>
+    `${M}\x00${P} ${F}\x00w\x00100\x00HEAD -> refs/heads/main\x00${first}\x1e\n` +
+    `${F}\x00${B0}\x00w\x0090\x00\x00feat-x: 初版 很長很長很長很長很長很長很長很長很長很長很長很長的說明\x1e\n` +
+    `${P}\x00${B0}\x00w\x0080\x00refs/remotes/origin/main\x00fix: 修正\x1e\n` +
+    `${B0}\x00\x00w\x0070\x00tag: refs/tags/v1\x00init\x1e\n`
+  const answers = (over: Record<string, Run> = {}): Record<string, Run> => ({
+    [FIND_LINE]: { exitCode: 0, stdout: `${R}/.git\n` },
+    [`${G} -C ${R} log -1 --decorate=full --format=%ct%x00%h%x00%D HEAD`]: { exitCode: 0, stdout: '100\x001111111\x00HEAD -> refs/heads/main\n' },
+    [`${G} -C ${R} rev-parse --abbrev-ref --symbolic-full-name @{u}`]: { exitCode: 0, stdout: 'origin/main\n' },
+    [LOG]: { exitCode: 0, stdout: log() },
+    [`${G} -C ${R} rev-list origin/main..HEAD`]: { exitCode: 0, stdout: `${M}\n${F}\n` },
+    [`${G} -C ${R} diff --numstat -z --no-renames ${P} ${M}`]: { exitCode: 0, stdout: '3\t1\tsvc/a.go\x001\t0\tREADME.md\x00' },
+    [`${G} -C ${R} diff --no-color --no-renames ${P} ${M} -- svc/a.go`]: { exitCode: 0, stdout: '@@ -1,2 +1,2 @@\n keep\n-old\n+new\n' },
+    [`${G} -C ${R} diff --no-color --no-renames ${P} ${M} -- README.md`]: { exitCode: 0, stdout: '@@ -0,0 +1 @@\n+hi\n' },
+    [`${G} -C ${R} diff --numstat -z --no-renames ${B0} ${F}`]: { exitCode: 0, stdout: '' },
+    [`${G} -C ${R} show --numstat -z --no-renames --format= ${B0}`]: { exitCode: 0, stdout: '\n5\t0\tinit.txt\x00' },
+    [`${G} -C ${R} show --no-color --no-renames --format= ${B0} -- init.txt`]: { exitCode: 0, stdout: '@@ -0,0 +1 @@\n+x\n' },
+    ...over,
+  })
+  const setup = (on: On, git: Git = answers(), holdRun?: (argv: string[]) => Promise<void>) =>
+    world(on, { git, ...(holdRun ? { holdRun } : {}) })
+  const press = async ($: Engine, key: string, cols = 80) => {
+    const ui = await pane($, cols)
+    await ui.press({ key })
+    await ui.unmount()
+    await settle()
+  }
+  // draws until git has answered what the page asked
+  const shown = async ($: Engine, cols = 80) => {
+    for (let i = 0; i < 3; i += 1) {
+      await drawn($, cols)
+      await settle()
+    }
+    return (await drawn($, cols)).join('\n')
+  }
+  const toTree = async ($: Engine) => {
+    await start($)
+    await showChanges($)
+    await press($, 'chg-mode-commits')
+    await shown($)
+    await press($, `cm-repo-${R}`)
+    return shown($)
+  }
+  const logs = (w: { runs: string[][] }) => w.runs.filter(r => r.includes('--topo-order')).length
+
+  test('a repo row opens its commit tree: lanes, HEAD node, ↑ for unpushed, refs and the 異動 tab still current', async ($, on) => {
+    setup(on)
+    const t = await toTree($)
+    expect(t).toContain(`${COMMIT_ICON.head}─╮ 1111111↑ Merge branch 'feat-x'`)
+    expect(t).toMatch(/│ ● 2222222↑ feat-x: 初版/)
+    expect(t).toMatch(/● │ 3333333\s+fix: 修正/)
+    expect(t).toMatch(/●─╯ 4444444\s+init/)
+    expect(t).toContain(`${COMMIT_ICON.branch} main`)
+    expect(t).toContain('origin/main')
+    expect(t).toContain(`${COMMIT_ICON.tag} v1`)
+    expect(t).toContain('4 commits')
+    expect(t).toContain('↑2')
+    const ui = await pane($)
+    expect((await ui.find({ key: 'tab-changes' }))?.children).toEqual([
+      expect.objectContaining({ type: 'Text', props: { bold: true, inverse: true, color: THEME.accent } }),
+    ])
+    expect((await ui.find({ key: 'back' }))?.text).toBe('返回')
+    expect((await ui.find({ key: 'cm-refresh' }))?.text).toBe('重新整理')
+    const buttons = await ui.findAll({ type: 'Button' })
+    await ui.unmount()
+    expect(buttons.filter(b => b.key?.startsWith('cm-commit-')).length).toBe(4)
+    expect(buttons.every(b => b.props['hotkey'] === undefined)).toBe(true)
+  })
+
+  test("a commit opens its first file's diff against its first parent; ‹ › walk its files; 返回 goes to the tree, then the list", async ($, on) => {
+    const w = setup(on)
+    await toTree($)
+    await press($, `cm-commit-${M}`)
+    let t = await shown($)
+    expect(t).toMatch(/1111111 Merge branch 'feat-x'\s+a/)
+    expect(t).toMatch(/svc\/a\.go\s+\+3 −1/)
+    expect(t).toContain('1 / 2')
+    expect(t).toMatch(/2\s+\+new/)
+    expect(w.runs.some(r => r.join(' ') === `${G} -C ${R} diff --no-color --no-renames ${P} ${M} -- svc/a.go`)).toBe(true)
+    await press($, 'cdiff-prev')
+    expect(await shown($)).toContain('1 / 2')
+    await press($, 'cdiff-next')
+    t = await shown($)
+    expect(t).toContain('2 / 2')
+    expect(t).toMatch(/1\s+\+hi/)
+    await press($, 'cdiff-next')
+    expect(await shown($)).toContain('2 / 2')
+    const ui = await pane($)
+    expect((await ui.find({ key: 'tab-changes' }))?.children).toEqual([
+      expect.objectContaining({ type: 'Text', props: { bold: true, inverse: true, color: THEME.accent } }),
+    ])
+    await ui.unmount()
+    await press($, 'back')
+    expect(await shown($)).toContain('4 commits')
+    await press($, 'back')
+    expect(await shown($)).toContain('1 repos')
+  })
+
+  test('a root commit is shown whole; a commit changing no file says so', async ($, on) => {
+    setup(on)
+    await toTree($)
+    await press($, `cm-commit-${B0}`)
+    const t = await shown($)
+    expect(t).toMatch(/init\.txt\s+\+5 −0/)
+    expect(t).toMatch(/1\s+\+x/)
+    await press($, 'back')
+    await press($, `cm-commit-${F}`)
+    expect(await shown($)).toContain('這個 commit 沒有改檔案')
+  })
+
+  test('the tree is asked once, again on 重新整理; opening the repo again while it loads asks no more', async ($, on) => {
+    let release = () => {}
+    const gate = new Promise<void>(r => (release = r))
+    let held = 0
+    const w = setup(on, answers(), argv => (argv.includes('--topo-order') && held++ === 0 ? gate : Promise.resolve()))
+    await start($)
+    await showChanges($)
+    await press($, 'chg-mode-commits')
+    await shown($)
+    await press($, `cm-repo-${R}`)
+    await drawn($)
+    expect((await drawn($)).join('\n')).toContain('讀取中…')
+    await press($, 'back')
+    await press($, `cm-repo-${R}`)
+    await drawn($)
+    expect(logs(w)).toBe(1)
+    release()
+    expect(await shown($)).toContain('4 commits')
+    await shown($)
+    expect(logs(w)).toBe(1)
+    await press($, 'cm-refresh')
+    await shown($)
+    expect(logs(w)).toBe(2)
+  })
+
+  test("a repo whose log fails shows the error on its tree page; 返回 still works", async ($, on) => {
+    setup(on, answers({ [LOG]: { exitCode: 128, stdout: '' } }))
+    const t = await toTree($)
+    expect(t).toContain('git log 失敗')
+    await press($, 'back')
+    expect(await shown($)).toContain('1 repos')
+  })
+
+  test('a /clear drops the tree git was still working out', async ($, on) => {
+    let release = () => {}
+    const gate = new Promise<void>(r => (release = r))
+    // the held log answers last: it marks the answer it is about to get as the stale one
+    let staleNext = false
+    const git = (argv: string[]): Run => {
+      if (argv.join(' ') !== LOG) return answers()[argv.join(' ')] ?? { exitCode: 128, stdout: '' }
+      const stale = staleNext
+      staleNext = false
+      return { exitCode: 0, stdout: log(stale ? 'stale' : "Merge branch 'feat-x'") }
+    }
+    let held = 0
+    setup(on, git, argv =>
+      argv.includes('--topo-order') && held++ === 0 ? gate.then(() => void (staleNext = true)) : Promise.resolve(),
+    )
+    await start($)
+    await showChanges($)
+    await press($, 'chg-mode-commits')
+    await shown($)
+    await press($, `cm-repo-${R}`)
+    await drawn($)
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    await drawn($)
+    await settle()
+    release()
+    const t = await shown($)
+    expect(t).toContain("Merge branch 'feat-x'")
+    expect(t).not.toContain('stale')
+  })
+
+  test('the tree and diff pages fit 40, 60, 80 and 120 columns, long CJK subjects included', async ($, on) => {
+    setup(on)
+    await toTree($)
+    for (const cols of [40, 60, 80, 120]) {
+      await shown($, cols)
+      for (const line of await drawn($, cols)) expect(cellWidth(line)).toBeLessThanOrEqual(cols)
+    }
+    await press($, `cm-commit-${M}`)
+    for (const cols of [40, 60, 80, 120]) {
+      await shown($, cols)
+      for (const line of await drawn($, cols)) expect(cellWidth(line)).toBeLessThanOrEqual(cols)
+    }
   })
 })

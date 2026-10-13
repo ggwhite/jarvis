@@ -35,15 +35,16 @@ import {
   suitResting,
 } from './suit'
 import type { Readout } from './suit'
-import { CHANGE_ICON, PHASE_ICON, ROLE_ICON, SECTION_ICON, TAB_ICON, TITLE_ICON, withIcon } from './icons'
+import { CHANGE_ICON, COMMIT_ICON, PHASE_ICON, ROLE_ICON, SECTION_ICON, TAB_ICON, TITLE_ICON, withIcon } from './icons'
 import { MAX_LISTED, diffLines } from './changesView'
 import type { ChangeEntry, ChangeGroup, ChangesView } from './changesView'
 import { isFailed } from './gitDiff'
 import type { DiffRow, Failed } from './gitDiff'
 import { tailCells } from './changes'
 import type { ChangeMode } from './changes'
-import { relTime } from './commitsView'
-import type { CommitsCtx } from './commitsView'
+import { commitRows, laneColor, relTime } from './commitsView'
+import type { CommitsCtx, RefLabel } from './commitsView'
+import { graphWidth } from './commitGraph'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
 import type { CardLines } from './fleetCards'
 import {
@@ -476,7 +477,13 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         ? 'fleet'
         : ctx.page === 'changeDiff' && diffAt < 0
           ? 'changes'
-          : ctx.page
+          : ctx.page === 'commitTree' && !ctx.commits?.repo
+            ? 'changes'
+            : ctx.page === 'commitDiff' && !ctx.commits?.diff
+              ? ctx.commits?.repo
+                ? 'commitTree'
+                : 'changes'
+              : ctx.page
   const onFleet = page === 'fleet' || page === 'fleetDetail'
 
   // ---- 標題列 -------------------------------------------------------------
@@ -516,6 +523,11 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       }
     }
     if (page === 'changeDiff') actions.push({ key: 'back', label: '返回', run: () => ctx.go('changes') })
+    if (page === 'commitTree') {
+      actions.push({ key: 'back', label: '返回', run: () => ctx.go('changes') })
+      actions.push({ key: 'cm-refresh', label: '重新整理', run: () => ctx.commits?.refreshTree() })
+    }
+    if (page === 'commitDiff') actions.push({ key: 'back', label: '返回', run: () => ctx.go('commitTree') })
     if (page === 'log') actions.push({ key: 'pause', label: ctx.paused ? '繼續' : '暫停', run: ctx.pause })
     const tabText = (tab: (typeof TABS)[number], compact: boolean) =>
       compact && tab.page !== page ? withIcon(tab.icon, '') : withIcon(tab.icon, tab.label)
@@ -530,9 +542,11 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const tabsCompact = widthOf(false, false) > cols
     const actionsCompact = tabsCompact && widthOf(true, false) > cols
     const nodes: RenderElement[] = TABS.map(tab => {
-      // the diff page is the changes tab's, the role page the stats tab's
+      // the diff, commit tree and commit diff pages are the changes tab's, the role page the stats tab's
       const current =
-        tab.page === page || (page === 'changeDiff' && tab.page === 'changes') || (page === 'roleDetail' && tab.page === 'stats')
+        tab.page === page ||
+        ((page === 'changeDiff' || page === 'commitTree' || page === 'commitDiff') && tab.page === 'changes') ||
+        (page === 'roleDetail' && tab.page === 'stats')
       const text = tabText(tab, tabsCompact)
       return (
         <Button key={`tab-${tab.page}`} plain onPress={() => ctx.go(tab.page)}>
@@ -1844,6 +1858,121 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return card({ w: cols, color: FRAME, lines }, Math.max(room, 2 + lines.length))
   }
 
+  const refSeg = (ref: RefLabel): Seg =>
+    ref.kind === 'head'
+      ? { t: withIcon(COMMIT_ICON.branch, ref.name), color: ACCENT, bold: true }
+      : ref.kind === 'branch'
+        ? { t: withIcon(COMMIT_ICON.branch, ref.name), color: SUCCESS }
+        : ref.kind === 'tag'
+          ? { t: withIcon(COMMIT_ICON.tag, ref.name), color: BRIGHT }
+          : { t: ref.name, color: PRIMARY }
+
+  // One repo's newest commits as a graph, `room` rows tall at least and taller when the
+  // tree is: each row its lanes, short sha (bright when made this session), ↑ when not
+  // pushed, subject, refs when wide enough and age; a row opens the commit's diff page.
+  const commitTreeBlock = (room: number, cm: CommitsCtx): Block => {
+    const inner = cols - 4
+    const shownRepo = cm.repo
+    if (!shownRepo) return card({ w: cols, color: FRAME, lines: [] }, Math.max(3, room))
+    const t = shownRepo.tree
+    const ready = t !== undefined && !isFailed(t) ? t : undefined
+    const head = leftRight(
+      [
+        title(CHANGE_ICON.repo, shownRepo.name, PRIMARY),
+        ...(ready ? [sp(2), { t: withIcon(COMMIT_ICON.branch, ready.branch), color: FRAME }] : []),
+        ...(ready && ready.ahead > 0 ? [{ t: ` ↑${ready.ahead}`, color: ACCENT, bold: true }] : []),
+      ],
+      ready ? [{ t: `${ready.commits.length} commits`, color: FRAME }] : [],
+      inner,
+    )
+    const lines: Line[] = [head]
+    if (t === undefined) lines.push([{ t: '讀取中…', color: MUTED }])
+    else if (isFailed(t)) lines.push([{ t: t.error, color: MUTED }])
+    else if (t.commits.length === 0) lines.push([{ t: '這個 repo 還沒有 commit', color: MUTED }])
+    else {
+      const list = commitRows(t, cm.startedAt)
+      const gw = graphWidth(list.map(r => r.graph))
+      const withRefs = inner >= 60
+      for (const r of list) {
+        const graph: Seg[] = [
+          ...r.graph.cells.map(c => ({ t: c.ch, color: laneColor(c.lane) })),
+          ...(r.graph.overflow ? [{ t: '…', color: MUTED }] : []),
+        ]
+        const left: Seg[] = [
+          ...graph,
+          sp(gw - segsWidth(graph) + 1),
+          { t: r.commit.sha.slice(0, 7), color: r.session ? ACCENT : FRAME, ...(r.session ? { bold: true } : {}) },
+          { t: r.unpushed ? '↑' : ' ', color: ACCENT, bold: true },
+          sp(1),
+          { t: r.commit.subject },
+        ]
+        const right: Seg[] = [
+          ...(withRefs ? r.refs.flatMap(ref => [refSeg(ref), sp(1)]) : []),
+          { t: fmtAgo(cm.now - r.commit.time), color: FRAME },
+        ]
+        const sha = r.commit.sha
+        lines.push({
+          h: 1,
+          node: (
+            <Button key={`cm-commit-${sha}`} plain onPress={() => cm.openCommit(sha)}>
+              <Text>{texts(leftRight(left, right, inner))}</Text>
+            </Button>
+          ),
+        })
+      }
+    }
+    return card({ w: cols, color: FRAME, lines }, Math.max(room, 2 + lines.length))
+  }
+
+  // One commit's diff, one file at a time: the commit, the file and its counts, ‹ › to the
+  // commit's other files, then the diff with line numbers.
+  const commitDiffBlock = (room: number, cm: CommitsCtx): Block => {
+    const inner = cols - 4
+    const d = cm.diff
+    if (!d) return card({ w: cols, color: FRAME, lines: [] }, Math.max(3, room))
+    const head = leftRight(
+      [{ t: d.commit.sha.slice(0, 7), color: ACCENT, bold: true }, sp(1), { t: d.commit.subject, color: PRIMARY, bold: true }],
+      [{ t: cm.repo?.name ?? '', color: FRAME }],
+      inner,
+    )
+    const lines: Line[] = [head]
+    const files = d.files
+    if (files === undefined) lines.push([{ t: '讀取中…', color: MUTED }])
+    else if (isFailed(files)) lines.push([{ t: files.error, color: MUTED }])
+    else if (files.length === 0 || !d.file) lines.push([{ t: '這個 commit 沒有改檔案', color: MUTED }])
+    else {
+      const f = d.file
+      const at = Math.max(0, files.findIndex(x => x.path === f.path))
+      const counts: Seg[] = f.binary
+        ? [{ t: '二進位', color: MUTED }]
+        : [{ t: `+${f.add}`, color: SUCCESS }, sp(1), { t: `−${f.del}`, color: ERROR }]
+      lines.push(leftRight([{ t: tailCells(f.path, Math.max(1, inner - segsWidth(counts) - 1)), color: BRIGHT }], counts, inner))
+      const step = (by: number) => () => {
+        const next = files[at + by]
+        if (next) cm.openFile(next.path)
+      }
+      lines.push({
+        h: 1,
+        node: (
+          <Box flexDirection="row" gap={TAB_GAP}>
+            <Button key="cdiff-prev" plain onPress={step(-1)}>
+              <Text color={FRAME}>‹</Text>
+            </Button>
+            <Text color={FRAME}>{`${at + 1} / ${files.length}`}</Text>
+            <Button key="cdiff-next" plain onPress={step(1)}>
+              <Text color={FRAME}>›</Text>
+            </Button>
+          </Box>
+        ),
+      })
+      const rows = d.rows
+      if (rows === undefined) lines.push([{ t: '計算中…', color: MUTED }])
+      else if (isFailed(rows)) lines.push([{ t: rows.error, color: MUTED }])
+      else lines.push(...diffLines(rows, inner))
+    }
+    return card({ w: cols, color: FRAME, lines }, Math.max(room, 2 + lines.length))
+  }
+
   // ---- 組版 ---------------------------------------------------------------
 
   const blocks: Block[] = [titleBar(), tabBar()]
@@ -1906,6 +2035,10 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     blocks.push(changesBlock(left()))
   } else if (page === 'changeDiff') {
     blocks.push(diffBlock(left()))
+  } else if (page === 'commitTree' && ctx.commits) {
+    blocks.push(commitTreeBlock(left(), ctx.commits))
+  } else if (page === 'commitDiff' && ctx.commits) {
+    blocks.push(commitDiffBlock(left(), ctx.commits))
   } else {
     const hint = view.summary.groups.length === 0
     const plan = planStats({ cols, room: left() - (hint ? 1 : 0), roles: statsRoles.length, models: view.models.length })

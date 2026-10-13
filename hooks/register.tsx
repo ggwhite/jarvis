@@ -41,8 +41,8 @@ import { isFailed, sessionDiff, sessionStat, unpushedDiff, unpushedOf } from './
 import type { DiffRow, Failed, FileStat, Unpushed, UnpushedFile } from './gitDiff'
 import { MAX_LISTED, sessionGroups, unpushedGroups } from './changesView'
 import type { ChangesView } from './changesView'
-import { findRepos, repoSummary } from './gitCommits'
-import type { RepoSummary } from './gitCommits'
+import { commitFileDiff, commitFiles, commitTreeOf, findRepos, repoSummary } from './gitCommits'
+import type { CommitFile, CommitTree, RepoSummary } from './gitCommits'
 import { commitRepoName, repoRows } from './commitsView'
 import type { CommitsCtx, RepoList } from './commitsView'
 
@@ -258,11 +258,15 @@ const dropUnpushed = (cache: ChangesCache) => {
 // What the commits mode keeps between drawings: the repos found under the session
 // directory (or why none), each repo's summary as git gave it, and whether find or git is
 // being asked; `gen` counts the drops, so an answer to an older ask stores nothing.
+// `answers`: each tree (`t\x00repo`), commit's files (`f\x00repo\x00sha`) and file diff
+// (`d\x00repo\x00sha\x00path`) as git gave it; `asking`: those keys git is being asked
 type CommitsCache = {
   gen: number
   repos: string[] | Failed | undefined
   scanning: boolean
   summaries: Map<string, RepoSummary | Failed>
+  answers: Map<string, unknown>
+  asking: Set<string>
 }
 
 const dropCommits = (cc: CommitsCache) => {
@@ -270,6 +274,50 @@ const dropCommits = (cc: CommitsCache) => {
   cc.repos = undefined
   cc.scanning = false
   cc.summaries.clear()
+  cc.answers.clear()
+  cc.asking.clear()
+}
+
+// forgets one repo's summary, tree, files and diffs: the next drawing asks git again; any
+// ask still running is dropped (and asked again if still wanted)
+const dropCommitRepo = (cc: CommitsCache, repo: string) => {
+  cc.gen += 1
+  cc.scanning = false
+  cc.asking.clear()
+  cc.summaries.delete(repo)
+  for (const key of [...cc.answers.keys()]) if (key.split('\x00')[1] === repo) cc.answers.delete(key)
+}
+
+// What `key` stands for as git gave it; while `ask` works it out in the background,
+// undefined, the page redrawn when it answers. A failure is kept until 重新整理 drops it.
+function askCommits<T>(
+  $: Pick<EngineInterface, 'ui'>,
+  cc: CommitsCache,
+  key: string,
+  ask: () => Promise<T | Failed>,
+  fail: string,
+): T | Failed | undefined {
+  const hit = cc.answers.get(key) as T | Failed | undefined
+  if (hit !== undefined || cc.asking.has(key)) return hit
+  cc.asking.add(key)
+  const gen = cc.gen
+  void (async () => {
+    let out: T | Failed
+    try {
+      out = await ask()
+    } catch {
+      out = { error: fail }
+    }
+    if (cc.gen !== gen) return
+    cc.answers.set(key, out)
+    cc.asking.delete(key)
+    try {
+      $.ui.invalidate('ui.render')
+    } catch {
+      // the next drawing shows it
+    }
+  })()
+  return undefined
 }
 
 // The commits mode's repo list: the repos find gave with the touched ones still on disk,
@@ -613,7 +661,7 @@ export const register: Register = on => {
     diffBusy: '',
     bashRepos: new Set(),
   }
-  const commitsCache: CommitsCache = { gen: 0, repos: undefined, scanning: false, summaries: new Map() }
+  const commitsCache: CommitsCache = { gen: 0, repos: undefined, scanning: false, summaries: new Map(), answers: new Map(), asking: new Set() }
   const resetChanges = () => {
     repoCache.clear()
     origs.clear()
@@ -1166,6 +1214,31 @@ export const register: Register = on => {
       for (const r of changesCache.bashRepos) if (!touched.includes(r)) touched.push(r)
     }
     const commitList = commitsShown ? await commitListNow($, commitsCache, touched, { cwd, home: changesHome }) : undefined
+    const commitRepo = shown.commitRepo ?? ''
+    const onTree = (shown.page === 'commitTree' || shown.page === 'commitDiff') && commitRepo !== ''
+    const gitIo = ioOf($)
+    const tree = onTree
+      ? askCommits<CommitTree>($, commitsCache, `t\x00${commitRepo}`, () => commitTreeOf(gitIo, commitRepo), 'git log 失敗')
+      : undefined
+    const commit =
+      shown.page === 'commitDiff' && tree !== undefined && !isFailed(tree) ? tree.commits.find(c => c.sha === shown.commitSha) : undefined
+    const commitFileList = commit
+      ? askCommits<CommitFile[]>($, commitsCache, `f\x00${commitRepo}\x00${commit.sha}`, () => commitFiles(gitIo, commitRepo, commit), 'git diff 失敗')
+      : undefined
+    const commitFile =
+      commitFileList !== undefined && !isFailed(commitFileList)
+        ? (commitFileList.find(f => f.path === shown.commitFile) ?? commitFileList[0])
+        : undefined
+    const commitDiffRows =
+      commit && commitFile
+        ? askCommits<DiffRow[]>(
+            $,
+            commitsCache,
+            `d\x00${commitRepo}\x00${commit.sha}\x00${commitFile.path}`,
+            () => commitFileDiff(gitIo, commitRepo, commit, commitFile.path),
+            'git diff 失敗',
+          )
+        : undefined
     const diffKey = shown.diffKey ?? ''
     const diff = shown.page === 'changeDiff' ? { key: diffKey, rows: await diffNow($, changesCache, diffKey) } : undefined
     if (shown.page === 'fleet' || shown.page === 'fleetDetail') fleetOn?.(now)
@@ -1210,9 +1283,25 @@ export const register: Register = on => {
       now,
       ...(sessionStartedAt === undefined ? {} : { startedAt: sessionStartedAt }),
       ...(commitList ? { list: commitList } : {}),
+      ...(onTree ? { repo: { path: commitRepo, name: commitRepoName(commitRepo, cwd, changesHome), tree } } : {}),
+      ...(commit ? { diff: { commit, files: commitFileList, ...(commitFile ? { file: commitFile } : {}), rows: commitDiffRows } } : {}),
       openRepo: (repo: string) => setUi(u => ({ ...u, page: 'commitTree', commitRepo: repo })),
+      openCommit: (sha: string) =>
+        setUi(u => {
+          const { commitFile: _f, ...rest } = u
+          return { ...rest, page: 'commitDiff', commitSha: sha }
+        }),
+      openFile: (path: string) => setUi(u => ({ ...u, page: 'commitDiff', commitFile: path })),
       refreshList: () => {
         dropCommits(commitsCache)
+        try {
+          $.ui.invalidate('ui.render')
+        } catch {
+          // the next drawing asks again
+        }
+      },
+      refreshTree: () => {
+        dropCommitRepo(commitsCache, commitRepo)
         try {
           $.ui.invalidate('ui.render')
         } catch {
