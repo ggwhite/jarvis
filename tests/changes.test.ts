@@ -98,7 +98,7 @@ describe('bashPaths', () => {
     expect(bashPaths('/usr/bin/git -C sub log', '/w', H)).toEqual(['/w/sub'])
   })
   test('words that look like paths count; options, -- and URLs do not', () => {
-    expect(bashPaths("sed -i 's/x/y/' a/b/c.go", '/w', H)).toEqual(['/w/s/x/y', '/w/a/b/c.go'])
+    expect(bashPaths("sed -i 's/x/y/' a/b/c.go", '/w', H)).toEqual(['/w/a/b/c.go'])
     expect(bashPaths('curl -o ./out https://x.io/a/b -- --path=/w/z', '/w', H)).toEqual(['/w/out'])
     expect(bashPaths('ls -la', '/w', H)).toEqual([])
   })
@@ -114,6 +114,27 @@ describe('bashPaths', () => {
   test('a relative path after cd X on the line is read from X', () => {
     expect(bashPaths('cd a && cat ../b/x', '/w', H)).toEqual(['/w/a', '/w/b/x'])
     expect(bashPaths('cd /tmp && cat a/b', '/w', H)).toEqual([])
+  })
+  test('redirections, scp remotes and sed expressions are not paths; a file written to is', () => {
+    expect(bashPaths("go test ./x 2>/dev/null >out/log.txt > out/b.txt; sed -i 's/a/b/g' c/d.go", '/w', H)).toEqual([
+      '/w/x',
+      '/w/out/b.txt',
+      '/w/c/d.go',
+    ])
+    expect(bashPaths('git clone git@gitlab.io:team/repo.git sub/repo', '/w', H)).toEqual(['/w/sub/repo'])
+  })
+  test('a newline ends a command as ; does', () => {
+    expect(bashPaths('cat x/y\ncd sub\ncat ../z/a', '/w', H)).toEqual(['/w/x/y', '/w/sub', '/w/z/a'])
+  })
+  test('cd -P and -L take the directory after them; VAR= and env do not hide git -C', () => {
+    expect(bashPaths('cd -P x', '/w', H)).toEqual(['/w/x'])
+    expect(bashPaths('cd -L x && cat a/b', '/w', H)).toEqual(['/w/x', '/w/x/a/b'])
+    expect(bashPaths('GIT_PAGER=cat git -C x log', '/w', H)).toEqual(['/w/x'])
+    expect(bashPaths('env -i A=1 /usr/bin/git -C x status', '/w', H)).toEqual(['/w/x'])
+  })
+  test('a line run in a sub directory reads from there and keeps what is under the root', () => {
+    expect(bashPaths('cd ../../legacy/billing', '/w/acme/payments', H, '/w')).toEqual(['/w/legacy/billing'])
+    expect(bashPaths('git -C ../other status && cat ../../../tmp/x', '/w/acme/payments', H, '/w')).toEqual(['/w/acme/other'])
   })
   test('the same path once, at most 20', () => {
     expect(bashPaths('cat a/x a/x ./a/x', '/w', H)).toEqual(['/w/a/x'])
@@ -197,7 +218,7 @@ let worldClock: { advance: (ms: number) => Promise<unknown> } | undefined
 // results by file path; what it was asked is logged in order.
 export function world(
   on: On,
-  opts: { dirs?: string[]; files?: Record<string, number>; git?: Git; results?: Record<string, unknown>; failWrites?: boolean; holdWrite?: (text: string) => Promise<void> | undefined; holdRun?: (argv: string[]) => Promise<void>; denied?: string[] } = {},
+  opts: { dirs?: string[]; files?: Record<string, number>; git?: Git; results?: Record<string, unknown>; failWrites?: boolean; holdWrite?: (text: string) => Promise<void> | undefined; holdRun?: (argv: string[]) => Promise<void>; denied?: string[]; holdStat?: (path: string) => Promise<void> | undefined; shellCwd?: () => string } = {},
 ) {
   const log: string[] = []
   const writes = new Map<string, string>()
@@ -237,8 +258,13 @@ export function world(
     const r = opts.results?.[input.file_path ?? input.notebook_path ?? '']
     return { result: (typeof r === 'function' ? r(e) : (r ?? {})) as never }
   })
+  if (opts.shellCwd) {
+    const shellCwd = opts.shellCwd
+    on('session.cwd', async () => ({ value: shellCwd() }))
+  }
   on('fs.stat', async (_$, e) => {
     log.push(`stat:${e.path}`)
+    await opts.holdStat?.(e.path)
     if ((opts.dirs ?? []).includes(e.path)) return { value: { kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false } }
     const m = files[e.path]
     if (m === undefined) throw new Error('ENOENT')
@@ -681,7 +707,7 @@ describe('repos touched by Bash', () => {
     [`${G} -C ${repo} ls-files --others --exclude-standard -z`]: { exitCode: 0, stdout: '' },
   })
   const answers = { ...answersOf(R, '30\t5\tservice/order.go\x00'), ...answersOf(S, '4\t1\tapi/pay.go\x00') }
-  const setup = (on: On, extra: { denied?: string[] } = {}) =>
+  const setup = (on: On, extra: { denied?: string[]; holdStat?: (path: string) => Promise<void> | undefined; shellCwd?: () => string } = {}) =>
     world(on, {
       dirs: [R, `${R}/.git`, S, `${S}/.git`, `${S}/api`],
       files: { [A]: 1, [`${S}/api/pay.go`]: 1 },
@@ -734,11 +760,54 @@ describe('repos touched by Bash', () => {
     expect(mergeBases(w, S)).toBe(0)
   })
 
-  test('paths that are not there, or whose stat throws, leave the call as it was', async ($, on) => {
+  test('paths that are not there are passed over and the call is left as it was', async ($, on) => {
     world(on, { results: { '': { stdout: 'ok' } } })
     await start($)
     const out = await bash($, 'cat nothing/here ./gone && cd missing')
     expect((out as { result?: unknown }).result).toEqual({ stdout: 'ok' })
+  })
+
+  test('a stat that throws on a repo leaves the call as it was and lists nothing', async ($, on) => {
+    world(on, {
+      dirs: [S, `${S}/.git`],
+      results: { '': { stdout: 'ok' } },
+      git: answers,
+      holdStat: path => (path === S ? Promise.reject(new Error('EIO')) : undefined),
+    })
+    await start($)
+    const out = await bash($, 'cd legacy/billing')
+    expect((out as { result?: unknown }).result).toEqual({ stdout: 'ok' })
+    expect(await unpushedText($)).not.toContain('legacy/billing')
+  })
+
+  test('a /clear while a Bash call is still being looked at stores nothing of it', async ($, on) => {
+    let release = () => {}
+    const gate = new Promise<void>(r => (release = r))
+    const w = setup(on, { holdStat: path => (path === `${S}/.git` ? gate : undefined) })
+    await start($)
+    const call = bash($, 'cd legacy/billing')
+    await settle()
+    expect(w.log).toContain(`stat:${S}/.git`)
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    release()
+    await call
+    const text = await unpushedText($)
+    expect(text).toContain('這個 session 還沒碰過任何 git repo')
+    expect(mergeBases(w, S)).toBe(0)
+  })
+
+  test('a relative path is read from where the shell is, after an earlier cd', async ($, on) => {
+    // the shell sits in acme/payments, as $.session.cwd() says after a `cd` there
+    let shell = '/w'
+    const w = setup(on, { shellCwd: () => shell })
+    await start($)
+    await bash($, 'cd acme/payments')
+    shell = R
+    await bash($, 'cd ../../legacy/billing && git status')
+    const text = await unpushedText($)
+    expect(text).toContain('\uf401 acme/payments')
+    expect(text).toContain('\uf401 legacy/billing')
+    expect(mergeBases(w, S)).toBe(1)
   })
 
   test('/clear forgets the repos Bash touched', async ($, on) => {

@@ -188,11 +188,13 @@ type Opened =
   | { mode: 'session'; change: JarvisChange }
   | { mode: 'unpushed'; repo: string; base: string; file: UnpushedFile }
 
-// Notes the repos a Bash line touched: each path it names that exists, a file standing
-// for its directory. A reset while it looks stores nothing.
+// Notes the repos a Bash line run in `shell` touched: each path under the session's
+// `cwd` it names that exists, a file standing for its directory. A reset while it looks
+// stores nothing.
 async function recordBash(
   $: Pick<EngineInterface, 'fs' | 'process'>,
   command: unknown,
+  shell: string,
   names: { cwd: string; home: string },
   cache: ChangesCache,
   repoCache: Map<string, string | null>,
@@ -201,7 +203,7 @@ async function recordBash(
     if (typeof command !== 'string') return
     const gen = cache.gen
     const io = ioOf($)
-    for (const path of bashPaths(command, names.cwd, names.home)) {
+    for (const path of bashPaths(command, shell, names.home, names.cwd)) {
       const s = await io.stat(path)
       if (s === undefined) continue
       // repoOf walks up from the directory holding its argument
@@ -872,13 +874,24 @@ export const register: Register = on => {
       }
     }
 
+    // the shell's directory as the Bash call starts: $.session.cwd() follows a Bash `cd`
+    // from the call after it
+    let shell = cwd
+    if (tool === 'Bash') {
+      try {
+        shell = await $.session.cwd()
+      } catch {
+        // the session's start stands in
+      }
+    }
+
     let ok = true
     try {
       const out = await next(e)
       ok = out.isError !== true
       if (ok && out.deny === undefined) await recordChange($, tool, out.result, id ?? MAIN_ACTOR, cacheDir, repoCache, origs)
       if (tool === 'Bash' && out.deny === undefined)
-        await recordBash($, (e as unknown as Record<string, unknown>)['command'], { cwd, home: changesHome }, changesCache, repoCache)
+        await recordBash($, (e as unknown as Record<string, unknown>)['command'], shell, { cwd, home: changesHome }, changesCache, repoCache)
       return out
     } catch (err) {
       ok = false

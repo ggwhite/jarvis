@@ -113,7 +113,8 @@ export function tailCells(path: string, width: number): string {
 const MAX_BASH_PATHS = 20
 const SHELL_SEPARATORS = new Set(['&&', '||', ';', '|', '&', '(', ')'])
 
-// A shell line's words, quotes taken off; `&&`, `||`, `;`, `|`, `&`, `(` and `)` each a word of their own.
+// A shell line's words, quotes taken off; `&&`, `||`, `;`, `|`, `&`, `(` and `)` each a word
+// of their own, a newline a `;`.
 function shellWords(command: string): string[] {
   const out: string[] = []
   let word = ''
@@ -135,6 +136,9 @@ function shellWords(command: string): string[] {
       word += command[i + 1]
       inWord = true
       i += 1
+    } else if (ch === '\n') {
+      end()
+      out.push(';')
     } else if (/\s/.test(ch)) {
       end()
     } else if ('&|;()'.includes(ch)) {
@@ -171,35 +175,55 @@ function absolutePath(path: string, base: string, home: string): string | undefi
   return `/${parts.join('/')}`
 }
 
-const looksLikePath = (word: string) =>
-  !word.includes('://') && (word.includes('/') || word.startsWith('~') || word.startsWith('.'))
+// Words that look like paths but are not: a redirection (`2>/dev/null`), an scp-style
+// remote (`git@host:a/b`), a sed expression (`s/x/y/g`).
+const NOT_PATH = [/[<>]/, /^[^/]*@[^/:]*:/, /^s\/[^/]*\/[^/]*\/[a-zA-Z0-9]*$/]
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 
-// The paths under `cwd` (itself included) a Bash line may touch: the directories of `cd`,
-// `pushd` and `git -C`, and every other word that looks like a path. A relative path
-// after `cd X` on the line is read from X. At most MAX_BASH_PATHS, each once.
-export function bashPaths(command: string, cwd: string, home = ''): string[] {
+const looksLikePath = (word: string) =>
+  !word.includes('://') && (word.includes('/') || word.startsWith('~') || word.startsWith('.')) && !NOT_PATH.some(r => r.test(word))
+
+// The paths under `root` (itself included) a Bash line run in `cwd` may touch: the
+// directories of `cd`, `pushd` and `git -C`, and every other word that looks like a path.
+// A relative path after `cd X` on the line is read from X. Leading `VAR=…` and `env …`
+// are passed over to find the command. At most MAX_BASH_PATHS, each once.
+export function bashPaths(command: string, cwd: string, home = '', root = cwd): string[] {
   const out: string[] = []
-  if (cwd === '') return out
+  if (cwd === '' || root === '') return out
   let base = cwd
   let head = ''
   let prev = ''
+  // the next word that is not an option is cd's directory
+  let cdDir = false
   for (const word of shellWords(command)) {
     if (out.length >= MAX_BASH_PATHS) break
     if (SHELL_SEPARATORS.has(word)) {
       head = ''
       prev = word
+      cdDir = false
       continue
     }
-    const atHead = head === ''
-    if (atHead) head = word
-    const isCd = head === 'cd' || head === 'pushd'
-    const dirArg = !atHead && ((isCd && prev === head) || (/(^|\/)git$/.test(head) && prev === '-C'))
+    if ((head === '' || head === 'env') && (ASSIGNMENT.test(word) || word === 'env' || (head === 'env' && word.startsWith('-')))) {
+      if (word === 'env') head = 'env'
+      prev = word
+      continue
+    }
+    const atHead = head === '' || head === 'env'
+    if (atHead) {
+      head = word
+      cdDir = word === 'cd' || word === 'pushd'
+      prev = word
+      if (cdDir) continue
+    }
+    const isCd = cdDir && !word.startsWith('-')
+    const dirArg = isCd || (!atHead && /(^|\/)git$/.test(head) && prev === '-C')
+    if (isCd) cdDir = false
     prev = word
     if (word.startsWith('-') || (!dirArg && !looksLikePath(word))) continue
     const path = absolutePath(word, base, home)
     if (path === undefined) continue
-    if (dirArg && isCd) base = path
-    if ((path === cwd || path.startsWith(`${cwd}/`)) && !out.includes(path)) out.push(path)
+    if (isCd) base = path
+    if ((path === root || path.startsWith(`${root}/`)) && !out.includes(path)) out.push(path)
   }
   return out
 }
