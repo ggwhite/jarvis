@@ -105,8 +105,8 @@ describe('unpushed mode', () => {
       [`${GIT} -C ${R} symbolic-ref -q --short refs/remotes/origin/HEAD`]: { exitCode: 0, stdout: 'origin/main\n' },
       [`${GIT} -C ${R} merge-base HEAD origin/main`]: { exitCode: 0, stdout: 'b4se\n' },
       [`${GIT} -C ${R} rev-list --count b4se..HEAD`]: { exitCode: 0, stdout: '2\n' },
-      [`${GIT} -C ${R} diff --numstat --no-renames b4se`]: { exitCode: 0, stdout: '5\t1\tz.go\n1\t0\ta.go\n' },
-      [`${GIT} -C ${R} ls-files --others --exclude-standard`]: { exitCode: 0, stdout: 'new.go\n' },
+      [`${GIT} -C ${R} diff --numstat -z --no-renames b4se`]: { exitCode: 0, stdout: '5\t1\tz.go\x001\t0\ta.go\x00' },
+      [`${GIT} -C ${R} ls-files --others --exclude-standard -z`]: { exitCode: 0, stdout: 'new.go\x00' },
       [`${GIT} diff --no-index --numstat -- /dev/null ${R}/new.go`]: { exitCode: 1, stdout: '7\t0\t...\n' },
     })
     expect(await unpushedOf(io, R)).toEqual({
@@ -122,8 +122,8 @@ describe('unpushed mode', () => {
   })
   test('a repo without origin compares with HEAD and shows no commits ahead', async () => {
     const io = gitIo({
-      [`${GIT} -C ${R} diff --numstat --no-renames HEAD`]: { exitCode: 0, stdout: '1\t1\ta.go\n' },
-      [`${GIT} -C ${R} ls-files --others --exclude-standard`]: { exitCode: 0, stdout: '' },
+      [`${GIT} -C ${R} diff --numstat -z --no-renames HEAD`]: { exitCode: 0, stdout: '1\t1\ta.go\x00' },
+      [`${GIT} -C ${R} ls-files --others --exclude-standard -z`]: { exitCode: 0, stdout: '' },
     })
     expect(await unpushedOf(io, R)).toEqual({ base: 'HEAD', ahead: 0, files: [{ path: `${R}/a.go`, add: 1, del: 1, binary: false, untracked: false }] })
   })
@@ -137,5 +137,23 @@ describe('unpushed mode', () => {
     })
     expect(await unpushedDiff(io, R, 'b4se', { path: `${R}/a.go`, add: 1, del: 1, binary: false, untracked: false })).toHaveLength(3)
     expect(await unpushedDiff(io, R, 'b4se', { path: `${R}/new.go`, add: 1, del: 0, binary: false, untracked: true })).toHaveLength(2)
+  })
+  test('unquoted paths: Chinese, a space and a double quote reach git as the real pathspec', async () => {
+    const mod = ['文件夾/說明.md', 'a b.txt', 'q"uote.go']
+    const fresh = ['新檔.txt']
+    const answers: Record<string, Out> = {
+      [`${GIT} -C ${R} diff --numstat -z --no-renames HEAD`]: { exitCode: 0, stdout: mod.map(p => `1\t0\t${p}\0`).join('') },
+      [`${GIT} -C ${R} ls-files --others --exclude-standard -z`]: { exitCode: 0, stdout: fresh.map(p => `${p}\0`).join('') },
+      [`${GIT} diff --no-index --numstat -- /dev/null ${R}/新檔.txt`]: { exitCode: 1, stdout: '3\t0\t...\n' },
+      [`${GIT} -C ${R} diff --no-color --no-renames HEAD -- ${R}/q"uote.go`]: { exitCode: 0, stdout: '@@ -1 +1 @@\n-a\n+b\n' },
+    }
+    const io = gitIo(answers)
+    const r = await unpushedOf(io, R)
+    if (isFailed(r)) throw new Error(r.error)
+    expect(r.files.map(f => f.path).sort()).toEqual([...mod, ...fresh].map(p => `${R}/${p}`).sort())
+    expect(r.files.find(f => f.path === `${R}/新檔.txt`)).toEqual({ path: `${R}/新檔.txt`, add: 3, del: 0, binary: false, untracked: true })
+    const q = r.files.find(f => f.path === `${R}/q"uote.go`)!
+    expect(await unpushedDiff(io, R, 'HEAD', q)).toHaveLength(3)
+    expect(io.runs.at(-1)).toEqual([GIT, '-C', R, 'diff', '--no-color', '--no-renames', 'HEAD', '--', `${R}/q"uote.go`])
   })
 })

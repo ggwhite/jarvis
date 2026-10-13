@@ -31,6 +31,16 @@ export function parseNumstat(stdout: string): NumstatRow[] {
   })
 }
 
+// `diff --numstat -z --no-renames`: `add\tdel\tpath` records ended by NUL, paths unquoted
+export function parseNumstatZ(stdout: string): NumstatRow[] {
+  return stdout.split('\0').flatMap(rec => {
+    const m = /^(\d+|-)\t(\d+|-)\t(.+)$/s.exec(rec)
+    if (!m) return []
+    const binary = m[1] === '-'
+    return [{ path: m[3] ?? '', add: binary ? 0 : Number(m[1]), del: binary ? 0 : Number(m[2]), binary }]
+  })
+}
+
 export function parseDiff(stdout: string): DiffRow[] {
   const rows: DiffRow[] = []
   let oldN = 0
@@ -119,11 +129,11 @@ export async function unpushedOf(io: ChangesIo, repo: string): Promise<Unpushed 
     const c = await io.run([GIT, '-C', repo, 'rev-list', '--count', `${base}..HEAD`])
     ahead = c?.exitCode === 0 ? Number(c.stdout.trim()) || 0 : 0
   }
-  const d = await io.run([GIT, '-C', repo, 'diff', '--numstat', '--no-renames', base])
+  const d = await io.run([GIT, '-C', repo, 'diff', '--numstat', '-z', '--no-renames', base])
   if (!answered(d)) return { error: 'git diff 失敗' }
-  const files: UnpushedFile[] = parseNumstat(d.stdout).map(f => ({ ...f, path: `${repo}/${f.path}`, untracked: false }))
-  const u = await io.run([GIT, '-C', repo, 'ls-files', '--others', '--exclude-standard'])
-  const untracked = answered(u) ? u.stdout.split('\n').filter(s => s !== '').slice(0, MAX_UNTRACKED) : []
+  const files: UnpushedFile[] = parseNumstatZ(d.stdout).map(f => ({ ...f, path: `${repo}/${f.path}`, untracked: false }))
+  const u = await io.run([GIT, '-C', repo, 'ls-files', '--others', '--exclude-standard', '-z'])
+  const untracked = answered(u) ? u.stdout.split('\0').filter(s => s !== '').slice(0, MAX_UNTRACKED) : []
   for (const rel of untracked) {
     const path = `${repo}/${rel}`
     const n = await io.run([GIT, 'diff', '--no-index', '--numstat', '--', CREATED, path])
