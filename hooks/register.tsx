@@ -25,6 +25,8 @@ import {
   tickMs,
   MAIN_ACTOR,
   MAIN_SOURCE,
+  THEME,
+  cellWidth,
 } from './jarvis'
 import type { Completion, EngineAgent } from './jarvis'
 import { drawCockpit } from './cockpit'
@@ -35,12 +37,12 @@ import { SUIT_REST_TICK_MS } from './suit'
 import { EMPTY_FLEET, FLEET_MS, FLEET_RUN_TIMEOUT_MS, LIMITS_PATH, focusArgv, refreshFleet, withJump } from './fleetSource'
 import type { FleetIo } from './fleetSource'
 import type { JarvisChange } from '../types'
-import { CREATED, UNKNOWN, editOf, noteChange, repoOf, reposOf } from './changes'
+import { CREATED, UNKNOWN, editOf, noteChange, relPath, repoName, repoOf, reposOf, tailCells } from './changes'
 import type { ChangeMode, ChangesIo, EditSeen } from './changes'
-import { sessionStat, unpushedOf } from './gitDiff'
-import type { Failed, FileStat, Unpushed } from './gitDiff'
-import { MAX_LISTED, sessionGroups, unpushedGroups } from './changesView'
-import type { ChangesView } from './changesView'
+import { isFailed, sessionDiff, sessionStat, unpushedDiff, unpushedOf } from './gitDiff'
+import type { DiffRow, Failed, FileStat, Unpushed, UnpushedFile } from './gitDiff'
+import { DIFF_PANE, MAX_LISTED, diffLines, drawDiff, sessionGroups, unpushedGroups } from './changesView'
+import type { ChangesView, DiffSeg } from './changesView'
 
 const PANE = 'jarvis'
 const MAX_EARLY = 100
@@ -53,6 +55,11 @@ const QUOTA_EVERY_MS = 30_000
 const CHANGES_RUN_TIMEOUT_MS = 5_000
 // the changes page reads its files' mtimes at most this often while drawn
 const CHANGES_SCAN_MS = 2_000
+// the diff pane: this share of the window's width, its height less this many rows, at least DIFF_MIN_ROWS
+const DIFF_WIDTH = 0.8
+const DIFF_ROW_MARGIN = 8
+const DIFF_MIN_ROWS = 12
+const FALLBACK_VIEWPORT = { columns: 120, rows: 40 }
 
 const agents = atom({ plugin: 'jarvis', key: 'agents' } as const, [])
 const main = atom({ plugin: 'jarvis', key: 'main' } as const, {
@@ -165,7 +172,10 @@ async function recordChange(
 // signatures as last read, at most once per CHANGES_SCAN_MS while drawn; `gen` counts the
 // resets, so git still answering for the last session stores nothing. The unpushed mode
 // keeps what git said of each touched repo, asked on entering the mode and on 重新整理;
-// `unpushedGen` counts the drops, so an answer to an older ask stores nothing.
+// `unpushedGen` counts the drops, so an answer to an older ask stores nothing. The diff
+// pane: what each listed file's key stands for and the keys in the order last drawn (its
+// ‹ › walk them), the key it shows, each key's diff by the signature it was taken at, and
+// the key git is diffing; `gen` drops those too.
 type ChangesCache = {
   stats: Map<string, { sig: string; stat: FileStat | Failed }>
   busy: boolean
@@ -175,7 +185,16 @@ type ChangesCache = {
   unpushed: Map<string, Unpushed | Failed>
   unpushedBusy: boolean
   unpushedGen: number
+  opened: Map<string, Opened>
+  order: string[]
+  diffKey: string
+  diffs: Map<string, { sig: string; rows: DiffRow[] | Failed }>
+  diffBusy: string
 }
+
+type Opened =
+  | { mode: 'session'; change: JarvisChange }
+  | { mode: 'unpushed'; repo: string; base: string; file: UnpushedFile; actors: string[] }
 
 // forgets the unpushed answers, those still coming included: the next drawing asks git again
 const dropUnpushed = (cache: ChangesCache) => {
@@ -225,7 +244,18 @@ async function changesNow(
         }
       })()
     }
-    return { mode, groups: unpushedGroups(repos, cache.unpushed, all, names), pending: missing.length > 0, total: repos.length }
+    const groups = unpushedGroups(repos, cache.unpushed, all, names)
+    cache.opened = new Map()
+    for (const repo of repos) {
+      const r = cache.unpushed.get(repo)
+      if (r === undefined || isFailed(r)) continue
+      for (const f of r.files) {
+        const actors = all.find(c => c.path === f.path)?.actors ?? []
+        cache.opened.set(`u:${f.path}`, { mode: 'unpushed', repo, base: r.base, file: f, actors })
+      }
+    }
+    cache.order = groups.flatMap(g => g.entries.map(e => e.key))
+    return { mode, groups, pending: missing.length > 0, total: repos.length }
   }
   const list = all.slice(0, MAX_LISTED)
   if (now - cache.scannedAt >= CHANGES_SCAN_MS) {
@@ -266,7 +296,10 @@ async function changesNow(
       }
     })()
   }
-  return { mode, groups: sessionGroups(list, stats, names), pending: stale.length > 0, total: all.length }
+  const groups = sessionGroups(list, stats, names)
+  cache.opened = new Map(list.map(c => [`s:${c.path}`, { mode: 'session' as const, change: c }]))
+  cache.order = groups.flatMap(g => g.entries.map(e => e.key))
+  return { mode, groups, pending: stale.length > 0, total: all.length }
 }
 
 // opens the pane, its boot screen from the time handed to boot (undefined: none); false when it could not open
@@ -385,6 +418,11 @@ export const register: Register = on => {
     unpushed: new Map(),
     unpushedBusy: false,
     unpushedGen: 0,
+    opened: new Map(),
+    order: [],
+    diffKey: '',
+    diffs: new Map(),
+    diffBusy: '',
   }
   const resetChanges = () => {
     repoCache.clear()
@@ -395,6 +433,11 @@ export const register: Register = on => {
     changesCache.sigs = new Map()
     changesCache.scannedAt = -Infinity
     dropUnpushed(changesCache)
+    changesCache.opened = new Map()
+    changesCache.order = []
+    changesCache.diffKey = ''
+    changesCache.diffs.clear()
+    changesCache.diffBusy = ''
   }
   let timer: Timer | undefined
   let period = 0
@@ -984,6 +1027,87 @@ export const register: Register = on => {
           // the next drawing asks again
         }
       },
+      // opened before any await, so it counts as answering the press and is placed at any width
+      openDiff: (key: string) => {
+        const vp = e.viewport ?? FALLBACK_VIEWPORT
+        changesCache.diffKey = key
+        void $.ui
+          .open({
+            id: DIFF_PANE,
+            title: '異動 diff',
+            focus: true,
+            closeOnEscape: true,
+            rows: Math.max(DIFF_MIN_ROWS, vp.rows - DIFF_ROW_MARGIN),
+            columns: Math.round(vp.columns * DIFF_WIDTH),
+          })
+          .catch(() => undefined)
+      },
     })
+  })
+
+  // The diff of the file pressed on the changes page, worked out in the background the
+  // first time it is shown and again when the file moves; ‹ › walk the files listed.
+  on('ui.render', { component: 'Pane', requestId: DIFF_PANE }, async ($, e) => {
+    const elements = $.ui.resolve(e)
+    const width = e.props.bodyColumns
+    const cache = changesCache
+    const gen = cache.gen
+    const redraw = () => {
+      try {
+        $.ui.invalidate('ui.render')
+      } catch {
+        // the next drawing shows it
+      }
+    }
+    const step = (by: number) => () => {
+      const i = cache.order.indexOf(cache.diffKey)
+      const j = Math.max(0, Math.min(cache.order.length - 1, i + by))
+      if (i < 0 || j === i) return
+      cache.diffKey = cache.order[j] ?? cache.diffKey
+      redraw()
+    }
+    const close = () => {
+      void $.ui.close({ id: DIFF_PANE }).catch(() => undefined)
+    }
+    const key = cache.diffKey
+    const item = cache.opened.get(key)
+    const at = cache.order.indexOf(key) + 1
+    const base = { at: Math.max(1, at), count: Math.max(1, cache.order.length), prev: step(-1), next: step(1), close }
+    if (!item) return drawDiff(elements, { ...base, head: [{ t: '這個檔案已不在清單裡', color: THEME.muted }], body: '' })
+    const path = item.mode === 'session' ? item.change.path : item.file.path
+    const repo = item.mode === 'session' ? item.change.repo : item.repo
+    const actors = item.mode === 'session' ? item.change.actors : item.actors
+    const who = actors[0] === undefined ? '其他' : actors[0] === MAIN_ACTOR ? '主線' : 'subagent'
+    const rest: DiffSeg[] = [
+      { t: `  ${who}`, color: THEME.accent },
+      { t: item.mode === 'session' ? '  本次 session' : '  未推送', color: THEME.frame },
+    ]
+    const name = `${repoName(repo, cwd, changesHome)}/${relPath(path, repo, changesHome)}`
+    const room = Math.max(1, width - rest.reduce((n, x) => n + cellWidth(x.t), 0))
+    const head: DiffSeg[] = [{ t: tailCells(name, room), color: THEME.primary, bold: true }, ...rest]
+    const io = ioOf($)
+    const s = await io.stat(path)
+    const sig = item.mode === 'session' ? `${s?.mtimeMs ?? 'gone'}:${s?.size ?? 0}:${item.change.touches}` : item.base
+    const hit = cache.diffs.get(key)
+    if (hit && hit.sig === sig) {
+      return drawDiff(elements, { ...base, head, body: isFailed(hit.rows) ? hit.rows.error : diffLines(hit.rows, width) })
+    }
+    if (cache.diffBusy !== key && cache.gen === gen) {
+      cache.diffBusy = key
+      void (async () => {
+        let rows: DiffRow[] | Failed
+        try {
+          rows = item.mode === 'session' ? await sessionDiff(io, item.change) : await unpushedDiff(io, item.repo, item.base, item.file)
+        } catch {
+          rows = { error: 'git diff 失敗' }
+        }
+        if (cache.gen === gen) {
+          cache.diffs.set(key, { sig, rows })
+          if (cache.diffBusy === key) cache.diffBusy = ''
+        }
+        redraw()
+      })()
+    }
+    return drawDiff(elements, { ...base, head, body: hit && !isFailed(hit.rows) ? diffLines(hit.rows, width) : '計算中…' })
   })
 }

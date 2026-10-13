@@ -631,3 +631,167 @@ describe('unpushed mode', () => {
     expect(text).not.toContain('+99')
   })
 })
+
+describe('diff pane', () => {
+  const R = '/w/r'
+  const A = `${R}/a.go`
+  const B = `${R}/b.go`
+  const DIFF_A = '@@ -1,2 +1,2 @@\n keep\n-old\n+new\n'
+  // numstat says 1/1; a diff of A is DIFF_A, of B a one-line change; `long` makes every diff one 500-cell line;
+  // `holdRun` as world() takes it
+  const setup = (on: On, long = false, holdRun?: (argv: string[]) => Promise<void>) =>
+    world(on, {
+      ...(holdRun ? { holdRun } : {}),
+      dirs: [`${R}/.git`],
+      files: { [A]: 1, [B]: 1 },
+      results: { [A]: editResult(A, 'a'), [B]: editResult(B, 'b') },
+      git: argv => ({
+        exitCode: 1,
+        stdout: argv.includes('--numstat')
+          ? '1\t1\t...\n'
+          : long
+            ? `@@ -0,0 +1 @@\n+${'x'.repeat(500)}\n`
+            : argv.at(-1) === A
+              ? DIFF_A
+              : '@@ -1 +1 @@\n-b\n+c\n',
+      }),
+    })
+  const DIFF_PROPS = (cols = 96, rows = 32) => ({
+    plugin: 'jarvis',
+    surface: 'terminal' as const,
+    component: 'Pane' as const,
+    requestId: 'jarvis-diff',
+    props: { title: '異動 diff', isFocused: true, bodyColumns: cols, placement: 'inline' as const, scroll: { offset: 0, bodyRows: rows }, view: {} },
+    viewport: { columns: 120, rows: 40 },
+  })
+  const openFile = async ($: Engine, w: ReturnType<typeof world>, key: string) => {
+    const ui = await $.ui.mount({
+      plugin: 'jarvis',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'jarvis',
+      props: { title: 'Jarvis', isFocused: true, bodyColumns: 80, placement: 'dock' as const, scroll: { offset: 0, bodyRows: 30 }, view: {} },
+      viewport: { columns: 120, rows: 40 },
+    })
+    w.log.length = 0
+    await ui.press({ key })
+    await ui.unmount()
+  }
+  const diffText = async ($: Engine) => {
+    const ui = await $.ui.mount(DIFF_PROPS())
+    const lines = linesOf((await ui.drawn()) as unknown as Node)
+    await ui.unmount()
+    return lines.join('\n')
+  }
+
+  test('pressing a file opens jarvis-diff before anything else, sized to the window', async ($, on) => {
+    const w = setup(on)
+    await start($)
+    await edit($, A)
+    await showChanges($)
+    await drawn($)
+    await settle()
+    await openFile($, w, `chg-s:${A}`)
+    expect(w.log[0]).toBe('open:jarvis-diff')
+    expect(w.opens.at(-1)).toMatchObject({ id: 'jarvis-diff', focus: true, closeOnEscape: true, columns: 96, rows: 32 })
+  })
+
+  test('the pane shows the file, who changed it, and the diff with line numbers and colors', async ($, on) => {
+    // the diff answers only once let go, as a real git answers after the drawing that asked
+    let release = () => {}
+    const gate = new Promise<void>(r => (release = r))
+    const w = setup(on, false, argv => (argv.includes('--no-color') ? gate : Promise.resolve()))
+    await start($)
+    await edit($, A)
+    await showChanges($)
+    await drawn($)
+    await settle()
+    await openFile($, w, `chg-s:${A}`)
+    expect(await diffText($)).toContain('計算中…')
+    release()
+    await settle()
+    const text = await diffText($)
+    expect(text).toContain('r/a.go')
+    expect(text).toContain('主線')
+    expect(text).toMatch(/1\s+1\s+ keep/)
+    expect(text).toMatch(/2\s+-old/)
+    expect(text).toMatch(/2\s+\+new/)
+  })
+
+  test('‹ › walk the listed files and stop at the ends; ✕ closes', async ($, on) => {
+    const w = setup(on)
+    await start($)
+    await edit($, A)
+    await edit($, B)
+    await showChanges($)
+    await drawn($)
+    await settle()
+    await openFile($, w, `chg-s:${A}`)
+    const press = async (key: string) => {
+      const ui = await $.ui.mount(DIFF_PROPS())
+      await ui.press({ key })
+      await ui.unmount()
+      await settle()
+    }
+    await press('diff-prev')
+    expect(await diffText($)).toContain('1 / 2')
+    await press('diff-next')
+    expect(await diffText($)).toContain('2 / 2')
+    expect(await diffText($)).toContain('r/b.go')
+    await press('diff-next')
+    expect(await diffText($)).toContain('2 / 2')
+    await press('diff-close')
+    expect(w.closes).toContain('jarvis-diff')
+  })
+
+  test('a /clear drops the diff git was still working out for the last session', async ($, on) => {
+    // the last session's first diff waits until let go; whatever is answered after that is `-stale`
+    let release = () => {}
+    const gate = new Promise<void>(r => (release = r))
+    let held = 0
+    let late = false
+    const w = world(on, {
+      dirs: [`${R}/.git`],
+      files: { [A]: 1 },
+      results: { [A]: editResult(A, 'a') },
+      git: argv => ({
+        exitCode: 1,
+        stdout: argv.includes('--numstat') ? '1\t1\t...\n' : late ? '@@ -1 +1 @@\n-stale\n' : DIFF_A,
+      }),
+      holdRun: argv => (argv.includes('--no-color') && held++ === 0 ? gate : Promise.resolve()),
+    })
+    await start($)
+    await edit($, A)
+    await showChanges($)
+    await drawn($)
+    await settle()
+    await openFile($, w, `chg-s:${A}`)
+    await diffText($)
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    await edit($, A)
+    await drawn($)
+    await settle()
+    await openFile($, w, `chg-s:${A}`)
+    await diffText($)
+    await settle()
+    late = true
+    release()
+    await settle()
+    const text = await diffText($)
+    expect(text).toMatch(/2\s+-old/)
+    expect(text).not.toContain('stale')
+  })
+
+  test('long lines are cut to the pane width', async ($, on) => {
+    const w = setup(on, true)
+    await start($)
+    await edit($, A)
+    await showChanges($)
+    await drawn($)
+    await settle()
+    await openFile($, w, `chg-s:${A}`)
+    await diffText($)
+    await settle()
+    for (const line of (await diffText($)).split('\n')) expect(cellWidth(line)).toBeLessThanOrEqual(96)
+  })
+})
