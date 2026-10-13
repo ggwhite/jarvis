@@ -1488,6 +1488,25 @@ describe('commits mode: repo list', () => {
     expect(text).toContain('2 repos')
   })
 
+  test('a find that fails still lists the touched repos whose .git is there', async ($, on) => {
+    setup(on, answers({ [FIND_LINE]: { exitCode: 1, stdout: '' } }))
+    await listed($)
+    const text = (await drawn($)).join('\n')
+    expect(text).toContain('★ acme/payments')
+    expect(text).toContain('1 repos')
+    expect(text).not.toContain('找不到 repo')
+  })
+
+  test('a find that fails with no touched repo says 找不到 repo', async ($, on) => {
+    setup(on, answers({ [FIND_LINE]: { exitCode: 1, stdout: '' } }))
+    await start($)
+    await showChanges($)
+    await press($, 'chg-mode-commits')
+    await drawn($)
+    await settle()
+    expect((await drawn($)).join('\n')).toContain('找不到 repo')
+  })
+
   test('a /clear drops the scan still running; the next drawing scans again', async ($, on) => {
     let release = () => {}
     const gate = new Promise<void>(r => (release = r))
@@ -1609,6 +1628,9 @@ describe('commits mode: tree and diff pages', () => {
     expect((await ui.find({ key: 'cm-refresh' }))?.text).toBe('重新整理')
     const buttons = await ui.findAll({ type: 'Button' })
     await ui.unmount()
+    const keys = buttons.map(b => b.key)
+    expect(keys.indexOf('cm-refresh')).toBeGreaterThanOrEqual(0)
+    expect(keys.indexOf('cm-refresh')).toBeLessThan(keys.indexOf('back'))
     expect(buttons.filter(b => b.key?.startsWith('cm-commit-')).length).toBe(4)
     expect(buttons.every(b => b.props['hotkey'] === undefined)).toBe(true)
   })
@@ -1712,9 +1734,89 @@ describe('commits mode: tree and diff pages', () => {
     await drawn($)
     await settle()
     release()
+    expect(await shown($)).toContain('1 repos')
+    await press($, `cm-repo-${R}`)
     const t = await shown($)
     expect(t).toContain("Merge branch 'feat-x'")
     expect(t).not.toContain('stale')
+  })
+
+  test('a /clear on the tree or a commit diff goes back to the repo list', async ($, on) => {
+    setup(on)
+    await toTree($)
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    let t = await shown($)
+    expect(t).toContain('1 repos')
+    expect(t).not.toContain('4 commits')
+    await press($, `cm-repo-${R}`)
+    await shown($)
+    await press($, `cm-commit-${M}`)
+    expect(await shown($)).toContain('1 / 2')
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    t = await shown($)
+    expect(t).toContain('1 repos')
+    expect(t).not.toContain('1 / 2')
+    expect(t).not.toContain('4 commits')
+  })
+
+  test("重新整理 on one repo's tree keeps another repo's tree git is still working out", async ($, on) => {
+    const R2 = '/w/b'
+    const LOG2 = `${G} -C ${R2} log --topo-order --decorate=full -n 40 --format=%H%x00%P%x00%an%x00%ct%x00%D%x00%s%x1e HEAD`
+    let release = () => {}
+    const gate = new Promise<void>(r => (release = r))
+    let held = 0
+    const w = setup(
+      on,
+      answers({
+        [FIND_LINE]: { exitCode: 0, stdout: `${R}/.git\n${R2}/.git\n` },
+        [`${G} -C ${R2} log -1 --decorate=full --format=%ct%x00%h%x00%D HEAD`]: { exitCode: 0, stdout: '90\x004444444\x00HEAD -> refs/heads/main\n' },
+        [LOG2]: { exitCode: 0, stdout: `${B0}\x00\x00w\x0070\x00HEAD -> refs/heads/main\x00b-init\x1e\n` },
+      }),
+      argv => (argv.join(' ') === LOG2 && held++ === 0 ? gate : Promise.resolve()),
+    )
+    const logs2 = () => w.runs.filter(r => r.join(' ') === LOG2).length
+    await start($)
+    await showChanges($)
+    await press($, 'chg-mode-commits')
+    await shown($)
+    await press($, `cm-repo-${R2}`)
+    await drawn($)
+    expect(logs2()).toBe(1)
+    await press($, 'back')
+    await press($, `cm-repo-${R}`)
+    expect(await shown($)).toContain('4 commits')
+    await press($, 'cm-refresh')
+    expect(await shown($)).toContain('4 commits')
+    release()
+    await settle()
+    await press($, 'back')
+    await press($, `cm-repo-${R2}`)
+    expect(await shown($)).toContain('b-init')
+    expect(logs2()).toBe(1)
+  })
+
+  test('long branch names never cut the graph or the sha, at 64 and 80 columns', async ($, on) => {
+    const L1 = `feature/${'x'.repeat(32)}`
+    const L2 = `release/${'y'.repeat(32)}`
+    const long =
+      `${M}\x00${P} ${F}\x00w\x00100\x00HEAD -> refs/heads/${L1}, refs/remotes/origin/${L1}\x00Merge branch 'feat-x'\x1e\n` +
+      `${F}\x00${B0}\x00w\x0090\x00refs/heads/${L2}, refs/remotes/origin/${L2}\x00feat-x: 初版\x1e\n` +
+      `${P}\x00${B0}\x00w\x0080\x00refs/remotes/origin/main\x00fix: 修正\x1e\n` +
+      `${B0}\x00\x00w\x0070\x00tag: refs/tags/v1\x00init\x1e\n`
+    setup(on, answers({ [LOG]: { exitCode: 0, stdout: long } }))
+    await toTree($)
+    for (const cols of [64, 80]) {
+      await shown($, cols)
+      const lines = await drawn($, cols)
+      for (const line of lines) expect(cellWidth(line)).toBeLessThanOrEqual(cols)
+      const t = lines.join('\n')
+      expect(t).toContain(`${COMMIT_ICON.head}─╮ 1111111↑`)
+      expect(t).toMatch(/│ ● 2222222↑/)
+      expect(t).toMatch(/● │ 3333333/)
+      expect(t).toMatch(/●─╯ 4444444/)
+      expect(t).toContain(`${COMMIT_ICON.branch} feature/`)
+      expect(t).toContain('…')
+    }
   })
 
   test('the tree and diff pages fit 40, 60, 80 and 120 columns, long CJK subjects included', async ($, on) => {

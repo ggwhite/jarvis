@@ -132,6 +132,8 @@ const ROLE_BAR_MIN = 4
 const TAB_GAP = 2
 // From this many columns an event's actor reads `MK-1`; below, `1`.
 const MK_ACTOR_COLS = 64
+// The widest a commit row's ref label is drawn, its icon included.
+const REF_MAX = 16
 
 type Ui = Pick<ReturnType<EngineInterface['ui']['resolve']>, 'Box' | 'Text' | 'Button'>
 
@@ -524,8 +526,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     }
     if (page === 'changeDiff') actions.push({ key: 'back', label: '返回', run: () => ctx.go('changes') })
     if (page === 'commitTree') {
-      actions.push({ key: 'back', label: '返回', run: () => ctx.go('changes') })
       actions.push({ key: 'cm-refresh', label: '重新整理', run: () => ctx.commits?.refreshTree() })
+      actions.push({ key: 'back', label: '返回', run: () => ctx.go('changes') })
     }
     if (page === 'commitDiff') actions.push({ key: 'back', label: '返回', run: () => ctx.go('commitTree') })
     if (page === 'log') actions.push({ key: 'pause', label: ctx.paused ? '繼續' : '暫停', run: ctx.pause })
@@ -1867,9 +1869,23 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
           ? { t: withIcon(COMMIT_ICON.tag, ref.name), color: BRIGHT }
           : { t: ref.name, color: PRIMARY }
 
+  // a commit row's ref labels, each cut to REF_MAX cells, as many as fit in `room` cells
+  const refSegs = (refs: readonly RefLabel[], room: number): Seg[] => {
+    const out: Seg[] = []
+    for (const ref of refs) {
+      const seg = refSeg(ref)
+      const label = { ...seg, t: fitCells(seg.t, REF_MAX) }
+      if (segsWidth(out) + cellWidth(label.t) + 1 > room) break
+      out.push(label, sp(1))
+    }
+    return out
+  }
+
   // One repo's newest commits as a graph, `room` rows tall at least and taller when the
   // tree is: each row its lanes, short sha (bright when made this session), ↑ when not
   // pushed, subject, refs when wide enough and age; a row opens the commit's diff page.
+  // The lanes, sha and ↑ are never cut; refs take at most half of what is left, the
+  // subject the rest, cut first.
   const commitTreeBlock = (room: number, cm: CommitsCtx): Block => {
     const inner = cols - 4
     const shownRepo = cm.repo
@@ -1898,18 +1914,19 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
           ...r.graph.cells.map(c => ({ t: c.ch, color: laneColor(c.lane) })),
           ...(r.graph.overflow ? [{ t: '…', color: MUTED }] : []),
         ]
-        const left: Seg[] = [
+        const fixed: Seg[] = [
           ...graph,
           sp(gw - segsWidth(graph) + 1),
           { t: r.commit.sha.slice(0, 7), color: r.session ? ACCENT : FRAME, ...(r.session ? { bold: true } : {}) },
           { t: r.unpushed ? '↑' : ' ', color: ACCENT, bold: true },
           sp(1),
-          { t: r.commit.subject },
         ]
-        const right: Seg[] = [
-          ...(withRefs ? r.refs.flatMap(ref => [refSeg(ref), sp(1)]) : []),
-          { t: fmtAgo(cm.now - r.commit.time), color: FRAME },
-        ]
+        const rest = Math.max(0, inner - segsWidth(fixed))
+        const right: Seg[] = clip(
+          [...(withRefs ? refSegs(r.refs, Math.floor(rest / 2)) : []), { t: fmtAgo(cm.now - r.commit.time), color: FRAME }],
+          Math.max(0, rest - 1),
+        )
+        const left: Seg[] = [...fixed, { t: r.commit.subject }]
         const sha = r.commit.sha
         lines.push({
           h: 1,

@@ -262,6 +262,8 @@ const dropUnpushed = (cache: ChangesCache) => {
 // (`d\x00repo\x00sha\x00path`) as git gave it; `asking`: those keys git is being asked
 type CommitsCache = {
   gen: number
+  // each repo's own drops: an answer about a repo dropped since it was asked stores nothing
+  repoGen: Map<string, number>
   repos: string[] | Failed | undefined
   scanning: boolean
   summaries: Map<string, RepoSummary | Failed>
@@ -278,14 +280,22 @@ const dropCommits = (cc: CommitsCache) => {
   cc.asking.clear()
 }
 
-// forgets one repo's summary, tree, files and diffs: the next drawing asks git again; any
-// ask still running is dropped (and asked again if still wanted)
+// forgets one repo's summary, tree, files and diffs: the next drawing asks git again; an
+// ask about it still running is dropped (and asked again if still wanted), other repos' kept
 const dropCommitRepo = (cc: CommitsCache, repo: string) => {
-  cc.gen += 1
-  cc.scanning = false
-  cc.asking.clear()
+  cc.repoGen.set(repo, (cc.repoGen.get(repo) ?? 0) + 1)
   cc.summaries.delete(repo)
-  for (const key of [...cc.answers.keys()]) if (key.split('\x00')[1] === repo) cc.answers.delete(key)
+  const ofRepo = (key: string) => key.split('\x00')[1] === repo
+  for (const key of [...cc.answers.keys()]) if (ofRepo(key)) cc.answers.delete(key)
+  for (const key of [...cc.asking]) if (ofRepo(key)) cc.asking.delete(key)
+}
+
+const redraw = ($: Pick<EngineInterface, 'ui'>) => {
+  try {
+    $.ui.invalidate('ui.render')
+  } catch {
+    // the next drawing shows it
+  }
 }
 
 // What `key` stands for as git gave it; while `ask` works it out in the background,
@@ -293,6 +303,7 @@ const dropCommitRepo = (cc: CommitsCache, repo: string) => {
 function askCommits<T>(
   $: Pick<EngineInterface, 'ui'>,
   cc: CommitsCache,
+  repo: string,
   key: string,
   ask: () => Promise<T | Failed>,
   fail: string,
@@ -301,6 +312,7 @@ function askCommits<T>(
   if (hit !== undefined || cc.asking.has(key)) return hit
   cc.asking.add(key)
   const gen = cc.gen
+  const repoGen = cc.repoGen.get(repo) ?? 0
   void (async () => {
     let out: T | Failed
     try {
@@ -308,14 +320,10 @@ function askCommits<T>(
     } catch {
       out = { error: fail }
     }
-    if (cc.gen !== gen) return
+    if (cc.gen !== gen || (cc.repoGen.get(repo) ?? 0) !== repoGen) return
     cc.answers.set(key, out)
     cc.asking.delete(key)
-    try {
-      $.ui.invalidate('ui.render')
-    } catch {
-      // the next drawing shows it
-    }
+    redraw($)
   })()
   return undefined
 }
@@ -334,32 +342,26 @@ async function commitListNow(
   if (missing && !cc.scanning) {
     cc.scanning = true
     const gen = cc.gen
-    const redraw = () => {
-      try {
-        $.ui.invalidate('ui.render')
-      } catch {
-        // the next drawing shows it
-      }
-    }
     void (async () => {
       try {
         if (cc.repos === undefined) {
           const found = await findRepos(io, names.cwd)
+          // a find that failed still lists the touched repos on disk
+          const listed = isFailed(found) ? [] : found
           const extra: string[] = []
-          if (!isFailed(found)) {
-            for (const r of touched) {
-              if (!found.includes(r) && (await io.stat(`${r === '/' ? '' : r}/.git`)) !== undefined) extra.push(r)
-            }
+          for (const r of touched) {
+            if (!listed.includes(r) && (await io.stat(`${r === '/' ? '' : r}/.git`)) !== undefined) extra.push(r)
           }
           if (cc.gen !== gen) return
-          cc.repos = isFailed(found) ? found : [...found, ...extra]
-          redraw()
+          cc.repos = isFailed(found) && extra.length === 0 ? found : [...listed, ...extra]
+          redraw($)
         }
         const repos = cc.repos
         if (isFailed(repos)) return
         let n = 0
         for (const repo of repos) {
           if (cc.summaries.has(repo)) continue
+          const repoGen = cc.repoGen.get(repo) ?? 0
           let s: RepoSummary | Failed
           try {
             s = await repoSummary(io, repo)
@@ -367,16 +369,16 @@ async function commitListNow(
             s = { error: 'git log 失敗' }
           }
           if (cc.gen !== gen) return
-          cc.summaries.set(repo, s)
+          if ((cc.repoGen.get(repo) ?? 0) === repoGen) cc.summaries.set(repo, s)
           n += 1
-          if (n % COMMITS_REDRAW_EVERY === 0) redraw()
+          if (n % COMMITS_REDRAW_EVERY === 0) redraw($)
         }
       } catch {
         // the page shows what it has
       } finally {
         if (cc.gen === gen) {
           cc.scanning = false
-          redraw()
+          redraw($)
         }
       }
     })()
@@ -661,7 +663,7 @@ export const register: Register = on => {
     diffBusy: '',
     bashRepos: new Set(),
   }
-  const commitsCache: CommitsCache = { gen: 0, repos: undefined, scanning: false, summaries: new Map(), answers: new Map(), asking: new Set() }
+  const commitsCache: CommitsCache = { gen: 0, repoGen: new Map(), repos: undefined, scanning: false, summaries: new Map(), answers: new Map(), asking: new Set() }
   const resetChanges = () => {
     repoCache.clear()
     origs.clear()
@@ -1166,6 +1168,8 @@ export const register: Register = on => {
       resetChanges()
       try {
         await update($, changes, () => [])
+        // the commit tree and diff pages go back to the repo list, as a diff page does
+        await update($, ui, (u): JarvisUi => (u.page === 'commitTree' || u.page === 'commitDiff' ? { ...u, page: 'changes' } : u))
       } catch {
         // the page keeps what it showed
       }
@@ -1218,12 +1222,12 @@ export const register: Register = on => {
     const onTree = (shown.page === 'commitTree' || shown.page === 'commitDiff') && commitRepo !== ''
     const gitIo = ioOf($)
     const tree = onTree
-      ? askCommits<CommitTree>($, commitsCache, `t\x00${commitRepo}`, () => commitTreeOf(gitIo, commitRepo), 'git log 失敗')
+      ? askCommits<CommitTree>($, commitsCache, commitRepo, `t\x00${commitRepo}`, () => commitTreeOf(gitIo, commitRepo), 'git log 失敗')
       : undefined
     const commit =
       shown.page === 'commitDiff' && tree !== undefined && !isFailed(tree) ? tree.commits.find(c => c.sha === shown.commitSha) : undefined
     const commitFileList = commit
-      ? askCommits<CommitFile[]>($, commitsCache, `f\x00${commitRepo}\x00${commit.sha}`, () => commitFiles(gitIo, commitRepo, commit), 'git diff 失敗')
+      ? askCommits<CommitFile[]>($, commitsCache, commitRepo, `f\x00${commitRepo}\x00${commit.sha}`, () => commitFiles(gitIo, commitRepo, commit), 'git diff 失敗')
       : undefined
     const commitFile =
       commitFileList !== undefined && !isFailed(commitFileList)
@@ -1234,6 +1238,7 @@ export const register: Register = on => {
         ? askCommits<DiffRow[]>(
             $,
             commitsCache,
+            commitRepo,
             `d\x00${commitRepo}\x00${commit.sha}\x00${commitFile.path}`,
             () => commitFileDiff(gitIo, commitRepo, commit, commitFile.path),
             'git diff 失敗',
@@ -1294,19 +1299,11 @@ export const register: Register = on => {
       openFile: (path: string) => setUi(u => ({ ...u, page: 'commitDiff', commitFile: path })),
       refreshList: () => {
         dropCommits(commitsCache)
-        try {
-          $.ui.invalidate('ui.render')
-        } catch {
-          // the next drawing asks again
-        }
+        redraw($)
       },
       refreshTree: () => {
         dropCommitRepo(commitsCache, commitRepo)
-        try {
-          $.ui.invalidate('ui.render')
-        } catch {
-          // the next drawing asks again
-        }
+        redraw($)
       },
     }
     return drawCockpit(elements, view, {
