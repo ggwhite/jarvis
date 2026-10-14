@@ -1503,7 +1503,7 @@ export const register: Register = on => {
       openStashFile: (path: string) => setUi(u => ({ ...u, page: 'stashDiff', commitFile: path })),
       openWorktree: (path: string) =>
         setUi(u => {
-          const { commitRef: _r, ...rest } = u
+          const { commitRef: _r, goneOpen: _g, remoteOpen: _o, ...rest } = u
           return { ...rest, page: 'commitTree', commitRepo: path, repoView: 'log', repoBack: { repo: u.commitRepo ?? '', view: 'worktrees' } }
         }),
       back: () =>
