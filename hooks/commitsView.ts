@@ -4,8 +4,10 @@ import type { GraphRow } from './commitGraph'
 import type { CommitFile, CommitInfo, CommitTree, RepoSummary } from './gitCommits'
 import { isFailed } from './gitDiff'
 import type { DiffRow, Failed } from './gitDiff'
+import type { StashFile } from './gitRepo'
 import { COMMIT_ICON } from './icons'
 import { JARVIS_PALETTE, THEME } from './jarvis'
+import type { BranchList, Remotes, RepoView, StashInfo, WorktreeRow } from './repoViews'
 
 export const MAX_REPOS = 100
 
@@ -103,6 +105,27 @@ export function commitRows(tree: CommitTree, startedAt: number | undefined): Com
   })
 }
 
+// A repo's tree page: its commits (of `ref`, HEAD when absent), the sub-page shown, its
+// remotes, whether a fetch is running or why the last one failed, the sub-pages as git gave
+// them (undefined while asked or when not shown) and each one's count once answered.
+export type RepoPage = {
+  path: string
+  name: string
+  tree: CommitTree | Failed | undefined
+  view: RepoView
+  ref: string | undefined
+  remotes: Remotes | Failed | undefined
+  fetching: boolean
+  fetchError: string | undefined
+  branches: BranchList | Failed | undefined
+  stashes: StashInfo[] | Failed | undefined
+  worktrees: WorktreeRow[] | Failed | undefined
+  counts: { branches: number | undefined; stash: number | undefined; worktrees: number | undefined }
+}
+
+// the stash diff page: the stash, its files, the file shown and that file's diff
+export type StashDiff = { stash: StashInfo; files: StashFile[] | Failed | undefined; file: StashFile | undefined; rows: DiffRow[] | Failed | undefined }
+
 // The commits mode as the cockpit draws it: the session directory's name, the time now and
 // when the session started, the repo list (on the changes page), and the presses that open a
 // repo's tree and ask find and git again.
@@ -111,13 +134,23 @@ export type CommitsCtx = {
   now: number
   startedAt?: number
   list?: RepoList
-  // the tree page: the repo, its name and its tree as git gave it, undefined while asked
-  repo?: { path: string; name: string; tree: CommitTree | Failed | undefined }
+  // the tree page, the stash diff page's repo too
+  repo?: RepoPage
   // the commit's diff page: the commit, its files, the file shown and that file's diff
   diff?: { commit: CommitInfo; files: CommitFile[] | Failed | undefined; file?: CommitFile; rows: DiffRow[] | Failed | undefined }
+  stashDiff?: StashDiff
   openRepo: (repo: string) => void
   openCommit: (sha: string) => void
   openFile: (path: string) => void
   refreshList: () => void
+  // asks again the sub-page shown and the remotes
   refreshTree: () => void
+  setView: (view: RepoView) => void
+  openBranch: (ref: string) => void
+  openStash: (sha: string) => void
+  openStashFile: (path: string) => void
+  openWorktree: (path: string) => void
+  // the tree page's 返回: the branch or worktree list it was opened from, else the repo list
+  back: () => void
+  fetch: () => void
 }

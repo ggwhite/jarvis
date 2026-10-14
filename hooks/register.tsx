@@ -45,6 +45,8 @@ import { commitFileDiff, commitFiles, commitTreeOf, findRepos, repoSummary } fro
 import type { CommitFile, CommitTree, RepoSummary } from './gitCommits'
 import { commitRepoName, repoRows } from './commitsView'
 import type { CommitsCtx, RepoList } from './commitsView'
+import { FETCH_TIMEOUT_MS, branchesOf, fetchRepo, remotesOf, stashesOf, worktreesOf } from './gitRepo'
+import type { BranchList, Remotes, RepoView, StashInfo, WorktreeRow } from './repoViews'
 
 const PANE = 'jarvis'
 const MAX_EARLY = 100
@@ -94,7 +96,7 @@ const changes = atom({ plugin: 'jarvis', key: 'changes' } as const, [] as Jarvis
 const UNTRACKED = new Set(['Agent', 'Workflow'])
 
 // The changes page's hands on the machine, from a hook's own `$`; a failure reads as nothing.
-export function ioOf($: Pick<EngineInterface, 'fs' | 'process'>): ChangesIo {
+export function ioOf($: Pick<EngineInterface, 'fs' | 'process'>, timeoutMs = CHANGES_RUN_TIMEOUT_MS): ChangesIo {
   return {
     stat: async path => {
       try {
@@ -122,7 +124,7 @@ export function ioOf($: Pick<EngineInterface, 'fs' | 'process'>): ChangesIo {
     },
     run: async argv => {
       try {
-        const r = await $.process.run(argv, { timeoutMs: CHANGES_RUN_TIMEOUT_MS })
+        const r = await $.process.run(argv, { timeoutMs })
         return { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr }
       } catch {
         return undefined
@@ -259,7 +261,8 @@ const dropUnpushed = (cache: ChangesCache) => {
 // directory (or why none), each repo's summary as git gave it, and whether find or git is
 // being asked; `gen` counts the drops, so an answer to an older ask stores nothing.
 // `answers`: each tree (`t\x00repo`), commit's files (`f\x00repo\x00sha`) and file diff
-// (`d\x00repo\x00sha\x00path`) as git gave it; `asking`: those keys git is being asked
+// (`d\x00repo\x00sha\x00path`) as git gave it; `asking`: those keys git is being asked.
+// A fetch runs at most once a repo at a time; its failure is kept until the next fetch or 重新整理.
 type CommitsCache = {
   gen: number
   // each repo's own drops: an answer about a repo dropped since it was asked stores nothing
@@ -269,6 +272,11 @@ type CommitsCache = {
   summaries: Map<string, RepoSummary | Failed>
   answers: Map<string, unknown>
   asking: Set<string>
+  // each key's own drops (重新整理 on a sub-page): an answer to a key dropped since asked stores nothing
+  keyGen: Map<string, number>
+  // the repos a fetch is running for, and why each one's last fetch failed
+  fetching: Set<string>
+  fetchError: Map<string, string>
 }
 
 const dropCommits = (cc: CommitsCache) => {
@@ -278,6 +286,8 @@ const dropCommits = (cc: CommitsCache) => {
   cc.summaries.clear()
   cc.answers.clear()
   cc.asking.clear()
+  cc.fetching.clear()
+  cc.fetchError.clear()
 }
 
 // forgets one repo's summary, tree, files and diffs: the next drawing asks git again; an
@@ -288,6 +298,58 @@ const dropCommitRepo = (cc: CommitsCache, repo: string) => {
   const ofRepo = (key: string) => key.split('\x00')[1] === repo
   for (const key of [...cc.answers.keys()]) if (ofRepo(key)) cc.answers.delete(key)
   for (const key of [...cc.asking]) if (ofRepo(key)) cc.asking.delete(key)
+}
+
+// what 重新整理 on each sub-page asks again: its own keys and the remotes (the commits page
+// also its commits' files and diffs, the stash page its stashes' files and diffs)
+const REFRESH_KINDS: Record<RepoView, readonly string[]> = {
+  log: ['t', 'f', 'd', 'r'],
+  branches: ['b', 'r'],
+  stash: ['s', 'sf', 'sd', 'r'],
+  worktrees: ['w', 'r'],
+}
+
+// forgets a repo's keys of these kinds, those git is still working out included
+const dropCommitKeys = (cc: CommitsCache, repo: string, kinds: readonly string[]) => {
+  const hit = (key: string) => {
+    const [kind = '', r] = key.split('\x00')
+    return r === repo && kinds.includes(kind)
+  }
+  for (const key of new Set([...cc.answers.keys(), ...cc.asking])) {
+    if (!hit(key)) continue
+    cc.answers.delete(key)
+    cc.asking.delete(key)
+    cc.keyGen.set(key, (cc.keyGen.get(key) ?? 0) + 1)
+  }
+}
+
+// what git last said of `key`, counted; undefined until it has answered, or when it failed
+function countOf<T>(cc: CommitsCache, key: string, n: (x: T) => number): number | undefined {
+  const hit = cc.answers.get(key) as T | Failed | undefined
+  return hit === undefined || isFailed(hit) ? undefined : n(hit)
+}
+
+// Fetches `repo` in the background, once at a time: when done the repo is asked again,
+// when not the reason is kept until the next fetch or 重新整理. A /clear drops the answer.
+function fetchCommits($: Pick<EngineInterface, 'fs' | 'process' | 'ui'>, cc: CommitsCache, repo: string): void {
+  if (repo === '' || cc.fetching.has(repo)) return
+  cc.fetching.add(repo)
+  cc.fetchError.delete(repo)
+  const gen = cc.gen
+  void (async () => {
+    let out: true | Failed
+    try {
+      out = await fetchRepo(ioOf($, FETCH_TIMEOUT_MS), repo)
+    } catch {
+      out = { error: 'fetch 失敗' }
+    }
+    if (cc.gen !== gen) return
+    cc.fetching.delete(repo)
+    if (out === true) dropCommitRepo(cc, repo)
+    else cc.fetchError.set(repo, out.error)
+    redraw($)
+  })()
+  redraw($)
 }
 
 const redraw = ($: Pick<EngineInterface, 'ui'>) => {
@@ -313,6 +375,7 @@ function askCommits<T>(
   cc.asking.add(key)
   const gen = cc.gen
   const repoGen = cc.repoGen.get(repo) ?? 0
+  const keyGen = cc.keyGen.get(key) ?? 0
   void (async () => {
     let out: T | Failed
     try {
@@ -320,7 +383,7 @@ function askCommits<T>(
     } catch {
       out = { error: fail }
     }
-    if (cc.gen !== gen || (cc.repoGen.get(repo) ?? 0) !== repoGen) return
+    if (cc.gen !== gen || (cc.repoGen.get(repo) ?? 0) !== repoGen || (cc.keyGen.get(key) ?? 0) !== keyGen) return
     cc.answers.set(key, out)
     cc.asking.delete(key)
     redraw($)
@@ -663,7 +726,18 @@ export const register: Register = on => {
     diffBusy: '',
     bashRepos: new Set(),
   }
-  const commitsCache: CommitsCache = { gen: 0, repoGen: new Map(), repos: undefined, scanning: false, summaries: new Map(), answers: new Map(), asking: new Set() }
+  const commitsCache: CommitsCache = {
+    gen: 0,
+    repoGen: new Map(),
+    keyGen: new Map(),
+    repos: undefined,
+    scanning: false,
+    summaries: new Map(),
+    answers: new Map(),
+    asking: new Set(),
+    fetching: new Set(),
+    fetchError: new Map(),
+  }
   const resetChanges = () => {
     repoCache.clear()
     origs.clear()
@@ -1219,11 +1293,29 @@ export const register: Register = on => {
     }
     const commitList = commitsShown ? await commitListNow($, commitsCache, touched, { cwd, home: changesHome }) : undefined
     const commitRepo = shown.commitRepo ?? ''
+    const repoView: RepoView = shown.repoView ?? 'log'
+    const commitRef = shown.commitRef
     const onTree = (shown.page === 'commitTree' || shown.page === 'commitDiff') && commitRepo !== ''
+    const onRepoPage = shown.page === 'commitTree' && commitRepo !== ''
     const gitIo = ioOf($)
     const tree = onTree
-      ? askCommits<CommitTree>($, commitsCache, commitRepo, `t\x00${commitRepo}`, () => commitTreeOf(gitIo, commitRepo), 'git log 失敗')
+      ? askCommits<CommitTree>($, commitsCache, commitRepo, `t\x00${commitRepo}\x00${commitRef ?? ''}`, () => commitTreeOf(gitIo, commitRepo, commitRef), 'git log 失敗')
       : undefined
+    const remotes = onRepoPage
+      ? askCommits<Remotes>($, commitsCache, commitRepo, `r\x00${commitRepo}`, () => remotesOf(gitIo, commitRepo), 'git remote 失敗')
+      : undefined
+    const branches =
+      onRepoPage && repoView === 'branches'
+        ? askCommits<BranchList>($, commitsCache, commitRepo, `b\x00${commitRepo}`, () => branchesOf(gitIo, commitRepo), 'git for-each-ref 失敗')
+        : undefined
+    const stashes =
+      onRepoPage && repoView === 'stash'
+        ? askCommits<StashInfo[]>($, commitsCache, commitRepo, `s\x00${commitRepo}`, () => stashesOf(gitIo, commitRepo), 'git stash 失敗')
+        : undefined
+    const worktrees =
+      onRepoPage && repoView === 'worktrees'
+        ? askCommits<WorktreeRow[]>($, commitsCache, commitRepo, `w\x00${commitRepo}`, () => worktreesOf(gitIo, commitRepo), 'git worktree 失敗')
+        : undefined
     const commit =
       shown.page === 'commitDiff' && tree !== undefined && !isFailed(tree) ? tree.commits.find(c => c.sha === shown.commitSha) : undefined
     const commitFileList = commit
@@ -1288,9 +1380,34 @@ export const register: Register = on => {
       now,
       ...(sessionStartedAt === undefined ? {} : { startedAt: sessionStartedAt }),
       ...(commitList ? { list: commitList } : {}),
-      ...(onTree ? { repo: { path: commitRepo, name: commitRepoName(commitRepo, cwd, changesHome), tree } } : {}),
+      ...(onTree
+        ? {
+            repo: {
+              path: commitRepo,
+              name: commitRepoName(commitRepo, cwd, changesHome),
+              tree,
+              view: repoView,
+              ref: commitRef,
+              remotes,
+              fetching: commitsCache.fetching.has(commitRepo),
+              fetchError: commitsCache.fetchError.get(commitRepo),
+              branches,
+              stashes,
+              worktrees,
+              counts: {
+                branches: countOf<BranchList>(commitsCache, `b\x00${commitRepo}`, b => b.total),
+                stash: countOf<StashInfo[]>(commitsCache, `s\x00${commitRepo}`, s => s.length),
+                worktrees: countOf<WorktreeRow[]>(commitsCache, `w\x00${commitRepo}`, w => w.length),
+              },
+            },
+          }
+        : {}),
       ...(commit ? { diff: { commit, files: commitFileList, ...(commitFile ? { file: commitFile } : {}), rows: commitDiffRows } } : {}),
-      openRepo: (repo: string) => setUi(u => ({ ...u, page: 'commitTree', commitRepo: repo })),
+      openRepo: (repo: string) =>
+        setUi(u => {
+          const { commitRef: _r, repoBack: _b, ...rest } = u
+          return { ...rest, page: 'commitTree', commitRepo: repo, repoView: 'log' }
+        }),
       openCommit: (sha: string) =>
         setUi(u => {
           const { commitFile: _f, ...rest } = u
@@ -1302,9 +1419,37 @@ export const register: Register = on => {
         redraw($)
       },
       refreshTree: () => {
-        dropCommitRepo(commitsCache, commitRepo)
+        dropCommitKeys(commitsCache, commitRepo, REFRESH_KINDS[repoView])
+        if (repoView === 'log') commitsCache.summaries.delete(commitRepo)
+        commitsCache.fetchError.delete(commitRepo)
         redraw($)
       },
+      // a branch's tree drops its branch; a worktree's keeps where its 返回 goes
+      setView: (view: RepoView) =>
+        setUi(u => {
+          const { commitRef: _r, repoBack, ...rest } = u
+          const keep = repoBack !== undefined && repoBack.repo !== u.commitRepo
+          return { ...rest, ...(keep && repoBack ? { repoBack } : {}), page: 'commitTree', repoView: view }
+        }),
+      openBranch: (ref: string) =>
+        setUi(u => ({ ...u, page: 'commitTree', repoView: 'log', commitRef: ref, repoBack: { repo: u.commitRepo ?? '', view: 'branches' } })),
+      openStash: (sha: string) =>
+        setUi(u => {
+          const { commitFile: _f, ...rest } = u
+          return { ...rest, page: 'stashDiff', stashSha: sha }
+        }),
+      openStashFile: (path: string) => setUi(u => ({ ...u, page: 'stashDiff', commitFile: path })),
+      openWorktree: (path: string) =>
+        setUi(u => {
+          const { commitRef: _r, ...rest } = u
+          return { ...rest, page: 'commitTree', commitRepo: path, repoView: 'log', repoBack: { repo: u.commitRepo ?? '', view: 'worktrees' } }
+        }),
+      back: () =>
+        setUi(u => {
+          const { commitRef: _r, repoBack, ...rest } = u
+          return repoBack ? { ...rest, page: 'commitTree', commitRepo: repoBack.repo, repoView: repoBack.view } : { ...rest, page: 'changes' }
+        }),
+      fetch: () => fetchCommits($, commitsCache, commitRepo),
     }
     return drawCockpit(elements, view, {
       cols: e.props.bodyColumns,

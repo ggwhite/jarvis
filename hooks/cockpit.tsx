@@ -43,7 +43,9 @@ import type { DiffRow, Failed } from './gitDiff'
 import { tailCells } from './changes'
 import type { ChangeMode } from './changes'
 import { commitRows, laneColor, relTime } from './commitsView'
-import type { CommitsCtx, RefLabel } from './commitsView'
+import type { CommitsCtx, RefLabel, RepoPage } from './commitsView'
+import { MAX_REMOTES } from './repoViews'
+import type { BranchList, RepoView, StashInfo, WorktreeRow } from './repoViews'
 import { graphWidth } from './commitGraph'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
 import type { CardLines } from './fleetCards'
@@ -1881,27 +1883,179 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return out
   }
 
-  // One repo's newest commits as a graph, `room` rows tall at least and taller when the
-  // tree is: each row its lanes, short sha (bright when made this session), ↑ when not
-  // pushed, subject, refs when wide enough and age; a row opens the commit's diff page.
-  // The lanes, sha and ↑ are never cut; refs take at most half of what is left, the
-  // subject the rest, cut first.
-  const commitTreeBlock = (room: number, cm: CommitsCtx): Block => {
-    const inner = cols - 4
-    const shownRepo = cm.repo
-    if (!shownRepo) return card({ w: cols, color: FRAME, lines: [] }, Math.max(3, room))
-    const t = shownRepo.tree
-    const ready = t !== undefined && !isFailed(t) ? t : undefined
-    const head = leftRight(
-      [
-        title(CHANGE_ICON.repo, shownRepo.name, PRIMARY),
-        ...(ready ? [sp(2), { t: withIcon(COMMIT_ICON.branch, ready.branch), color: FRAME }] : []),
-        ...(ready && ready.ahead > 0 ? [{ t: ` ↑${ready.ahead}`, color: ACCENT, bold: true }] : []),
-      ],
-      ready ? [{ t: `${ready.commits.length} commits`, color: FRAME }] : [],
-      inner,
-    )
-    const lines: Line[] = [head]
+  const REPO_VIEWS: { view: RepoView; label: string }[] = [
+    { view: 'log', label: '提交' },
+    { view: 'branches', label: '分支' },
+    { view: 'stash', label: 'Stash' },
+    { view: 'worktrees', label: 'Worktree' },
+  ]
+
+  // A repo's remotes by their fetch URL (cut from the left: the path's end stays), at most
+  // MAX_REMOTES; when it was last fetched and the press that fetches, or that one is running;
+  // why the last fetch failed.
+  const remoteLines = (r: RepoPage, cm: CommitsCtx, inner: number): Line[] => {
+    const rem = r.remotes
+    if (rem === undefined) return [[{ t: '讀取 remote 中…', color: MUTED }]]
+    if (isFailed(rem)) return [[{ t: rem.error, color: MUTED }]]
+    if (rem.remotes.length === 0) return [[{ t: '沒有 remote', color: MUTED }]]
+    const out: Line[] = rem.remotes.slice(0, MAX_REMOTES).map(x => {
+      const name: Seg = { t: withIcon(COMMIT_ICON.remote, x.name), color: PRIMARY }
+      return [sp(1), name, sp(2), { t: tailCells(x.url, Math.max(1, inner - segsWidth([name]) - 3)), color: FRAME }]
+    })
+    if (rem.remotes.length > MAX_REMOTES) out.push([{ t: `還有 ${rem.remotes.length - MAX_REMOTES} 個 remote`, color: MUTED }])
+    const when = rem.fetchedAt === undefined ? '從未 fetch' : `fetch ${relTime(cm.now - rem.fetchedAt)}`
+    out.push({
+      h: 1,
+      node: (
+        <Box flexDirection="row" gap={TAB_GAP}>
+          <Text color={MUTED}>{` ${when}`}</Text>
+          {r.fetching ? (
+            <Text color={MUTED}>fetch 中…</Text>
+          ) : (
+            <Button key="cm-fetch" plain onPress={() => cm.fetch()}>
+              <Text color={ACCENT}>fetch</Text>
+            </Button>
+          )}
+        </Box>
+      ),
+    })
+    if (r.fetchError !== undefined) out.push([{ t: fitCells(r.fetchError, inner), color: ERROR }])
+    return out
+  }
+
+  // the tree page's sub-tabs, the one shown current; each with its count once git has answered
+  const viewRow = (r: RepoPage, cm: CommitsCtx): Line => ({
+    h: 1,
+    node: (
+      <Box flexDirection="row" gap={TAB_GAP}>
+        {REPO_VIEWS.map(v => {
+          const n = v.view === 'branches' ? r.counts.branches : v.view === 'stash' ? r.counts.stash : v.view === 'worktrees' ? r.counts.worktrees : undefined
+          const label = n === undefined ? v.label : `${v.label} ${n}`
+          return (
+            <Button key={`cm-view-${v.view}`} plain onPress={() => cm.setView(v.view)}>
+              {v.view === r.view ? (
+                <Text bold inverse color={ACCENT}>
+                  {label}
+                </Text>
+              ) : (
+                <Text color={FRAME}>{label}</Text>
+              )}
+            </Button>
+          )
+        })}
+      </Box>
+    ),
+  })
+
+  // The branches: ◉ the current one, ● the other local ones, the remote mark for those only
+  // on a remote; ↑ ↓ against the upstream, gone when it was deleted, 無 upstream, 已 merge,
+  // the subject when it fits and the age; a row opens the branch's tree.
+  const branchLines = (b: BranchList | Failed | undefined, cm: CommitsCtx, inner: number): Line[] => {
+    if (b === undefined) return [[{ t: '讀取中…', color: MUTED }]]
+    if (isFailed(b)) return [[{ t: b.error, color: MUTED }]]
+    if (b.rows.length === 0) return [[{ t: '沒有分支', color: MUTED }]]
+    const out: Line[] = b.rows.map(r => {
+      const mark: Seg =
+        r.kind === 'current'
+          ? { t: `${COMMIT_ICON.head} `, color: ACCENT, bold: true }
+          : r.kind === 'local'
+            ? { t: `${COMMIT_ICON.node} `, color: SUCCESS }
+            : { t: withIcon(COMMIT_ICON.remote, ''), color: PRIMARY }
+      const status: Seg[] = [
+        ...(r.ahead > 0 ? [{ t: ` ↑${r.ahead}`, color: SUCCESS }] : []),
+        ...(r.behind > 0 ? [{ t: ` ↓${r.behind}`, color: PRIMARY }] : []),
+        ...(r.gone ? [{ t: ' gone', color: ERROR }] : []),
+        ...(r.kind !== 'remote' && !r.upstream ? [{ t: ' 無 upstream', color: MUTED }] : []),
+        ...(r.merged ? [{ t: ' 已 merge', color: MUTED }] : []),
+      ]
+      const name: Seg = {
+        t: r.name,
+        color: r.kind === 'current' ? ACCENT : r.kind === 'remote' ? PRIMARY : BRIGHT,
+        ...(r.kind === 'current' ? { bold: true } : {}),
+      }
+      const fixed: Seg[] = [sp(1), mark, name, ...status]
+      const right: Seg[] = [{ t: fmtAgo(cm.now - r.time), color: FRAME }]
+      const room = inner - segsWidth(fixed) - segsWidth(right) - 3
+      const left: Seg[] = room >= 8 ? [...fixed, sp(2), { t: fitCells(r.subject, room), color: FRAME }] : fixed
+      const ref = r.ref
+      return {
+        h: 1,
+        node: (
+          <Button key={`cm-branch-${ref}`} plain onPress={() => cm.openBranch(ref)}>
+            <Text>{texts(leftRight(left, right, inner))}</Text>
+          </Button>
+        ),
+      }
+    })
+    if (b.more > 0) out.push([{ t: `還有 ${b.more} 個分支`, color: MUTED }])
+    return out
+  }
+
+  // The stashes, shared by every worktree of the repo: stash@{n}, the branch it was made on,
+  // its message and age; a row opens its diff.
+  const stashLines = (s: StashInfo[] | Failed | undefined, cm: CommitsCtx, inner: number): Line[] => {
+    if (s === undefined) return [[{ t: '讀取中…', color: MUTED }]]
+    if (isFailed(s)) return [[{ t: s.error, color: MUTED }]]
+    const out: Line[] = [[{ t: 'stash 由這個 repo 的所有 worktree 共用', color: MUTED }]]
+    if (s.length === 0) return [...out, [{ t: '沒有 stash', color: MUTED }]]
+    for (const x of s) {
+      const left: Seg[] = [
+        sp(1),
+        { t: x.name, color: ACCENT },
+        sp(2),
+        ...(x.branch !== '' ? [{ t: withIcon(COMMIT_ICON.branch, x.branch), color: FRAME }, sp(2)] : []),
+        { t: x.message },
+      ]
+      const sha = x.sha
+      out.push({
+        h: 1,
+        node: (
+          <Button key={`cm-stash-${sha}`} plain onPress={() => cm.openStash(sha)}>
+            <Text>{texts(leftRight(left, [{ t: fmtAgo(cm.now - x.time), color: FRAME }], inner))}</Text>
+          </Button>
+        ),
+      })
+    }
+    return out
+  }
+
+  // The worktrees: ◉ the repo's own, its branch (or the detached sha), its uncommitted files,
+  // 已不存在 when pruned, locked, agent for a subagent's; a row (not a pruned one) opens its tree.
+  const worktreeLines = (w: WorktreeRow[] | Failed | undefined, cm: CommitsCtx, inner: number): Line[] => {
+    if (w === undefined) return [[{ t: '讀取中…', color: MUTED }]]
+    if (isFailed(w)) return [[{ t: w.error, color: MUTED }]]
+    if (w.length === 0) return [[{ t: '沒有 worktree', color: MUTED }]]
+    return w.map(x => {
+      const segs: Seg[] = [
+        sp(1),
+        { t: `${x.main ? COMMIT_ICON.head : COMMIT_ICON.node} `, color: x.main ? ACCENT : SUCCESS },
+        { t: x.name, color: x.main ? ACCENT : BRIGHT, ...(x.main ? { bold: true } : {}) },
+        sp(2),
+        x.branch !== undefined ? { t: withIcon(COMMIT_ICON.branch, x.branch), color: FRAME } : { t: `detached ${x.head.slice(0, 7)}`, color: MUTED },
+        ...(x.prunable ? [{ t: ' 已不存在', color: ERROR }] : []),
+        ...(!x.prunable && x.dirty !== undefined ? [x.dirty > 0 ? { t: ` ±${x.dirty}`, color: PRIMARY } : { t: ' 乾淨', color: MUTED }] : []),
+        ...(x.locked ? [{ t: ' locked', color: MUTED }] : []),
+        ...(x.agent ? [{ t: ' agent', color: MUTED }] : []),
+      ]
+      if (x.prunable) return clip(segs, inner)
+      const path = x.path
+      return {
+        h: 1,
+        node: (
+          <Button key={`cm-wt-${path}`} plain onPress={() => cm.openWorktree(path)}>
+            <Text>{texts(clip(segs, inner))}</Text>
+          </Button>
+        ),
+      }
+    })
+  }
+
+  // the commits sub-page: each row its lanes, short sha (bright when made this session), ↑
+  // when not pushed, subject, refs when wide enough and age; a row opens the commit's diff page.
+  // The lanes, sha and ↑ are never cut; refs take at most half of what is left, the subject
+  // the rest, cut first.
+  const logLines = (t: RepoPage['tree'], cm: CommitsCtx, inner: number): Line[] => {
+    const lines: Line[] = []
     if (t === undefined) lines.push([{ t: '讀取中…', color: MUTED }])
     else if (isFailed(t)) lines.push([{ t: t.error, color: MUTED }])
     else if (t.commits.length === 0) lines.push([{ t: '這個 repo 還沒有 commit', color: MUTED }])
@@ -1938,6 +2092,31 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         })
       }
     }
+    return lines
+  }
+
+  // One repo: its name, branch and ↑, its remotes and fetch, the sub-tabs, then the sub-page
+  // shown; `room` rows tall at least and taller when the page is.
+  const commitTreeBlock = (room: number, cm: CommitsCtx): Block => {
+    const inner = cols - 4
+    const shownRepo = cm.repo
+    if (!shownRepo) return card({ w: cols, color: FRAME, lines: [] }, Math.max(3, room))
+    const t = shownRepo.tree
+    const ready = t !== undefined && !isFailed(t) ? t : undefined
+    const head = leftRight(
+      [
+        title(CHANGE_ICON.repo, shownRepo.name, PRIMARY),
+        ...(ready ? [sp(2), { t: withIcon(COMMIT_ICON.branch, ready.branch), color: FRAME }] : []),
+        ...(ready && ready.ahead > 0 ? [{ t: ` ↑${ready.ahead}`, color: ACCENT, bold: true }] : []),
+      ],
+      ready ? [{ t: `${ready.commits.length} commits`, color: FRAME }] : [],
+      inner,
+    )
+    const lines: Line[] = [head, ...remoteLines(shownRepo, cm, inner), viewRow(shownRepo, cm)]
+    if (shownRepo.view === 'branches') lines.push(...branchLines(shownRepo.branches, cm, inner))
+    else if (shownRepo.view === 'stash') lines.push(...stashLines(shownRepo.stashes, cm, inner))
+    else if (shownRepo.view === 'worktrees') lines.push(...worktreeLines(shownRepo.worktrees, cm, inner))
+    else lines.push(...logLines(t, cm, inner))
     return card({ w: cols, color: FRAME, lines }, Math.max(room, 2 + lines.length))
   }
 

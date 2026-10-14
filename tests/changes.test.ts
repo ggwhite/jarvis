@@ -282,7 +282,8 @@ describe('names', () => {
   })
 })
 
-type Run = { exitCode: number; stdout?: string }
+// `throws`: the run outlasts its time (process.run rejects)
+type Run = { exitCode: number; stdout?: string; stderr?: string; throws?: true }
 type Git = Record<string, Run> | ((argv: string[]) => Run)
 
 type Node = { type?: string; props?: Record<string, unknown>; children?: (Node | string)[] }
@@ -377,7 +378,8 @@ export function world(
     runs.push([...e.argv])
     await opts.holdRun?.([...e.argv])
     const a = answer([...e.argv])
-    return { value: { exitCode: a.exitCode, stdout: a.stdout ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (a.throws) throw new Error('timed out')
+    return { value: { exitCode: a.exitCode, stdout: a.stdout ?? '', stderr: a.stderr ?? '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   return { log, writes, runs, opens, closes, files, changes: () => changes }
 }
@@ -1831,5 +1833,185 @@ describe('commits mode: tree and diff pages', () => {
       await shown($, cols)
       for (const line of await drawn($, cols)) expect(cellWidth(line)).toBeLessThanOrEqual(cols)
     }
+  })
+})
+
+describe('commits mode: remotes, sub-pages and fetch', () => {
+  const G = '/usr/bin/git'
+  const FIND_LINE = '/usr/bin/find /w -maxdepth 4 ( -name node_modules -o -name Library -o -name .Trash -o -name .cache -o -path */.claude/worktrees ) -prune -o -name .git -print -prune'
+  const R = '/w/a'
+  const H = '1'.repeat(40)
+  const S = '5'.repeat(40)
+  const LOG = `${G} -C ${R} log --topo-order --decorate=full -n 40 --format=%H%x00%P%x00%an%x00%ct%x00%D%x00%s%x1e HEAD`
+  const REMOTES = `${G} -C ${R} remote -v`
+  const BRANCHES = `${G} -C ${R} for-each-ref --sort=-committerdate --format=%(refname)%00%(upstream:short)%00%(upstream:track,nobracket)%00%(committerdate:unix)%00%(objectname:short)%00%(HEAD)%00%(subject)%1e refs/heads refs/remotes`
+  const STASHES = `${G} -C ${R} stash list --format=%H%x00%gd%x00%ct%x00%gs%x1e`
+  const WORKTREES = `${G} -C ${R} worktree list --porcelain -z`
+  const FETCH = `/usr/bin/env GIT_TERMINAL_PROMPT=0 ${G} -C ${R} -c core.sshCommand=ssh -o BatchMode=yes -o ConnectTimeout=10 fetch --all --prune`
+  const rec = (...f: string[]) => `${f.join('\x00')}\x1e\n`
+  const answers = (over: Record<string, Run> = {}): Record<string, Run> => ({
+    [FIND_LINE]: { exitCode: 0, stdout: `${R}/.git\n` },
+    [`${G} -C ${R} log -1 --decorate=full --format=%ct%x00%h%x00%D HEAD`]: { exitCode: 0, stdout: '100\x001111111\x00HEAD -> refs/heads/main\n' },
+    [`${G} -C ${R} symbolic-ref --short -q HEAD`]: { exitCode: 0, stdout: 'main\n' },
+    [LOG]: { exitCode: 0, stdout: `${H}\x00\x00w\x00100\x00HEAD -> refs/heads/main\x00init\x1e\n` },
+    [REMOTES]: { exitCode: 0, stdout: 'origin\tssh://git@git.example.io:2223/server/acme/a.git (fetch)\norigin\tssh://git@git.example.io:2223/server/acme/a.git (push)\n' },
+    [`${G} -C ${R} rev-parse --git-common-dir`]: { exitCode: 0, stdout: '.git\n' },
+    [BRANCHES]: {
+      exitCode: 0,
+      stdout:
+        rec('refs/heads/main', 'origin/main', '', '100', '1111111', '*', 'init') +
+        rec('refs/heads/feat', '', '', '90', '2222222', ' ', 'wip') +
+        rec('refs/remotes/origin/main', '', '', '100', '1111111', ' ', 'init'),
+    },
+    [STASHES]: { exitCode: 0, stdout: rec(S, 'stash@{0}', '50', 'On main: 半成品') },
+    [WORKTREES]: { exitCode: 0, stdout: `worktree ${R}\x00HEAD ${H}\x00branch refs/heads/main\x00\x00` },
+    [`${G} -C ${R} status --porcelain=v1 -z --no-renames --untracked-files=normal`]: { exitCode: 0, stdout: ' M a.go\x00?? b.go\x00' },
+    [FETCH]: { exitCode: 0, stdout: '' },
+    ...over,
+  })
+  // FETCH_HEAD two hours before the clock's start
+  const files = { [`${R}/.git/FETCH_HEAD`]: -7_200_000 }
+  const setup = (on: On, git: Git = answers(), holdRun?: (argv: string[]) => Promise<void>, f: Record<string, number> = files) =>
+    world(on, { git, files: f, ...(holdRun ? { holdRun } : {}) })
+  const press = async ($: Engine, key: string, cols = 80) => {
+    const ui = await pane($, cols)
+    await ui.press({ key })
+    await ui.unmount()
+    await settle()
+  }
+  const shown = async ($: Engine, cols = 80) => {
+    for (let i = 0; i < 3; i += 1) {
+      await drawn($, cols)
+      await settle()
+    }
+    return (await drawn($, cols)).join('\n')
+  }
+  const toTree = async ($: Engine) => {
+    await start($)
+    await showChanges($)
+    await press($, 'chg-mode-commits')
+    await shown($)
+    await press($, `cm-repo-${R}`)
+    return shown($)
+  }
+  const count = (w: { runs: string[][] }, line: string) => w.runs.filter(r => r.join(' ') === line).length
+  const current = async ($: Engine, key: string) => {
+    const ui = await pane($)
+    const b = await ui.find({ key })
+    await ui.unmount()
+    return (b?.children ?? []).some(c => typeof c === 'object' && c !== null && (c as { props?: { inverse?: boolean } }).props?.inverse === true)
+  }
+
+  test('the tree page shows each remote and when it last fetched, the fetch press, and four sub-tabs with 提交 current', async ($, on) => {
+    setup(on)
+    const t = await toTree($)
+    expect(t).toContain('origin')
+    expect(t).toContain('server/acme/a.git')
+    expect(t).toContain('fetch 2 小時前')
+    for (const label of ['提交', '分支', 'Stash', 'Worktree']) expect(t).toContain(label)
+    expect(t).toContain('init')
+    expect(await current($, 'cm-view-log')).toBe(true)
+    expect(await current($, 'cm-view-branches')).toBe(false)
+    const ui = await pane($)
+    expect((await ui.find({ key: 'cm-fetch' }))?.text).toBe('fetch')
+    const buttons = await ui.findAll({ type: 'Button' })
+    await ui.unmount()
+    expect(buttons.every(b => b.props['hotkey'] === undefined)).toBe(true)
+  })
+
+  test('never fetched reads 從未 fetch; no remote reads 沒有 remote and offers no fetch', async ($, on) => {
+    setup(on, answers({ [REMOTES]: { exitCode: 0, stdout: '' } }), undefined, {})
+    const t = await toTree($)
+    expect(t).toContain('沒有 remote')
+    const ui = await pane($)
+    expect(await ui.find({ key: 'cm-fetch' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a repo never fetched but with a remote reads 從未 fetch', async ($, on) => {
+    setup(on, answers(), undefined, {})
+    expect(await toTree($)).toContain('從未 fetch')
+  })
+
+  test('a sub-tab is asked of git the first time it is shown; its count shows once answered', async ($, on) => {
+    const w = setup(on)
+    let t = await toTree($)
+    expect(t).not.toContain('分支 2')
+    expect(count(w, BRANCHES)).toBe(0)
+    await press($, 'cm-view-branches')
+    t = await shown($)
+    expect(await current($, 'cm-view-branches')).toBe(true)
+    expect(t).toContain('分支 2')
+    expect(t).toMatch(/◉ main/)
+    expect(t).toMatch(/● feat\s+無 upstream/)
+    expect(t).not.toContain('origin/main')
+    await press($, 'cm-view-stash')
+    t = await shown($)
+    expect(t).toContain('Stash 1')
+    expect(t).toContain('stash@{0}')
+    expect(t).toContain('半成品')
+    expect(t).toContain('stash 由這個 repo 的所有 worktree 共用')
+    await press($, 'cm-view-worktrees')
+    t = await shown($)
+    expect(t).toContain('Worktree 1')
+    expect(t).toMatch(/◉ a\s+\S+ main\s+±2/)
+    await press($, 'cm-view-branches')
+    await shown($)
+    expect(count(w, BRANCHES)).toBe(1)
+    expect(count(w, STASHES)).toBe(1)
+    expect(count(w, WORKTREES)).toBe(1)
+  })
+
+  test('重新整理 asks again only the sub-page shown and the remotes', async ($, on) => {
+    const w = setup(on)
+    await toTree($)
+    await press($, 'cm-view-branches')
+    await shown($)
+    await press($, 'cm-refresh')
+    await shown($)
+    expect(count(w, BRANCHES)).toBe(2)
+    expect(count(w, REMOTES)).toBe(2)
+    expect(count(w, LOG)).toBe(1)
+  })
+
+  test('fetch runs once with prompts off; while it runs it reads fetch 中…; after it the repo is asked again', async ($, on) => {
+    let release = () => {}
+    const gate = new Promise<void>(r => (release = r))
+    const w = setup(on, answers(), argv => (argv.join(' ') === FETCH ? gate : Promise.resolve()))
+    await toTree($)
+    await press($, 'cm-fetch')
+    let t = await shown($)
+    expect(t).toContain('fetch 中…')
+    const ui = await pane($)
+    expect(await ui.find({ key: 'cm-fetch' })).toBeUndefined()
+    await ui.unmount()
+    await press($, 'cm-refresh')
+    expect(count(w, FETCH)).toBe(1)
+    release()
+    await settle()
+    t = await shown($)
+    expect(t).not.toContain('fetch 中…')
+    expect(count(w, FETCH)).toBe(1)
+    // asked again after the fetch (重新整理 while it ran may have asked once more)
+    expect(count(w, LOG)).toBeGreaterThanOrEqual(2)
+    expect(w.runs.find(r => r.includes('fetch'))).toEqual([
+      '/usr/bin/env', 'GIT_TERMINAL_PROMPT=0', G, '-C', R, '-c', 'core.sshCommand=ssh -o BatchMode=yes -o ConnectTimeout=10', 'fetch', '--all', '--prune',
+    ])
+  })
+
+  test('a failed fetch shows its last stderr line until 重新整理; one past its time reads fetch 逾時', async ($, on) => {
+    let fetchAnswer: Run = { exitCode: 128, stderr: 'Fetching origin\nfatal: Could not read from remote repository.\n' }
+    const git = (argv: string[]): Run => (argv.join(' ') === FETCH ? fetchAnswer : (answers()[argv.join(' ')] ?? { exitCode: 128, stdout: '' }))
+    setup(on, git)
+    await toTree($)
+    await press($, 'cm-fetch')
+    let t = await shown($)
+    expect(t).toContain('fatal: Could not read from remote repository.')
+    await press($, 'cm-refresh')
+    t = await shown($)
+    expect(t).not.toContain('fatal: Could not read from remote repository.')
+    fetchAnswer = { exitCode: 0, throws: true }
+    await press($, 'cm-fetch')
+    expect(await shown($)).toContain('fetch 逾時')
   })
 })

@@ -56,6 +56,7 @@ export const COMMIT_ICON = {
   merge: '\uf419',
   branch: '\ue725',
   tag: '\uf02b',
+  remote: '\uf0c2',
 } as const
 
 export const withIcon = (icon: string, text: string): string => `${icon} ${text}`
