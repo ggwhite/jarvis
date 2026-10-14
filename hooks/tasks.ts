@@ -73,7 +73,8 @@ export const replaceItem = (board: JarvisTaskBoard, item: JarvisTaskItem): Jarvi
 })
 
 // A new item last on the board, numbered from `nextItem`; every way of making an item goes
-// through here. `extra` carries what the caller knows of it (status, origin).
+// through here. `extra` carries what the caller knows of it (status, origin). The caps are
+// the caller's to enforce: `add` and the mirrors check MAX_ITEMS and MAX_SUBTASKS themselves.
 export function putItem(
   board: JarvisTaskBoard,
   title: string,
@@ -238,4 +239,68 @@ export function boardText(board: JarvisTaskBoard): string {
     }
   }
   return lines.join('\n')
+}
+
+// ---- the built-in task tools, mirrored when the session has them ----
+
+export const TODO_TITLE = 'TodoWrite'
+export const TASKS_ORIGIN = 'tasks'
+export const TASKS_TITLE = '內建任務'
+
+// TodoWrite's whole list, one item per actor: each call replaces its subtasks (numbered
+// again from .1); an empty list removes the item.
+export function fromTodos(board: JarvisTaskBoard, todos: unknown, actor?: string): JarvisTaskBoard {
+  if (!Array.isArray(todos)) return board
+  const origin = `todo:${actor ?? 'main'}`
+  const rows = todos
+    .flatMap(t => {
+      const o = (typeof t === 'object' && t !== null ? t : {}) as Record<string, unknown>
+      const title = titleOf(o['content'])
+      const status: JarvisTaskStatus = isStatus(o['status']) ? o['status'] : 'pending'
+      return title === '' ? [] : [{ title, status }]
+    })
+    .slice(0, MAX_SUBTASKS)
+  const old = board.items.find(i => i.origin === origin)
+  if (rows.length === 0) return old ? { ...board, items: board.items.filter(i => i !== old) } : board
+  if (!old && board.items.length >= MAX_ITEMS) return board
+  const titles = rows.map(r => r.title)
+  const made = old
+    ? replaceItem(board, withSubtasks({ ...old, subtasks: [], nextSub: 1 }, titles, actor))
+    : putItem(board, TODO_TITLE, titles, actor, { origin })
+  return {
+    ...made,
+    items: made.items.map(i =>
+      i.origin === origin ? { ...i, subtasks: i.subtasks.map((s, k) => ({ ...s, status: rows[k]?.status ?? s.status })) } : i,
+    ),
+  }
+}
+
+// TaskCreate's task as a subtask of the 內建任務 item, once per task id.
+export function fromTaskCreate(board: JarvisTaskBoard, extId: unknown, subject: unknown, actor?: string): JarvisTaskBoard {
+  const id = typeof extId === 'string' ? extId : ''
+  const title = titleOf(subject)
+  if (id === '' || title === '') return board
+  const old = board.items.find(i => i.origin === TASKS_ORIGIN)
+  if (old ? old.subtasks.some(s => s.extId === id) || old.subtasks.length >= MAX_SUBTASKS : board.items.length >= MAX_ITEMS) return board
+  const made = old
+    ? replaceItem(board, withSubtasks(old, [title], actor))
+    : putItem(board, TASKS_TITLE, [title], actor, { origin: TASKS_ORIGIN })
+  return {
+    ...made,
+    items: made.items.map(i =>
+      i.origin === TASKS_ORIGIN ? { ...i, subtasks: i.subtasks.map((s, k, all) => (k === all.length - 1 ? { ...s, extId: id } : s)) } : i,
+    ),
+  }
+}
+
+// TaskUpdate on a mirrored task: its status and subject; `deleted` removes it.
+export function fromTaskUpdate(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>): JarvisTaskBoard {
+  const item = board.items.find(i => i.origin === TASKS_ORIGIN)
+  const sub = item?.subtasks.find(s => s.extId === input['taskId'])
+  if (!item || !sub) return board
+  const status = input['status']
+  if (status === 'deleted') return replaceItem(board, { ...item, subtasks: item.subtasks.filter(s => s !== sub) })
+  const title = titleOf(input['subject'])
+  const next: JarvisSubtask = { ...sub, ...(isStatus(status) ? { status } : {}), ...(title === '' ? {} : { title }) }
+  return replaceItem(board, { ...item, subtasks: item.subtasks.map(s => (s === sub ? next : s)) })
 }

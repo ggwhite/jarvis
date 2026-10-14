@@ -5,14 +5,20 @@ import {
   EMPTY_BOARD,
   MAX_ITEMS,
   MAX_SUBTASKS,
+  TASKS_TITLE,
   TASK_TOOL,
   TASK_TOOL_SPEC,
   TITLE_MAX,
+  TODO_TITLE,
   applyTask,
   boardCounts,
   boardText,
   countsText,
+  fromTaskCreate,
+  fromTaskUpdate,
+  fromTodos,
   itemStatus,
+  putItem,
   sortedItems,
 } from '../hooks/tasks'
 import type { TaskReply } from '../hooks/tasks'
@@ -194,5 +200,63 @@ describe('task board status and order', () => {
       ['任務看板（0/2 項目 · 細項 1/2）', '[>] 1 加看板', '  [x] 1.1 調查', '  [>] 1.2 實作 (agent agent-7)', '[ ] 2 寫文件'].join('\n'),
     )
     expect(boardText(EMPTY_BOARD)).toBe('任務看板是空的。')
+  })
+})
+
+describe('built-in task tools mirrored', () => {
+  const todo = (content: string, status: string) => ({ content, status, activeForm: `${content}中` })
+
+  test('putItem: extra.status overrides the default pending', () => {
+    expect(putItem(EMPTY_BOARD, 'x', [], undefined, { status: 'completed' }).items[0]?.status).toBe('completed')
+    expect(putItem(EMPTY_BOARD, 'x', [], undefined).items[0]?.status).toBe('pending')
+  })
+
+  test("TodoWrite: one item per actor, each call replacing its subtasks; an empty list removes it", () => {
+    let b = fromTodos(EMPTY_BOARD, [todo('讀檔', 'completed'), todo('改檔', 'in_progress')])
+    expect(b.items).toHaveLength(1)
+    expect(b.items[0]).toMatchObject({ id: '1', title: TODO_TITLE, origin: 'todo:main' })
+    expect(b.items[0]?.subtasks.map(s => [s.id, s.title, s.status])).toEqual([
+      ['1.1', '讀檔', 'completed'],
+      ['1.2', '改檔', 'in_progress'],
+    ])
+    b = fromTodos(b, [todo('讀檔', 'completed'), todo('改檔', 'completed'), todo('測試', 'pending')])
+    expect(b.items[0]?.subtasks.map(s => s.status)).toEqual(['completed', 'completed', 'pending'])
+    b = fromTodos(b, [todo('x', 'pending')], 'agent-7')
+    expect(b.items.map(i => i.origin)).toEqual(['todo:main', 'todo:agent-7'])
+    expect(b.items[1]?.subtasks[0]?.agentId).toBe('agent-7')
+    b = fromTodos(b, [])
+    expect(b.items.map(i => i.origin)).toEqual(['todo:agent-7'])
+  })
+
+  test('TodoWrite: a bad status reads pending; a blank or broken entry is skipped; not a list is nothing', () => {
+    const b = fromTodos(EMPTY_BOARD, [todo('a', 'weird'), todo('  ', 'pending'), null, 3])
+    expect(b.items[0]?.subtasks.map(s => [s.title, s.status])).toEqual([['a', 'pending']])
+    expect(fromTodos(EMPTY_BOARD, 'nope')).toBe(EMPTY_BOARD)
+  })
+
+  test('TaskCreate adds a subtask under 內建任務 once per task id; TaskUpdate sets status and subject, deleted removes', () => {
+    let b = fromTaskCreate(EMPTY_BOARD, '7', '跑測試')
+    b = fromTaskCreate(b, '8', '寫文件', 'agent-7')
+    b = fromTaskCreate(b, '8', '寫文件')
+    expect(b.items[0]).toMatchObject({ title: TASKS_TITLE, origin: 'tasks' })
+    expect(b.items[0]?.subtasks.map(s => [s.id, s.title, s.extId, s.agentId])).toEqual([
+      ['1.1', '跑測試', '7', undefined],
+      ['1.2', '寫文件', '8', 'agent-7'],
+    ])
+    b = fromTaskUpdate(b, { taskId: '7', status: 'completed', subject: '跑全部測試' })
+    expect(b.items[0]?.subtasks[0]).toMatchObject({ title: '跑全部測試', status: 'completed' })
+    b = fromTaskUpdate(b, { taskId: '8', status: 'deleted' })
+    expect(b.items[0]?.subtasks.map(s => s.extId)).toEqual(['7'])
+    expect(fromTaskUpdate(b, { taskId: '99', status: 'completed' })).toBe(b)
+    expect(fromTaskCreate(b, undefined, 'x')).toBe(b)
+  })
+
+  test('mirroring respects the caps', () => {
+    const many = Array.from({ length: MAX_SUBTASKS + 5 }, (_, k) => todo(`t${k}`, 'pending'))
+    expect(fromTodos(EMPTY_BOARD, many).items[0]?.subtasks).toHaveLength(MAX_SUBTASKS)
+    let full = EMPTY_BOARD
+    for (let i = 0; i < MAX_ITEMS; i += 1) full = ok(applyTask(full, { op: 'add', item: `i${i}` }))
+    expect(fromTodos(full, [todo('a', 'pending')])).toBe(full)
+    expect(fromTaskCreate(full, '1', 'a')).toBe(full)
   })
 })
