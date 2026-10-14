@@ -39,7 +39,7 @@ import { CHANGE_ICON, COMMIT_ICON, PHASE_ICON, ROLE_ICON, SECTION_ICON, TAB_ICON
 import { MAX_LISTED, diffLines } from './changesView'
 import type { ChangeEntry, ChangeGroup, ChangesView } from './changesView'
 import { isFailed } from './gitDiff'
-import type { DiffRow, Failed } from './gitDiff'
+import type { DiffRow, Failed, NumstatRow } from './gitDiff'
 import { tailCells } from './changes'
 import type { ChangeMode } from './changes'
 import { commitRows, laneColor, relTime } from './commitsView'
@@ -487,7 +487,11 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
               ? ctx.commits?.repo
                 ? 'commitTree'
                 : 'changes'
-              : ctx.page
+              : ctx.page === 'stashDiff' && !ctx.commits?.stashDiff
+                ? ctx.commits?.repo
+                  ? 'commitTree'
+                  : 'changes'
+                : ctx.page
   const onFleet = page === 'fleet' || page === 'fleetDetail'
 
   // ---- 標題列 -------------------------------------------------------------
@@ -529,9 +533,10 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     if (page === 'changeDiff') actions.push({ key: 'back', label: '返回', run: () => ctx.go('changes') })
     if (page === 'commitTree') {
       actions.push({ key: 'cm-refresh', label: '重新整理', run: () => ctx.commits?.refreshTree() })
-      actions.push({ key: 'back', label: '返回', run: () => ctx.go('changes') })
+      actions.push({ key: 'back', label: '返回', run: () => (ctx.commits ? ctx.commits.back() : ctx.go('changes')) })
     }
-    if (page === 'commitDiff') actions.push({ key: 'back', label: '返回', run: () => ctx.go('commitTree') })
+    // a commit's and a stash's diff go back to the tree page as it was: the branch, the sub-page
+    if (page === 'commitDiff' || page === 'stashDiff') actions.push({ key: 'back', label: '返回', run: () => ctx.go('commitTree') })
     if (page === 'log') actions.push({ key: 'pause', label: ctx.paused ? '繼續' : '暫停', run: ctx.pause })
     const tabText = (tab: (typeof TABS)[number], compact: boolean) =>
       compact && tab.page !== page ? withIcon(tab.icon, '') : withIcon(tab.icon, tab.label)
@@ -546,10 +551,10 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const tabsCompact = widthOf(false, false) > cols
     const actionsCompact = tabsCompact && widthOf(true, false) > cols
     const nodes: RenderElement[] = TABS.map(tab => {
-      // the diff, commit tree and commit diff pages are the changes tab's, the role page the stats tab's
+      // the diff, commit tree, commit diff and stash diff pages are the changes tab's, the role page the stats tab's
       const current =
         tab.page === page ||
-        ((page === 'changeDiff' || page === 'commitTree' || page === 'commitDiff') && tab.page === 'changes') ||
+        ((page === 'changeDiff' || page === 'commitTree' || page === 'commitDiff' || page === 'stashDiff') && tab.page === 'changes') ||
         (page === 'roleDetail' && tab.page === 'stats')
       const text = tabText(tab, tabsCompact)
       return (
@@ -2120,53 +2125,76 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return card({ w: cols, color: FRAME, lines }, Math.max(room, 2 + lines.length))
   }
 
-  // One commit's diff, one file at a time: the commit, the file and its counts, ‹ › to the
-  // commit's other files, then the diff with line numbers.
-  const commitDiffBlock = (room: number, cm: CommitsCtx): Block => {
+  // One file of a set at a time: the set's title, the file and its counts, ‹ › to the set's
+  // other files, then the diff with line numbers.
+  const fileDiffBlock = (
+    room: number,
+    head: Line,
+    files: readonly NumstatRow[] | Failed | undefined,
+    file: NumstatRow | undefined,
+    rows: DiffRow[] | Failed | undefined,
+    open: (path: string) => void,
+    keys: { prev: string; next: string },
+    empty: string,
+  ): Block => {
     const inner = cols - 4
-    const d = cm.diff
-    if (!d) return card({ w: cols, color: FRAME, lines: [] }, Math.max(3, room))
-    const head = leftRight(
-      [{ t: d.commit.sha.slice(0, 7), color: ACCENT, bold: true }, sp(1), { t: d.commit.subject, color: PRIMARY, bold: true }],
-      [{ t: cm.repo?.name ?? '', color: FRAME }],
-      inner,
-    )
     const lines: Line[] = [head]
-    const files = d.files
     if (files === undefined) lines.push([{ t: '讀取中…', color: MUTED }])
     else if (isFailed(files)) lines.push([{ t: files.error, color: MUTED }])
-    else if (files.length === 0 || !d.file) lines.push([{ t: '這個 commit 沒有改檔案', color: MUTED }])
+    else if (files.length === 0 || !file) lines.push([{ t: empty, color: MUTED }])
     else {
-      const f = d.file
-      const at = Math.max(0, files.findIndex(x => x.path === f.path))
-      const counts: Seg[] = f.binary
+      const at = Math.max(0, files.findIndex(x => x.path === file.path))
+      const counts: Seg[] = file.binary
         ? [{ t: '二進位', color: MUTED }]
-        : [{ t: `+${f.add}`, color: SUCCESS }, sp(1), { t: `−${f.del}`, color: ERROR }]
-      lines.push(leftRight([{ t: tailCells(f.path, Math.max(1, inner - segsWidth(counts) - 1)), color: BRIGHT }], counts, inner))
+        : [{ t: `+${file.add}`, color: SUCCESS }, sp(1), { t: `−${file.del}`, color: ERROR }]
+      lines.push(leftRight([{ t: tailCells(file.path, Math.max(1, inner - segsWidth(counts) - 1)), color: BRIGHT }], counts, inner))
       const step = (by: number) => () => {
         const next = files[at + by]
-        if (next) cm.openFile(next.path)
+        if (next) open(next.path)
       }
       lines.push({
         h: 1,
         node: (
           <Box flexDirection="row" gap={TAB_GAP}>
-            <Button key="cdiff-prev" plain onPress={step(-1)}>
+            <Button key={keys.prev} plain onPress={step(-1)}>
               <Text color={FRAME}>‹</Text>
             </Button>
             <Text color={FRAME}>{`${at + 1} / ${files.length}`}</Text>
-            <Button key="cdiff-next" plain onPress={step(1)}>
+            <Button key={keys.next} plain onPress={step(1)}>
               <Text color={FRAME}>›</Text>
             </Button>
           </Box>
         ),
       })
-      const rows = d.rows
       if (rows === undefined) lines.push([{ t: '計算中…', color: MUTED }])
       else if (isFailed(rows)) lines.push([{ t: rows.error, color: MUTED }])
       else lines.push(...diffLines(rows, inner))
     }
     return card({ w: cols, color: FRAME, lines }, Math.max(room, 2 + lines.length))
+  }
+
+  // One commit's diff against its first parent (a root commit whole).
+  const commitDiffBlock = (room: number, cm: CommitsCtx): Block => {
+    const d = cm.diff
+    if (!d) return card({ w: cols, color: FRAME, lines: [] }, Math.max(3, room))
+    const head = leftRight(
+      [{ t: d.commit.sha.slice(0, 7), color: ACCENT, bold: true }, sp(1), { t: d.commit.subject, color: PRIMARY, bold: true }],
+      [{ t: cm.repo?.name ?? '', color: FRAME }],
+      cols - 4,
+    )
+    return fileDiffBlock(room, head, d.files, d.file, d.rows, cm.openFile, { prev: 'cdiff-prev', next: 'cdiff-next' }, '這個 commit 沒有改檔案')
+  }
+
+  // One stash's diff: tracked files against its base, untracked ones whole.
+  const stashDiffBlock = (room: number, cm: CommitsCtx): Block => {
+    const d = cm.stashDiff
+    if (!d) return card({ w: cols, color: FRAME, lines: [] }, Math.max(3, room))
+    const head = leftRight(
+      [{ t: d.stash.name, color: ACCENT, bold: true }, sp(1), { t: d.stash.message, color: PRIMARY, bold: true }],
+      [{ t: cm.repo?.name ?? '', color: FRAME }],
+      cols - 4,
+    )
+    return fileDiffBlock(room, head, d.files, d.file, d.rows, cm.openStashFile, { prev: 'sdiff-prev', next: 'sdiff-next' }, '這個 stash 沒有檔案')
   }
 
   // ---- 組版 ---------------------------------------------------------------
@@ -2235,6 +2263,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     blocks.push(commitTreeBlock(left(), ctx.commits))
   } else if (page === 'commitDiff' && ctx.commits) {
     blocks.push(commitDiffBlock(left(), ctx.commits))
+  } else if (page === 'stashDiff' && ctx.commits) {
+    blocks.push(stashDiffBlock(left(), ctx.commits))
   } else {
     const hint = view.summary.groups.length === 0
     const plan = planStats({ cols, room: left() - (hint ? 1 : 0), roles: statsRoles.length, models: view.models.length })

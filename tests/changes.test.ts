@@ -2015,3 +2015,173 @@ describe('commits mode: remotes, sub-pages and fetch', () => {
     expect(await shown($)).toContain('fetch 逾時')
   })
 })
+
+describe('commits mode: into a branch, a stash, a worktree', () => {
+  const G = '/usr/bin/git'
+  const FIND_LINE = '/usr/bin/find /w -maxdepth 4 ( -name node_modules -o -name Library -o -name .Trash -o -name .cache -o -path */.claude/worktrees ) -prune -o -name .git -print -prune'
+  const R = '/w/a'
+  const WT = `${R}/.claude/worktrees/agent-x1`
+  const H = '1'.repeat(40)
+  const F = '2'.repeat(40)
+  const WH = '6'.repeat(40)
+  const S = '5'.repeat(40)
+  const FMT = '--format=%H%x00%P%x00%an%x00%ct%x00%D%x00%s%x1e'
+  const LOG = `${G} -C ${R} log --topo-order --decorate=full -n 40 ${FMT} HEAD`
+  const LOG_FEAT = `${G} -C ${R} log --topo-order --decorate=full -n 40 ${FMT} refs/heads/feat`
+  const LOG_WT = `${G} -C ${WT} log --topo-order --decorate=full -n 40 ${FMT} HEAD`
+  const rec = (...f: string[]) => `${f.join('\x00')}\x1e\n`
+  const answers: Record<string, Run> = {
+    [FIND_LINE]: { exitCode: 0, stdout: `${R}/.git\n` },
+    [`${G} -C ${R} log -1 --decorate=full --format=%ct%x00%h%x00%D HEAD`]: { exitCode: 0, stdout: '100\x001111111\x00HEAD -> refs/heads/main\n' },
+    [`${G} -C ${R} symbolic-ref --short -q HEAD`]: { exitCode: 0, stdout: 'main\n' },
+    [`${G} -C ${WT} symbolic-ref --short -q HEAD`]: { exitCode: 0, stdout: 'wt\n' },
+    [LOG]: { exitCode: 0, stdout: `${H}\x00\x00w\x00100\x00HEAD -> refs/heads/main\x00main-init\x1e\n` },
+    [LOG_FEAT]: { exitCode: 0, stdout: `${F}\x00\x00w\x0090\x00refs/heads/feat\x00wip\x1e\n` },
+    [LOG_WT]: { exitCode: 0, stdout: `${WH}\x00\x00w\x0080\x00HEAD -> refs/heads/wt\x00wt-commit\x1e\n` },
+    [`${G} -C ${R} show --numstat -z --no-renames --format= ${F}`]: { exitCode: 0, stdout: '' },
+    [`${G} -C ${R} remote -v`]: { exitCode: 0, stdout: '' },
+    [`${G} -C ${R} for-each-ref --sort=-committerdate --format=%(refname)%00%(upstream:short)%00%(upstream:track,nobracket)%00%(committerdate:unix)%00%(objectname:short)%00%(HEAD)%00%(subject)%1e refs/heads refs/remotes`]: {
+      exitCode: 0,
+      stdout: rec('refs/heads/main', '', '', '100', '1111111', '*', 'main-init') + rec('refs/heads/feat', '', '', '90', '2222222', ' ', 'wip'),
+    },
+    [`${G} -C ${R} stash list --format=%H%x00%gd%x00%ct%x00%gs%x1e`]: { exitCode: 0, stdout: rec(S, 'stash@{0}', '50', 'On main: 半成品') },
+    [`${G} -C ${R} stash show --include-untracked --numstat -z --no-renames ${S}`]: { exitCode: 0, stdout: '1\t1\ta.go\x002\t0\tnew.txt\x00' },
+    [`${G} -C ${R} ls-tree -r --name-only -z ${S}^3`]: { exitCode: 0, stdout: 'new.txt\x00' },
+    [`${G} -C ${R} diff --no-color --no-renames ${S}^1 ${S} -- a.go`]: { exitCode: 0, stdout: '@@ -1 +1 @@\n-old\n+new\n' },
+    [`${G} -C ${R} show --no-color --no-renames --format= ${S}^3 -- new.txt`]: { exitCode: 0, stdout: '@@ -0,0 +1,2 @@\n+x\n+y\n' },
+    [`${G} -C ${R} worktree list --porcelain -z`]: {
+      exitCode: 0,
+      stdout:
+        `worktree ${R}\x00HEAD ${H}\x00branch refs/heads/main\x00\x00` +
+        `worktree ${WT}\x00HEAD ${WH}\x00branch refs/heads/wt\x00\x00` +
+        `worktree /w/gone\x00HEAD ${'3'.repeat(40)}\x00detached\x00prunable gitdir file points to non-existent location\x00\x00`,
+    },
+    [`${G} -C ${R} status --porcelain=v1 -z --no-renames --untracked-files=normal`]: { exitCode: 0, stdout: '' },
+    [`${G} -C ${WT} status --porcelain=v1 -z --no-renames --untracked-files=normal`]: { exitCode: 0, stdout: ' M x.go\x00' },
+  }
+  const setup = (on: On) => world(on, { git: answers })
+  const press = async ($: Engine, key: string, cols = 80) => {
+    const ui = await pane($, cols)
+    await ui.press({ key })
+    await ui.unmount()
+    await settle()
+  }
+  const shown = async ($: Engine, cols = 80) => {
+    for (let i = 0; i < 3; i += 1) {
+      await drawn($, cols)
+      await settle()
+    }
+    return (await drawn($, cols)).join('\n')
+  }
+  const toTree = async ($: Engine) => {
+    await start($)
+    await showChanges($)
+    await press($, 'chg-mode-commits')
+    await shown($)
+    await press($, `cm-repo-${R}`)
+    return shown($)
+  }
+  const current = async ($: Engine, key: string) => {
+    const ui = await pane($)
+    const b = await ui.find({ key })
+    await ui.unmount()
+    return (b?.children ?? []).some(c => typeof c === 'object' && c !== null && (c as { props?: { inverse?: boolean } }).props?.inverse === true)
+  }
+
+  test('a branch row opens its tree, logged by its ref and titled by its name, 提交 current; 返回 goes to 分支, then the list', async ($, on) => {
+    const w = setup(on)
+    await toTree($)
+    await press($, 'cm-view-branches')
+    await shown($)
+    await press($, 'cm-branch-refs/heads/feat')
+    let t = await shown($)
+    expect(t).toContain('wip')
+    expect(t).not.toContain('main-init')
+    expect(t).toMatch(/\S+ feat/)
+    expect(w.runs.some(r => r.join(' ') === LOG_FEAT)).toBe(true)
+    expect(await current($, 'cm-view-log')).toBe(true)
+    await press($, `cm-commit-${F}`)
+    expect(await shown($)).toContain('這個 commit 沒有改檔案')
+    await press($, 'back')
+    expect(await shown($)).toContain('wip')
+    await press($, 'back')
+    t = await shown($)
+    expect(await current($, 'cm-view-branches')).toBe(true)
+    expect(t).toContain('feat')
+    await press($, 'back')
+    expect(await shown($)).toContain('1 repos')
+  })
+
+  test('a sub-tab pressed on a branch tree drops the branch', async ($, on) => {
+    setup(on)
+    await toTree($)
+    await press($, 'cm-view-branches')
+    await shown($)
+    await press($, 'cm-branch-refs/heads/feat')
+    await shown($)
+    await press($, 'cm-view-log')
+    const t = await shown($)
+    expect(t).toContain('main-init')
+    expect(t).not.toContain('wip')
+  })
+
+  test('a stash opens its diff: tracked files against its base, untracked ones whole; ‹ › walk; 返回 goes to Stash', async ($, on) => {
+    const w = setup(on)
+    await toTree($)
+    await press($, 'cm-view-stash')
+    await shown($)
+    await press($, `cm-stash-${S}`)
+    let t = await shown($)
+    expect(t).toMatch(/stash@\{0\} 半成品/)
+    expect(t).toMatch(/a\.go\s+\+1 −1/)
+    expect(t).toContain('1 / 2')
+    expect(t).toMatch(/1\s+\+new/)
+    expect(await current($, 'tab-changes')).toBe(true)
+    await press($, 'sdiff-next')
+    t = await shown($)
+    expect(t).toContain('2 / 2')
+    expect(t).toMatch(/new\.txt\s+\+2 −0/)
+    expect(w.runs.some(r => r.join(' ') === `${G} -C ${R} show --no-color --no-renames --format= ${S}^3 -- new.txt`)).toBe(true)
+    await press($, 'sdiff-next')
+    expect(await shown($)).toContain('2 / 2')
+    await press($, 'back')
+    t = await shown($)
+    expect(await current($, 'cm-view-stash')).toBe(true)
+    expect(t).toContain('stash@{0}')
+  })
+
+  test("a worktree row opens that worktree's tree; 返回 goes to the first repo's Worktree tab; a pruned one cannot be pressed", async ($, on) => {
+    const w = setup(on)
+    await toTree($)
+    await press($, 'cm-view-worktrees')
+    let t = await shown($)
+    expect(t).toMatch(/\.claude\/worktrees\/agent-x1\s+\S+ wt\s+±1\s+agent/)
+    expect(t).toMatch(/\/w\/gone\s+detached 3333333\s+已不存在/)
+    const ui = await pane($)
+    expect(await ui.find({ key: 'cm-wt-/w/gone' })).toBeUndefined()
+    await ui.unmount()
+    await press($, `cm-wt-${WT}`)
+    t = await shown($)
+    expect(t).toContain('wt-commit')
+    expect(w.runs.some(r => r.join(' ') === LOG_WT)).toBe(true)
+    await press($, 'cm-view-branches')
+    await shown($)
+    await press($, 'back')
+    t = await shown($)
+    expect(await current($, 'cm-view-worktrees')).toBe(true)
+    expect(t).toContain('agent-x1')
+  })
+
+  test('a /clear on a stash diff goes back to the repo list', async ($, on) => {
+    setup(on)
+    await toTree($)
+    await press($, 'cm-view-stash')
+    await shown($)
+    await press($, `cm-stash-${S}`)
+    expect(await shown($)).toContain('1 / 2')
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    const t = await shown($)
+    expect(t).toContain('1 repos')
+    expect(t).not.toContain('1 / 2')
+  })
+})

@@ -45,7 +45,8 @@ import { commitFileDiff, commitFiles, commitTreeOf, findRepos, repoSummary } fro
 import type { CommitFile, CommitTree, RepoSummary } from './gitCommits'
 import { commitRepoName, repoRows } from './commitsView'
 import type { CommitsCtx, RepoList } from './commitsView'
-import { FETCH_TIMEOUT_MS, branchesOf, fetchRepo, remotesOf, stashesOf, worktreesOf } from './gitRepo'
+import { FETCH_TIMEOUT_MS, branchesOf, fetchRepo, remotesOf, stashFileDiff, stashFiles, stashesOf, worktreesOf } from './gitRepo'
+import type { StashFile } from './gitRepo'
 import type { BranchList, Remotes, RepoView, StashInfo, WorktreeRow } from './repoViews'
 
 const PANE = 'jarvis'
@@ -1242,8 +1243,12 @@ export const register: Register = on => {
       resetChanges()
       try {
         await update($, changes, () => [])
-        // the commit tree and diff pages go back to the repo list, as a diff page does
-        await update($, ui, (u): JarvisUi => (u.page === 'commitTree' || u.page === 'commitDiff' ? { ...u, page: 'changes' } : u))
+        // the commit tree, commit diff and stash diff pages go back to the repo list, as a diff page does
+        await update($, ui, (u): JarvisUi => {
+          if (u.page !== 'commitTree' && u.page !== 'commitDiff' && u.page !== 'stashDiff') return u
+          const { commitRef: _r, repoBack: _b, repoView: _v, stashSha: _s, ...rest } = u
+          return { ...rest, page: 'changes' }
+        })
       } catch {
         // the page keeps what it showed
       }
@@ -1295,8 +1300,9 @@ export const register: Register = on => {
     const commitRepo = shown.commitRepo ?? ''
     const repoView: RepoView = shown.repoView ?? 'log'
     const commitRef = shown.commitRef
-    const onTree = (shown.page === 'commitTree' || shown.page === 'commitDiff') && commitRepo !== ''
+    const onTree = (shown.page === 'commitTree' || shown.page === 'commitDiff' || shown.page === 'stashDiff') && commitRepo !== ''
     const onRepoPage = shown.page === 'commitTree' && commitRepo !== ''
+    const onStash = shown.page === 'stashDiff' && commitRepo !== ''
     const gitIo = ioOf($)
     const tree = onTree
       ? askCommits<CommitTree>($, commitsCache, commitRepo, `t\x00${commitRepo}\x00${commitRef ?? ''}`, () => commitTreeOf(gitIo, commitRepo, commitRef), 'git log 失敗')
@@ -1309,7 +1315,7 @@ export const register: Register = on => {
         ? askCommits<BranchList>($, commitsCache, commitRepo, `b\x00${commitRepo}`, () => branchesOf(gitIo, commitRepo), 'git for-each-ref 失敗')
         : undefined
     const stashes =
-      onRepoPage && repoView === 'stash'
+      (onRepoPage && repoView === 'stash') || onStash
         ? askCommits<StashInfo[]>($, commitsCache, commitRepo, `s\x00${commitRepo}`, () => stashesOf(gitIo, commitRepo), 'git stash 失敗')
         : undefined
     const worktrees =
@@ -1333,6 +1339,23 @@ export const register: Register = on => {
             commitRepo,
             `d\x00${commitRepo}\x00${commit.sha}\x00${commitFile.path}`,
             () => commitFileDiff(gitIo, commitRepo, commit, commitFile.path),
+            'git diff 失敗',
+          )
+        : undefined
+    const stash = onStash && stashes !== undefined && !isFailed(stashes) ? stashes.find(s => s.sha === shown.stashSha) : undefined
+    const stashFileList = stash
+      ? askCommits<StashFile[]>($, commitsCache, commitRepo, `sf\x00${commitRepo}\x00${stash.sha}`, () => stashFiles(gitIo, commitRepo, stash.sha), 'git stash 失敗')
+      : undefined
+    const stashFile =
+      stashFileList !== undefined && !isFailed(stashFileList) ? (stashFileList.find(f => f.path === shown.commitFile) ?? stashFileList[0]) : undefined
+    const stashRows =
+      stash && stashFile
+        ? askCommits<DiffRow[]>(
+            $,
+            commitsCache,
+            commitRepo,
+            `sd\x00${commitRepo}\x00${stash.sha}\x00${stashFile.path}`,
+            () => stashFileDiff(gitIo, commitRepo, stash.sha, stashFile),
             'git diff 失敗',
           )
         : undefined
@@ -1403,6 +1426,7 @@ export const register: Register = on => {
           }
         : {}),
       ...(commit ? { diff: { commit, files: commitFileList, ...(commitFile ? { file: commitFile } : {}), rows: commitDiffRows } } : {}),
+      ...(stash ? { stashDiff: { stash, files: stashFileList, file: stashFile, rows: stashRows } } : {}),
       openRepo: (repo: string) =>
         setUi(u => {
           const { commitRef: _r, repoBack: _b, ...rest } = u
