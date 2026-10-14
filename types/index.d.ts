@@ -72,6 +72,35 @@ export type JarvisTick = { n: number; now: number }
 // holds it still.
 export type JarvisSuit = { n: number; deployedAt?: number; paused?: boolean }
 
+// ---- 任務 ----
+
+export type JarvisTaskStatus = 'pending' | 'in_progress' | 'completed'
+
+// One step of a work item. `agentId` names the subagent doing it (drawn as its MK-N);
+// `extId` is the built-in task tool's id of a step mirrored from TaskCreate.
+export type JarvisSubtask = {
+  id: string
+  title: string
+  status: JarvisTaskStatus
+  agentId?: string
+  extId?: string
+}
+
+// One work item. Its own `status` counts only while it has no subtasks; `nextSub` numbers
+// the next subtask. `origin` marks an item mirrored from a built-in tool: `todo:<actor>`
+// for TodoWrite, `tasks` for TaskCreate.
+export type JarvisTaskItem = {
+  id: string
+  title: string
+  status: JarvisTaskStatus
+  subtasks: JarvisSubtask[]
+  nextSub: number
+  origin?: string
+}
+
+// The session's task board; `nextItem` numbers the next item, ids are never reused.
+export type JarvisTaskBoard = { items: JarvisTaskItem[]; nextItem: number }
+
 // ---- 艦隊 ----
 
 // How herdr reports a Claude session: waiting on the person (blocked), working, or the rest.

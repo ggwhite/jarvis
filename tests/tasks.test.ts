@@ -1,0 +1,198 @@
+import { describe, expect, test } from 'claude-code/testing'
+
+import type { JarvisTaskBoard } from '../types'
+import {
+  EMPTY_BOARD,
+  MAX_ITEMS,
+  MAX_SUBTASKS,
+  TASK_TOOL,
+  TASK_TOOL_SPEC,
+  TITLE_MAX,
+  applyTask,
+  boardCounts,
+  boardText,
+  countsText,
+  itemStatus,
+  sortedItems,
+} from '../hooks/tasks'
+import type { TaskReply } from '../hooks/tasks'
+
+const ok = (r: TaskReply): JarvisTaskBoard => {
+  if ('error' in r) throw new Error(r.error)
+  return r.board
+}
+
+// the ops run in order from an empty board, each by the main loop
+const build = (...ops: Record<string, unknown>[]): JarvisTaskBoard =>
+  ops.reduce<JarvisTaskBoard>((b, op) => ok(applyTask(b, op)), EMPTY_BOARD)
+
+const errorOf = (board: JarvisTaskBoard, op: Record<string, unknown>, actor?: string): string => {
+  const r = applyTask(board, op, actor)
+  return 'error' in r ? r.error : ''
+}
+
+describe('task board ops', () => {
+  test('the tool is mcp__jarvis__task, its schema in the prompt from the start, no reserved field names', () => {
+    expect(TASK_TOOL).toBe('mcp__jarvis__task')
+    expect(`mcp__jarvis__${TASK_TOOL_SPEC.name}`).toBe(TASK_TOOL)
+    expect(TASK_TOOL_SPEC.isDeferred).toBe(false)
+    const props = Object.keys(TASK_TOOL_SPEC.inputSchema.properties)
+    for (const reserved of ['tool', 'tool_use_id', 'agentId', 'consent', 'requestMeta']) expect(props).not.toContain(reserved)
+    expect(props).toContain('agent')
+  })
+
+  test('add makes an item with numbered subtasks; item ids count up and are not reused', () => {
+    const b = build(
+      { op: 'add', item: '加看板', subtasks: ['調查', '實作'] },
+      { op: 'add', item: '修 bug' },
+      { op: 'remove', id: '2' },
+      { op: 'add', item: '寫文件' },
+    )
+    expect(b.items.map(i => i.id)).toEqual(['1', '3'])
+    expect(b.items[0]?.subtasks.map(s => [s.id, s.title, s.status])).toEqual([
+      ['1.1', '調查', 'pending'],
+      ['1.2', '實作', 'pending'],
+    ])
+    expect(b.items[0]?.subtasks.every(s => s.agentId === undefined)).toBe(true)
+  })
+
+  test('add with to appends subtasks, numbering on past a removed one', () => {
+    const b = build(
+      { op: 'add', item: 'A', subtasks: ['a1', 'a2'] },
+      { op: 'remove', id: '1.2' },
+      { op: 'add', to: '1', subtasks: ['a3'] },
+    )
+    expect(b.items[0]?.subtasks.map(s => s.id)).toEqual(['1.1', '1.3'])
+  })
+
+  test('add refuses: no item and no to, a blank item, an unknown to, to with no subtasks', () => {
+    expect(errorOf(EMPTY_BOARD, { op: 'add' })).toContain('item')
+    expect(errorOf(EMPTY_BOARD, { op: 'add', item: '   ' })).toContain('item')
+    expect(errorOf(EMPTY_BOARD, { op: 'add', to: '9', subtasks: ['x'] })).toContain('找不到項目 9')
+    expect(errorOf(build({ op: 'add', item: 'A' }), { op: 'add', to: '1', subtasks: [] })).toContain('subtasks')
+  })
+
+  test('titles are trimmed and kept to TITLE_MAX characters; blank subtasks are dropped', () => {
+    const b = build({ op: 'add', item: `  ${'長'.repeat(200)}  `, subtasks: ['', '  ', ' ok ', 3] })
+    expect([...(b.items[0]?.title ?? '')].length).toBe(TITLE_MAX)
+    expect(b.items[0]?.subtasks.map(s => s.title)).toEqual(['ok'])
+  })
+
+  test('update sets a subtask status and title', () => {
+    const b = build(
+      { op: 'add', item: 'A', subtasks: ['a1'] },
+      { op: 'update', id: '1.1', status: 'in_progress', title: 'a1 改名' },
+    )
+    expect(b.items[0]?.subtasks[0]).toMatchObject({ id: '1.1', title: 'a1 改名', status: 'in_progress' })
+  })
+
+  test("a subagent's update marks the subtask its own; agent names the owner; a later main update keeps it", () => {
+    const b0 = build({ op: 'add', item: 'A', subtasks: ['a1', 'a2'] })
+    const b1 = ok(applyTask(b0, { op: 'update', id: '1.1', status: 'in_progress' }, 'agent-7'))
+    expect(b1.items[0]?.subtasks[0]?.agentId).toBe('agent-7')
+    const b2 = ok(applyTask(b1, { op: 'update', id: '1.2', agent: 'agent-9' }))
+    expect(b2.items[0]?.subtasks[1]?.agentId).toBe('agent-9')
+    const b3 = ok(applyTask(b2, { op: 'update', id: '1.1', status: 'completed' }))
+    expect(b3.items[0]?.subtasks[0]).toMatchObject({ status: 'completed', agentId: 'agent-7' })
+  })
+
+  test('subtasks a subagent adds are its own', () => {
+    const b0 = build({ op: 'add', item: 'A' })
+    const b1 = ok(applyTask(b0, { op: 'add', to: '1', subtasks: ['x'] }, 'agent-7'))
+    expect(b1.items[0]?.subtasks[0]?.agentId).toBe('agent-7')
+  })
+
+  test('update refuses: an unknown id, a bad status, a blank title, nothing to change, an item with subtasks set running', () => {
+    const b = build({ op: 'add', item: 'A', subtasks: ['a1'] }, { op: 'add', item: 'B' })
+    expect(errorOf(b, { op: 'update', id: '9', status: 'completed' })).toContain('找不到項目 9')
+    expect(errorOf(b, { op: 'update', id: '1.9', status: 'completed' })).toContain('找不到 1.9')
+    expect(errorOf(b, { op: 'update', id: 'x', status: 'completed' })).toContain('找不到 x')
+    expect(errorOf(b, { op: 'update', id: '1.1', status: 'done' })).toContain('status')
+    expect(errorOf(b, { op: 'update', id: '1.1', title: '  ' })).toContain('title')
+    expect(errorOf(b, { op: 'update', id: '1.1' })).toContain('update')
+    expect(errorOf(b, { op: 'update', id: '2' })).toContain('update')
+    expect(errorOf(b, { op: 'update', id: '1', status: 'in_progress' })).toContain('有細項')
+  })
+
+  test('an item with subtasks set completed completes every subtask; one without keeps its own status', () => {
+    const b = build(
+      { op: 'add', item: 'A', subtasks: ['a1', 'a2'] },
+      { op: 'add', item: 'B' },
+      { op: 'update', id: '1', status: 'completed' },
+      { op: 'update', id: '2', status: 'in_progress', title: 'B2' },
+    )
+    expect(b.items[0]?.subtasks.map(s => s.status)).toEqual(['completed', 'completed'])
+    expect(b.items[1]).toMatchObject({ title: 'B2', status: 'in_progress' })
+  })
+
+  test('remove drops an item or a subtask; unknown ids are refused', () => {
+    const b = build({ op: 'add', item: 'A', subtasks: ['a1', 'a2'] }, { op: 'remove', id: '1.1' })
+    expect(b.items[0]?.subtasks.map(s => s.id)).toEqual(['1.2'])
+    expect(build({ op: 'add', item: 'A' }, { op: 'remove', id: '1' }).items).toEqual([])
+    expect(errorOf(b, { op: 'remove', id: '1.1' })).toContain('找不到 1.1')
+    expect(errorOf(b, { op: 'remove', id: '5' })).toContain('找不到項目 5')
+  })
+
+  test('list answers the board unchanged; an unknown op is refused', () => {
+    const b = build({ op: 'add', item: 'A' })
+    const r = applyTask(b, { op: 'list' })
+    expect(ok(r)).toBe(b)
+    expect(errorOf(b, { op: 'clear' })).toContain('op')
+    expect(errorOf(b, {})).toContain('op')
+  })
+
+  test('caps: MAX_ITEMS items, MAX_SUBTASKS subtasks per item', () => {
+    let b = EMPTY_BOARD
+    for (let i = 0; i < MAX_ITEMS; i += 1) b = ok(applyTask(b, { op: 'add', item: `i${i}` }))
+    expect(errorOf(b, { op: 'add', item: 'one more' })).toContain(String(MAX_ITEMS))
+    const many = Array.from({ length: MAX_SUBTASKS }, (_, k) => `s${k}`)
+    const full = build({ op: 'add', item: 'A', subtasks: many })
+    expect(errorOf(full, { op: 'add', to: '1', subtasks: ['x'] })).toContain(String(MAX_SUBTASKS))
+    expect(errorOf(EMPTY_BOARD, { op: 'add', item: 'A', subtasks: [...many, 'x'] })).toContain(String(MAX_SUBTASKS))
+  })
+})
+
+describe('task board status and order', () => {
+  test('an item with subtasks: all done is done, any running is running, else pending', () => {
+    const b = build(
+      { op: 'add', item: 'A', subtasks: ['a1', 'a2'] },
+      { op: 'update', id: '1.1', status: 'completed' },
+    )
+    const item = b.items[0]
+    if (!item) throw new Error('no item')
+    expect(itemStatus(item)).toBe('pending')
+    expect(itemStatus({ ...item, subtasks: item.subtasks.map(s => ({ ...s, status: 'completed' as const })) })).toBe('completed')
+    expect(itemStatus({ ...item, subtasks: [{ ...item.subtasks[0]!, status: 'in_progress' }] })).toBe('in_progress')
+    expect(itemStatus({ ...item, status: 'completed', subtasks: [] })).toBe('completed')
+  })
+
+  test('sortedItems: running, then pending, then done; each group in the order added', () => {
+    const b = build(
+      { op: 'add', item: 'A' },
+      { op: 'add', item: 'B', subtasks: ['b1'] },
+      { op: 'add', item: 'C', subtasks: ['c1'] },
+      { op: 'add', item: 'D', subtasks: ['d1', 'd2'] },
+      { op: 'add', item: 'E' },
+      { op: 'update', id: '2.1', status: 'completed' },
+      { op: 'update', id: '3.1', status: 'in_progress' },
+      { op: 'update', id: '4.1', status: 'completed' },
+      { op: 'update', id: '5', status: 'in_progress' },
+    )
+    expect(sortedItems(b).map(i => i.title)).toEqual(['C', 'E', 'A', 'D', 'B'])
+  })
+
+  test('counts, and the text the model reads in the order added', () => {
+    const b = build(
+      { op: 'add', item: '加看板', subtasks: ['調查', '實作'] },
+      { op: 'add', item: '寫文件' },
+      { op: 'update', id: '1.1', status: 'completed' },
+      { op: 'update', id: '1.2', status: 'in_progress', agent: 'agent-7' },
+    )
+    expect(boardCounts(b)).toEqual({ items: 2, itemsDone: 0, subtasks: 2, subtasksDone: 1 })
+    expect(countsText(boardCounts(b))).toBe('0/2 項目 · 細項 1/2')
+    expect(boardText(b)).toBe(
+      ['任務看板（0/2 項目 · 細項 1/2）', '[>] 1 加看板', '  [x] 1.1 調查', '  [>] 1.2 實作 (agent agent-7)', '[ ] 2 寫文件'].join('\n'),
+    )
+    expect(boardText(EMPTY_BOARD)).toBe('任務看板是空的。')
+  })
+})
