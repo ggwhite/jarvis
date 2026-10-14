@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import {
-  MAX_BRANCHES,
   branchRows,
   countStatus,
   parseBranchRefs,
@@ -75,6 +74,11 @@ describe('parseTrack', () => {
     expect(parseTrack('ahead 1, behind 2')).toEqual({ ahead: 1, behind: 2, gone: false })
     expect(parseTrack('gone')).toEqual({ ahead: 0, behind: 0, gone: true })
   })
+
+  test('two-digit counts are read whole', () => {
+    expect(parseTrack('ahead 12, behind 34')).toEqual({ ahead: 12, behind: 34, gone: false })
+    expect(parseTrack('ahead 100')).toEqual({ ahead: 100, behind: 0, gone: false })
+  })
 })
 
 describe('parseBranchRefs', () => {
@@ -136,12 +140,22 @@ describe('branchRows', () => {
     expect(list.rows[0]).toMatchObject({ upstream: true })
   })
 
-  test(`at most ${MAX_BRANCHES} rows; the rest counted`, () => {
-    const refs = Array.from({ length: MAX_BRANCHES + 7 }, (_, i) => ref({ ref: `refs/heads/b${i}`, time: i }))
+  test('at most 100 rows, the newest; the rest counted', () => {
+    const refs = Array.from({ length: 107 }, (_, i) => ref({ ref: `refs/heads/b${i}`, time: i }))
     const list = branchRows(refs, undefined)
-    expect(list.rows.length).toBe(MAX_BRANCHES)
+    expect(list.rows.length).toBe(100)
+    expect(list.rows[0]?.name).toBe('b106')
+    expect(list.rows[99]?.name).toBe('b7')
     expect(list.more).toBe(7)
-    expect(list.total).toBe(MAX_BRANCHES + 7)
+    expect(list.total).toBe(107)
+    const exact = branchRows(refs.slice(0, 100), undefined)
+    expect(exact.rows.length).toBe(100)
+    expect(exact.more).toBe(0)
+  })
+
+  test('branches last committed at the same time are ordered by name', () => {
+    const list = branchRows([ref({ ref: 'refs/heads/b', time: 5 }), ref({ ref: 'refs/heads/c', time: 5 }), ref({ ref: 'refs/heads/a', time: 5 })], undefined)
+    expect(list.rows.map(r => r.name)).toEqual(['a', 'b', 'c'])
   })
 })
 
@@ -163,6 +177,13 @@ describe('parseStashes', () => {
   test('no stash is an empty list', () => {
     expect(parseStashes('')).toEqual([])
   })
+
+  test('a message in neither form is kept whole, with no branch', () => {
+    const S = 'd'.repeat(40)
+    expect(parseStashes(rec(S, 'stash@{0}', '10', 'custom reflog message'))).toEqual([
+      { sha: S, name: 'stash@{0}', time: 10_000, branch: '', message: 'custom reflog message' },
+    ])
+  })
 })
 
 describe('parseWorktrees', () => {
@@ -178,6 +199,14 @@ describe('parseWorktrees', () => {
       { path: '/w/a/.claude/worktrees/agent-x1', head: '2'.repeat(40), branch: 'wt', detached: false, locked: true, prunable: false, bare: false },
       { path: '/w/b', head: '3'.repeat(40), detached: true, locked: false, prunable: false, bare: false },
       { path: '/w/gone', head: '4'.repeat(40), branch: 'old', detached: false, locked: false, prunable: true, bare: false },
+    ])
+  })
+})
+
+describe('parseWorktrees: bare', () => {
+  test('a bare repository is flagged', () => {
+    expect(parseWorktrees('worktree /w/b.git\x00bare\x00\x00')).toEqual([
+      { path: '/w/b.git', head: '', detached: false, locked: false, prunable: false, bare: true },
     ])
   })
 })
@@ -206,6 +235,21 @@ describe('worktreeRows', () => {
       ['a', true, false, 2],
       ['.claude/worktrees/agent-x1', false, true, 0],
       ['/w/z-other', false, false, undefined],
+    ])
+  })
+
+  test('only a directory named agent-* under .claude/worktrees is an agent one', () => {
+    const w = (path: string) => ({ path, head: 'h', branch: 'b', detached: false, locked: false, prunable: false, bare: false })
+    const rows = worktreeRows(
+      [w('/w/a'), w('/w/a/.claude/worktrees/repo-views'), w('/w/a/.claude/worktrees/agent-ab12'), w('/w/a/worktrees/agent-x'), w('/w/agent-y')],
+      new Map(),
+    )
+    expect(rows.map(r => [r.name, r.agent])).toEqual([
+      ['a', false],
+      ['.claude/worktrees/agent-ab12', true],
+      ['.claude/worktrees/repo-views', false],
+      ['worktrees/agent-x', false],
+      ['/w/agent-y', false],
     ])
   })
 })
@@ -270,6 +314,20 @@ describe('branchesOf', () => {
     expect(b.rows.every(r => !r.merged)).toBe(true)
     expect(await branchesOf(fakeIo({}), R)).toEqual({ error: 'git for-each-ref 失敗' })
   })
+
+  test('the --merged query failing marks nothing merged and does not fail the page', async () => {
+    const io = fakeIo({
+      [LIST]: { exitCode: 0, stdout: recs },
+      [`${GIT} -C ${R} symbolic-ref -q --short refs/remotes/origin/HEAD`]: { exitCode: 0, stdout: 'origin/main\n' },
+    })
+    const b = await branchesOf(io, R)
+    if (isFailed(b)) throw new Error(b.error)
+    expect(b.mergeKnown).toBe(false)
+    expect(b.rows.map(r => [r.name, r.merged])).toEqual([
+      ['main', false],
+      ['old', false],
+    ])
+  })
 })
 
 describe('stashes', () => {
@@ -277,6 +335,10 @@ describe('stashes', () => {
   test('the list', async () => {
     const io = fakeIo({ [`${GIT} -C ${R} stash list ${STASH_FORMAT}`]: { exitCode: 0, stdout: rec(S, 'stash@{0}', '10', 'On main: 半成品') } })
     expect(await stashesOf(io, R)).toEqual([{ sha: S, name: 'stash@{0}', time: 10_000, branch: 'main', message: '半成品' }])
+  })
+
+  test('the list failing is an error', async () => {
+    expect(await stashesOf(fakeIo({}), R)).toEqual({ error: 'git stash 失敗' })
   })
 
   test('its files, the untracked ones by its third parent; their diffs from the right commits', async () => {
@@ -310,6 +372,22 @@ describe('stashes', () => {
   })
 })
 
+describe('stash failures', () => {
+  const S = '6'.repeat(40)
+
+  test('stash show failing is an error; a leading blank line before the numstat is skipped', async () => {
+    expect(await stashFiles(fakeIo({}), R, S)).toEqual({ error: 'git stash 失敗' })
+    const io = fakeIo({ [`${GIT} -C ${R} stash show --include-untracked --numstat -z --no-renames ${S}`]: { exitCode: 0, stdout: '\n3\t1\ta.go\x00' } })
+    expect(await stashFiles(io, R, S)).toEqual([{ path: 'a.go', add: 3, del: 1, binary: false, untracked: false }])
+  })
+
+  test('a file diff failing is an error, tracked or untracked', async () => {
+    const f = { path: 'a.go', add: 1, del: 0, binary: false }
+    expect(await stashFileDiff(fakeIo({}), R, S, { ...f, untracked: false })).toEqual({ error: 'git diff 失敗' })
+    expect(await stashFileDiff(fakeIo({}), R, S, { ...f, untracked: true })).toEqual({ error: 'git diff 失敗' })
+  })
+})
+
 describe('worktreesOf', () => {
   test('each worktree with its uncommitted files; a pruned one is not asked', async () => {
     const W = `${R}/.claude/worktrees/agent-x1`
@@ -332,6 +410,23 @@ describe('worktreesOf', () => {
       ['/w/gone', undefined, true, false],
     ])
     expect(io.runs.some(a => a.includes('/w/gone'))).toBe(false)
+  })
+
+  test('a bare repository is listed but not asked for its status', async () => {
+    const io = fakeIo({
+      [`${GIT} -C ${R} worktree list --porcelain -z`]: {
+        exitCode: 0,
+        stdout: `worktree ${R}\x00bare\x00\x00worktree /w/linked\x00HEAD ${'2'.repeat(40)}\x00branch refs/heads/wt\x00\x00`,
+      },
+      [`${GIT} -C /w/linked status --porcelain=v1 -z --no-renames --untracked-files=normal`]: { exitCode: 0, stdout: ' M a.go\x00' },
+    })
+    const rows = await worktreesOf(io, R)
+    if (isFailed(rows)) throw new Error(rows.error)
+    expect(rows.map(r => [r.path, r.bare, r.dirty])).toEqual([
+      [R, true, undefined],
+      ['/w/linked', false, 1],
+    ])
+    expect(io.runs.filter(a => a.includes('status')).map(a => a[2])).toEqual(['/w/linked'])
   })
 
   test('worktree list failing is an error', async () => {
@@ -361,7 +456,7 @@ describe('commitTreeOf with a ref', () => {
 
   test('a local branch is logged with its upstream, named by its short name', async () => {
     const io = fakeIo({
-      [`${GIT} -C ${R} rev-parse --abbrev-ref --symbolic-full-name refs/heads/feat@{u}`]: { exitCode: 0, stdout: 'origin/feat\n' },
+      [`${GIT} -C ${R} rev-parse --abbrev-ref --symbolic-full-name feat@{u}`]: { exitCode: 0, stdout: 'origin/feat\n' },
       [`${GIT} -C ${R} log --topo-order --decorate=full -n 40 ${FMT} refs/heads/feat origin/feat`]: { exitCode: 0, stdout: log },
       [`${GIT} -C ${R} rev-list origin/feat..refs/heads/feat`]: { exitCode: 0, stdout: `${'2'.repeat(40)}\n` },
     })
@@ -373,6 +468,18 @@ describe('commitTreeOf with a ref', () => {
     expect(io.runs.some(a => a.includes('symbolic-ref'))).toBe(false)
   })
 
+  test('a branch name with a slash keeps it in the upstream query', async () => {
+    const io = fakeIo({
+      [`${GIT} -C ${R} rev-parse --abbrev-ref --symbolic-full-name feat/x@{u}`]: { exitCode: 0, stdout: 'origin/feat/x\n' },
+      [`${GIT} -C ${R} log --topo-order --decorate=full -n 40 ${FMT} refs/heads/feat/x origin/feat/x`]: { exitCode: 0, stdout: log },
+      [`${GIT} -C ${R} rev-list origin/feat/x..refs/heads/feat/x`]: { exitCode: 0, stdout: '' },
+    })
+    const t = await commitTreeOf(io, R, 'refs/heads/feat/x')
+    if (isFailed(t)) throw new Error(t.error)
+    expect(t.upstream).toBe('origin/feat/x')
+    expect(t.branch).toBe('feat/x')
+  })
+
   test('a remote branch has no upstream and nothing unpushed', async () => {
     const io = fakeIo({
       [`${GIT} -C ${R} log --topo-order --decorate=full -n 40 ${FMT} refs/remotes/origin/x`]: { exitCode: 0, stdout: log },
@@ -382,5 +489,6 @@ describe('commitTreeOf with a ref', () => {
     expect(t.branch).toBe('origin/x')
     expect(t.upstream).toBeUndefined()
     expect(t.unpushed).toEqual([])
+    expect(io.runs.some(a => a.includes('rev-parse'))).toBe(false)
   })
 })

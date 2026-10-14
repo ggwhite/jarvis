@@ -86,10 +86,15 @@ export async function repoSummary(io: Pick<ChangesIo, 'run'>, repo: string): Pro
   return { branch: headBranch(parseRefs(refs)) ?? short, ...(ahead !== undefined ? { ahead } : {}), time: Number(ct) * 1000 || 0 }
 }
 
-// `ref`: a full refname to log instead of HEAD, with its own upstream (a remote branch has none)
+// `ref`: a full refname to log instead of HEAD, with its own upstream (a remote branch has none);
+// `@{u}` takes a branch's short name, a full refname is `no such branch` to git
+const upstreamSpec = (ref: string | undefined): string | undefined =>
+  ref === undefined ? '@{u}' : ref.startsWith('refs/heads/') ? `${shortRef(ref)}@{u}` : undefined
+
 export async function commitTreeOf(io: Pick<ChangesIo, 'run'>, repo: string, ref?: string): Promise<CommitTree | Failed> {
   const tip = ref ?? 'HEAD'
-  const u = await io.run([GIT, '-C', repo, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', ref === undefined ? '@{u}' : `${ref}@{u}`])
+  const spec = upstreamSpec(ref)
+  const u = spec === undefined ? undefined : await io.run([GIT, '-C', repo, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', spec])
   const upstream = u?.exitCode === 0 && u.stdout.trim() !== '' ? u.stdout.trim() : undefined
   const r = await io.run([GIT, '-C', repo, 'log', '--topo-order', '--decorate=full', '-n', String(MAX_COMMITS), LOG_FORMAT, tip, ...(upstream ? [upstream] : [])])
   if (!answered(r)) return { error: 'git log 失敗' }
