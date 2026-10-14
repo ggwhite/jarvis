@@ -9,6 +9,7 @@ import type {
   JarvisEvent,
   JarvisInflight,
   JarvisPage,
+  JarvisTaskBoard,
   QuotaWindow,
 } from '../types'
 import { fleetSections, fmtAgo, fmtBig, wrapCells } from './fleet'
@@ -42,6 +43,9 @@ import { isFailed } from './gitDiff'
 import type { DiffRow, Failed, NumstatRow } from './gitDiff'
 import { tailCells } from './changes'
 import type { ChangeMode } from './changes'
+import { EMPTY_BOARD, boardCounts, countsText } from './tasks'
+import { taskRows } from './tasksView'
+import type { OwnerMark } from './tasksView'
 import { commitRows, laneColor, relTime } from './commitsView'
 import type { CommitsCtx, RefLabel, RepoPage } from './commitsView'
 import { MAX_REMOTES } from './repoViews'
@@ -203,6 +207,8 @@ export type Ctx = {
   diff?: { key: string; rows: DiffRow[] | Failed | undefined }
   // the commits mode: the repo list and its presses (the tree and diff pages' too)
   commits?: CommitsCtx
+  // the task page's board; read only while the page is drawn
+  tasks?: JarvisTaskBoard
 }
 
 const FRAME = THEME.frame
@@ -303,6 +309,7 @@ const TABS: { page: JarvisPage; icon: string; label: string }[] = [
   { page: 'stats', icon: TAB_ICON.stats, label: '統計' },
   { page: 'fleet', icon: TAB_ICON.fleet, label: '艦隊' },
   { page: 'changes', icon: TAB_ICON.changes, label: '異動' },
+  { page: 'tasks', icon: TAB_ICON.tasks, label: '任務' },
 ]
 
 // The burn chart's width at each breakpoint but wide (which takes the pane less 4).
@@ -2262,6 +2269,22 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return fileDiffBlock(room, head, d.files, d.file, d.rows, cm.openStashFile, { prev: 'sdiff-prev', next: 'sdiff-next' }, '這個 stash 沒有檔案')
   }
 
+  // ---- 任務 ---------------------------------------------------------------
+
+  // a subtask's owner: a listed squad member as MK-N in its color, else a bare MK
+  const taskOwner = (agentId: string): OwnerMark => {
+    const m = view.roster.get(agentId)
+    return m ? { t: `MK-${m.n}`, color: m.color } : { t: 'MK', color: FRAME }
+  }
+
+  const tasksBlock = (room: number): Block => {
+    const inner = cols - 4
+    const board = ctx.tasks ?? EMPTY_BOARD
+    const head = leftRight([title(TAB_ICON.tasks, '任務', PRIMARY)], [{ t: countsText(boardCounts(board)), color: FRAME }], inner)
+    const h = Math.max(6, room)
+    return card({ w: cols, color: FRAME, lines: [head, ...taskRows(board, inner, h - 3, taskOwner)] }, h)
+  }
+
   // ---- 組版 ---------------------------------------------------------------
 
   const blocks: Block[] = [titleBar(), tabBar()]
@@ -2330,6 +2353,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     blocks.push(commitDiffBlock(left(), ctx.commits))
   } else if (page === 'stashDiff' && ctx.commits) {
     blocks.push(stashDiffBlock(left(), ctx.commits))
+  } else if (page === 'tasks') {
+    blocks.push(tasksBlock(left()))
   } else {
     const hint = view.summary.groups.length === 0
     const plan = planStats({ cols, room: left() - (hint ? 1 : 0), roles: statsRoles.length, models: view.models.length })

@@ -9,6 +9,7 @@ export const TAB_ICON = {
   stats: '\uf080',
   fleet: '\uf135',
   changes: '\uf47f',
+  tasks: '\uf0ae',
 } as const
 
 export const TITLE_ICON = {

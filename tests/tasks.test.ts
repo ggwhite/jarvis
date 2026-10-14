@@ -1,4 +1,4 @@
-import type { On } from 'claude-code'
+import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
@@ -448,5 +448,101 @@ describe('task board tool', () => {
       await $.classic.SessionStart({ source } as never)
       expect(await boardOf($)).toBe('任務看板是空的。')
     }
+  })
+})
+
+type Node = { type?: string; props?: Record<string, unknown>; children?: (Node | string)[] }
+
+const textOf = (n: Node | string): string => (typeof n === 'string' ? n : (n.children ?? []).map(textOf).join(''))
+
+// One string per drawn row, a row's pieces joined with nothing between them.
+const linesOf = (n: Node | string): string[] => {
+  if (typeof n === 'string') return [n]
+  if (n.type === 'Text' || n.type === 'Button' || n.props?.['flexDirection'] === 'row') return [textOf(n)]
+  return (n.children ?? []).flatMap(linesOf)
+}
+
+const paneProps = (rows: number, cols: number) => ({
+  title: 'Jarvis',
+  isFocused: true,
+  bodyColumns: cols,
+  placement: 'dock' as const,
+  scroll: { offset: 0, bodyRows: rows },
+  view: {},
+})
+
+const draw = async ($: Engine, rows = 30, cols = 80): Promise<Node> =>
+  (await $.ui.render({
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'jarvis',
+    viewport: { columns: cols + 20, rows: rows + 10 },
+    props: paneProps(rows, cols),
+  })) as RenderElement as Node
+
+const openTasks = async ($: Engine, rows = 30, cols = 80) => {
+  const ui = await $.ui.mount({
+    plugin: 'jarvis',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'jarvis',
+    props: paneProps(rows, cols),
+    viewport: { columns: cols + 20, rows: rows + 10 },
+  })
+  await ui.press({ key: 'tab-tasks' })
+  await ui.unmount()
+}
+
+const spawnWorker = ($: Engine) =>
+  $.agent.spawn({
+    tool_use_id: 'tu-1',
+    prompt: 'p',
+    description: '實作看板',
+    subagentType: 'worker',
+    provider: { plugin: 'engine', tier: 'core' } as const,
+    parentModel: 'claude-opus-5-5',
+    background: true,
+    fork: false,
+  })
+
+describe('task board page', () => {
+  test('the 任務 tab follows 異動 and opens on an empty board', async ($, on) => {
+    world(on)
+    const tabs = linesOf(await draw($)).find(l => l.includes('異動')) ?? ''
+    expect(tabs.indexOf('任務')).toBeGreaterThan(tabs.indexOf('異動'))
+    await openTasks($)
+    const lines = linesOf(await draw($))
+    expect(lines.some(l => l.includes(EMPTY_TEXT))).toBe(true)
+    expect(lines.some(l => l.includes('0/0 項目 · 細項 0/0'))).toBe(true)
+  })
+
+  test('items, subtasks, counts and the owner MK-N on the page', async ($, on) => {
+    world(on)
+    await spawnWorker($)
+    await task($, { op: 'add', item: '加看板', subtasks: ['調查', '實作'] })
+    await task($, { op: 'update', id: '1.1', status: 'completed' })
+    await task($, { op: 'update', id: '1.2', status: 'in_progress' }, 'agent-7')
+    await openTasks($)
+    const lines = linesOf(await draw($))
+    expect(lines.some(l => l.includes('0/1 項目 · 細項 1/2'))).toBe(true)
+    expect(lines.find(l => l.includes('加看板'))?.trimEnd().endsWith('1/2')).toBe(true)
+    expect(lines.find(l => l.includes('實作') && !l.includes('加看板'))?.trimEnd().endsWith('MK-1')).toBe(true)
+  })
+
+  test('a narrow pane cuts long titles; no row is wider than the pane', async ($, on) => {
+    world(on)
+    await task($, { op: 'add', item: '很長的工作項目標題'.repeat(5), subtasks: ['很長的細項標題'.repeat(6)] })
+    await openTasks($, 30, 40)
+    const lines = linesOf(await draw($, 30, 40))
+    for (const l of lines) expect(cellWidth(l)).toBeLessThanOrEqual(40)
+    expect(lines.some(l => l.includes('很長的工作項目標題') && l.includes('…'))).toBe(true)
+  })
+
+  test('a /clear empties the page', async ($, on) => {
+    world(on)
+    await task($, { op: 'add', item: 'A' })
+    await openTasks($)
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    expect(linesOf(await draw($)).some(l => l.includes(EMPTY_TEXT))).toBe(true)
   })
 })

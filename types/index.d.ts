@@ -210,6 +210,7 @@ export type JarvisPage =
   | 'commitTree'
   | 'commitDiff'
   | 'stashDiff'
+  | 'tasks'
 
 // What the pane shows: the page, the subagent the detail page is about, and whether the
 // event stream is paused at `pausedTotal` events recorded.

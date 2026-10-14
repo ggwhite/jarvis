@@ -1621,6 +1621,7 @@ export const register: Register = on => {
         }
       },
       openDiff: (key: string) => setUi(u => ({ ...u, page: 'changeDiff', diffKey: key })),
+      ...(shown.page === 'tasks' ? { tasks: await read($, tasks) } : {}),
       commits,
     })
   })
