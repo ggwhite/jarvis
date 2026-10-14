@@ -205,11 +205,12 @@ export type JarvisUi = {
   commitSha?: string
   commitFile?: string
   // the tree page's sub-page (absent: its commits), the branch it logs (a full refname;
-  // absent: HEAD), where its 返回 goes when opened from a branch or a worktree row, and the
-  // stash the stash diff page is about, by its commit
+  // absent: HEAD), where its 返回 goes when opened from a branch or a worktree row (`back`:
+  // where the worktree a branch was opened in goes back to after), and the stash the stash
+  // diff page is about, by its commit
   repoView?: 'log' | 'branches' | 'stash' | 'worktrees'
   commitRef?: string
-  repoBack?: { repo: string; view: 'branches' | 'worktrees' }
+  repoBack?: { repo: string; view: 'branches' | 'worktrees'; back?: { repo: string; view: 'branches' | 'worktrees' } }
   stashSha?: string
 }
 

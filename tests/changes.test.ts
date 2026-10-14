@@ -297,6 +297,30 @@ const linesOf = (n: Node | string): string[] => {
   return (n.children ?? []).flatMap(linesOf)
 }
 
+// A drawn node's width in cells: a row's pieces side by side with its gap between each two,
+// a column as wide as its widest piece.
+const widthOf = (n: Node | string): number => {
+  if (typeof n === 'string') return cellWidth(n)
+  if (n.type === 'Text') return cellWidth(textOf(n))
+  const kids = n.children ?? []
+  if (n.type === 'Button' || n.props?.['flexDirection'] === 'row') {
+    return kids.reduce((w, k) => w + widthOf(k), 0) + Number(n.props?.['gap'] ?? 0) * Math.max(0, kids.length - 1)
+  }
+  return Math.max(0, ...kids.map(widthOf))
+}
+
+// the drawn row holding the button `key`
+const rowWith = (n: Node | string, key: string): Node | undefined => {
+  if (typeof n === 'string') return undefined
+  const kids = n.children ?? []
+  if (n.props?.['flexDirection'] === 'row' && kids.some(k => typeof k === 'object' && k.props?.['key'] === key)) return n
+  for (const k of kids) {
+    const hit = rowWith(k, key)
+    if (hit) return hit
+  }
+  return undefined
+}
+
 // the test runtime's timer, which the mod's es2023 lib does not declare
 const later = (globalThis as unknown as { setTimeout: (f: () => void, ms: number) => unknown }).setTimeout
 export const settle = () => new Promise<void>(r => later(() => r(), 5))
@@ -314,6 +338,8 @@ export function world(
   const log: string[] = []
   const writes = new Map<string, string>()
   const runs: string[][] = []
+  // each run's time limit, in the order of `runs`
+  const timeouts: (number | undefined)[] = []
   const opens: Record<string, unknown>[] = []
   const closes: string[] = []
   const files = { ...(opts.files ?? {}) }
@@ -376,12 +402,13 @@ export function world(
   on('process.run', async (_$, e) => {
     log.push('run')
     runs.push([...e.argv])
+    timeouts.push(e.init?.timeoutMs)
     await opts.holdRun?.([...e.argv])
     const a = answer([...e.argv])
     if (a.throws) throw new Error('timed out')
     return { value: { exitCode: a.exitCode, stdout: a.stdout ?? '', stderr: a.stderr ?? '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  return { log, writes, runs, opens, closes, files, changes: () => changes }
+  return { log, writes, runs, timeouts, opens, closes, files, changes: () => changes }
 }
 
 export const start = async ($: Engine, cwd = '/w') => {
@@ -2014,6 +2041,234 @@ describe('commits mode: remotes, sub-pages and fetch', () => {
     await press($, 'cm-fetch')
     expect(await shown($)).toContain('fetch 逾時')
   })
+
+  test('重新整理 while git still works out the branches keeps only the answer asked after it', async ($, on) => {
+    let release = () => {}
+    const gate = new Promise<void>(r => (release = r))
+    // the held ask answers last: it marks the answer it is about to get as the stale one
+    let staleNext = false
+    const git = (argv: string[]): Run => {
+      if (argv.join(' ') !== BRANCHES) return answers()[argv.join(' ')] ?? { exitCode: 128, stdout: '' }
+      const stale = staleNext
+      staleNext = false
+      return { exitCode: 0, stdout: rec('refs/heads/main', '', '', '100', '1111111', '*', 'init') + rec(`refs/heads/${stale ? 'stale' : 'fresh'}`, '', '', '90', '2222222', ' ', 'x') }
+    }
+    let held = 0
+    const w = setup(on, git, argv => (argv.join(' ') === BRANCHES && held++ === 0 ? gate.then(() => void (staleNext = true)) : Promise.resolve()))
+    await toTree($)
+    await press($, 'cm-view-branches')
+    await drawn($)
+    expect(count(w, BRANCHES)).toBe(1)
+    await press($, 'cm-refresh')
+    let t = await shown($)
+    expect(count(w, BRANCHES)).toBe(2)
+    expect(t).toContain('fresh')
+    release()
+    await settle()
+    t = await shown($)
+    expect(t).toContain('fresh')
+    expect(t).not.toContain('stale')
+    expect(count(w, BRANCHES)).toBe(2)
+  })
+
+  test('a fetch is given 60 seconds; once done the branches and stashes are asked again', async ($, on) => {
+    const w = setup(on)
+    await toTree($)
+    await press($, 'cm-view-stash')
+    await shown($)
+    await press($, 'cm-view-branches')
+    await shown($)
+    expect(count(w, BRANCHES)).toBe(1)
+    expect(count(w, STASHES)).toBe(1)
+    await press($, 'cm-fetch')
+    await shown($)
+    expect(w.timeouts[w.runs.findIndex(r => r.join(' ') === FETCH)]).toBe(60_000)
+    expect(w.timeouts[w.runs.findIndex(r => r.join(' ') === BRANCHES)]).toBe(5_000)
+    expect(count(w, BRANCHES)).toBe(2)
+    await press($, 'cm-view-stash')
+    await shown($)
+    expect(count(w, STASHES)).toBe(2)
+  })
+
+  test('branch rows: ↑ ↓, gone, 無 upstream, 已 merge and only on a remote; past the cap 還有 N 個分支; a long name is cut, its marks kept', async ($, on) => {
+    const longGone = `feature/gone-${'x'.repeat(60)}`
+    const longAhead = `feature/ahead-${'y'.repeat(60)}`
+    const longMerged = `feature/merged-${'z'.repeat(60)}`
+    const fillers = Array.from({ length: 100 }, (_, i) => rec(`refs/heads/f${i}`, '', '', String(10 + i), '3333333', ' ', 'filler')).join('')
+    setup(
+      on,
+      answers({
+        [BRANCHES]: {
+          exitCode: 0,
+          stdout:
+            rec('refs/heads/main', 'origin/main', 'ahead 2, behind 3', '200', '1111111', '*', 'init') +
+            rec(`refs/heads/${longGone}`, 'origin/gone', 'gone', '190', '2222222', ' ', 'wip') +
+            rec(`refs/heads/${longAhead}`, `origin/${longAhead}`, 'ahead 4, behind 5', '180', '2222222', ' ', 'wip') +
+            rec(`refs/heads/${longMerged}`, '', '', '170', '2222222', ' ', 'wip') +
+            rec('refs/remotes/origin/main', '', '', '200', '1111111', ' ', 'init') +
+            rec(`refs/remotes/origin/${longAhead}`, '', '', '180', '2222222', ' ', 'wip') +
+            rec('refs/remotes/origin/only', '', '', '160', '4444444', ' ', 'theirs') +
+            fillers,
+        },
+        [`${G} -C ${R} symbolic-ref -q --short refs/remotes/origin/HEAD`]: { exitCode: 0, stdout: 'origin/main\n' },
+        [`${G} -C ${R} for-each-ref --merged=origin/main --format=%(refname) refs/heads refs/remotes`]: { exitCode: 0, stdout: `refs/heads/${longMerged}\n` },
+      }),
+    )
+    await toTree($)
+    await press($, 'cm-view-branches')
+    for (const cols of [40, 80]) {
+      await shown($, cols)
+      const lines = await drawn($, cols, 200)
+      for (const line of lines) expect(cellWidth(line)).toBeLessThanOrEqual(cols)
+      const t = lines.join('\n')
+      expect(t).toMatch(/◉ main ↑2 ↓3/)
+      expect(t).toMatch(/● feature\/gone-x*… gone/)
+      expect(t).toMatch(/● feature\/ahead-y*… ↑4 ↓5/)
+      expect(t).toMatch(/● feature\/(merged-z*)?… 無 upstream 已 merge/)
+      expect(t).toMatch(/origin\/only/)
+      expect(t).not.toMatch(/origin\/main/)
+      expect(t).toContain('分支 105')
+      expect(t).toContain('還有 5 個分支')
+    }
+  })
+
+  test('worktree rows: a long path is cut from its start, its marks kept; a pruned one cannot be pressed', async ($, on) => {
+    const P = `/w/${'p'.repeat(70)}`
+    const Q = `/w/${'q'.repeat(70)}`
+    setup(
+      on,
+      answers({
+        [WORKTREES]: {
+          exitCode: 0,
+          stdout:
+            `worktree ${R}\x00HEAD ${H}\x00branch refs/heads/main\x00\x00` +
+            `worktree ${P}\x00HEAD ${H}\x00branch refs/heads/b1\x00locked\x00\x00` +
+            `worktree ${Q}\x00HEAD ${H}\x00branch refs/heads/b2\x00prunable gitdir file points to non-existent location\x00\x00`,
+        },
+        [`${G} -C ${P} status --porcelain=v1 -z --no-renames --untracked-files=normal`]: { exitCode: 0, stdout: ' M a\x00 M b\x00' },
+      }),
+    )
+    await toTree($)
+    await press($, 'cm-view-worktrees')
+    for (const cols of [40, 80]) {
+      await shown($, cols)
+      const lines = await drawn($, cols)
+      for (const line of lines) expect(cellWidth(line)).toBeLessThanOrEqual(cols)
+      const t = lines.join('\n')
+      expect(t).toMatch(/● …p+\s+\S+ b1 ±2 locked/)
+      expect(t).toMatch(/● …q+\s+\S+ b2 已不存在/)
+    }
+    const ui = await pane($)
+    expect(await ui.find({ key: `cm-wt-${P}` })).toBeDefined()
+    expect(await ui.find({ key: `cm-wt-${Q}` })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a stash gone from the list under its diff page shows the Stash tab with its remotes and fetch', async ($, on) => {
+    let release = () => {}
+    const gate = new Promise<void>(r => (release = r))
+    let stashes = rec(S, 'stash@{0}', '50', 'On main: 半成品')
+    const git = (argv: string[]): Run =>
+      argv.join(' ') === STASHES ? { exitCode: 0, stdout: stashes } : (answers()[argv.join(' ')] ?? { exitCode: 128, stdout: '' })
+    setup(on, git, argv => (argv.join(' ') === FETCH ? gate : Promise.resolve()))
+    await toTree($)
+    await press($, 'cm-fetch')
+    await press($, 'cm-view-stash')
+    await shown($)
+    await press($, `cm-stash-${S}`)
+    expect(await shown($)).toMatch(/stash@\{0\} 半成品/)
+    stashes = ''
+    release()
+    await settle()
+    const t = await shown($)
+    expect(await current($, 'cm-view-stash')).toBe(true)
+    expect(t).toContain('沒有 stash')
+    expect(t).toContain('server/acme/a.git')
+    expect(t).not.toContain('讀取 remote 中…')
+    const ui = await pane($)
+    expect((await ui.find({ key: 'cm-fetch' }))?.text).toBe('fetch')
+    await ui.unmount()
+  })
+
+  test('a commit gone from the tree under its diff page shows the tree with its remotes and fetch', async ($, on) => {
+    let release = () => {}
+    const gate = new Promise<void>(r => (release = r))
+    const H2 = '7'.repeat(40)
+    let log = `${H}\x00\x00w\x00100\x00HEAD -> refs/heads/main\x00init\x1e\n`
+    const git = (argv: string[]): Run =>
+      argv.join(' ') === LOG ? { exitCode: 0, stdout: log } : (answers()[argv.join(' ')] ?? { exitCode: 128, stdout: '' })
+    setup(on, git, argv => (argv.join(' ') === FETCH ? gate : Promise.resolve()))
+    await toTree($)
+    await press($, 'cm-fetch')
+    await press($, `cm-commit-${H}`)
+    expect(await shown($)).toMatch(/1111111 init/)
+    log = `${H2}\x00\x00w\x00100\x00HEAD -> refs/heads/main\x00rewritten\x1e\n`
+    release()
+    await settle()
+    const t = await shown($)
+    expect(t).toContain('rewritten')
+    expect(t).toContain('server/acme/a.git')
+    expect(t).not.toContain('讀取 remote 中…')
+    const ui = await pane($)
+    expect((await ui.find({ key: 'cm-fetch' }))?.text).toBe('fetch')
+    await ui.unmount()
+  })
+
+  test('a /clear while a fetch runs leaves it the only one for the repo; its answer is not kept after the /clear', async ($, on) => {
+    let release = () => {}
+    const gate = new Promise<void>(r => (release = r))
+    const w = setup(on, answers({ [FETCH]: { exitCode: 1, stderr: 'fatal: old fetch\n' } }), argv => (argv.join(' ') === FETCH ? gate : Promise.resolve()))
+    await toTree($)
+    await press($, 'cm-fetch')
+    await shown($)
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    await shown($)
+    await press($, `cm-repo-${R}`)
+    let t = await shown($)
+    expect(t).toContain('fetch 中…')
+    const ui = await pane($)
+    const again = await ui.find({ key: 'cm-fetch' })
+    if (again) await ui.press({ key: 'cm-fetch' })
+    await ui.unmount()
+    await settle()
+    expect(again).toBeUndefined()
+    expect(count(w, FETCH)).toBe(1)
+    release()
+    await settle()
+    t = await shown($)
+    expect(t).not.toContain('fetch 中…')
+    expect(t).not.toContain('fatal: old fetch')
+    const after = await pane($)
+    expect((await after.find({ key: 'cm-fetch' }))?.text).toBe('fetch')
+    await after.unmount()
+  })
+
+  test('the sub-tab row fits 30, 40 and 60 columns gaps included, with and without counts', async ($, on) => {
+    const branches = Array.from({ length: 154 }, (_, i) => rec(`refs/heads/b${i}`, '', '', String(1000 - i), '1111111', i === 0 ? '*' : ' ', 's')).join('')
+    const stashes = Array.from({ length: 10 }, (_, i) => rec(i.toString(16).repeat(40), `stash@{${i}}`, '50', 'On main: x')).join('')
+    const worktrees =
+      `worktree ${R}\x00HEAD ${H}\x00branch refs/heads/main\x00\x00` +
+      Array.from({ length: 11 }, (_, i) => `worktree /w/wt${i}\x00HEAD ${H}\x00branch refs/heads/b${i + 1}\x00\x00`).join('')
+    setup(on, answers({ [BRANCHES]: { exitCode: 0, stdout: branches }, [STASHES]: { exitCode: 0, stdout: stashes }, [WORKTREES]: { exitCode: 0, stdout: worktrees } }))
+    const tabs = async (cols: number) => {
+      await shown($, cols)
+      const ui = await pane($, cols)
+      const row = rowWith((await ui.drawn()) as unknown as Node, 'cm-view-log')
+      await ui.unmount()
+      return { w: row ? widthOf(row) : Infinity, t: row ? textOf(row) : '' }
+    }
+    await toTree($)
+    for (const cols of [30, 40, 60]) expect((await tabs(cols)).w).toBeLessThanOrEqual(cols - 4)
+    for (const view of ['branches', 'stash', 'worktrees']) {
+      await press($, `cm-view-${view}`)
+      await shown($)
+    }
+    for (const cols of [30, 40, 60]) expect((await tabs(cols)).w).toBeLessThanOrEqual(cols - 4)
+    const wide = await tabs(60)
+    expect(wide.t).toContain('分支 154')
+    expect(wide.t).toContain('Stash 10')
+    expect(wide.t).toContain('Worktree 12')
+  })
 })
 
 describe('commits mode: into a branch, a stash, a worktree', () => {
@@ -2144,6 +2399,12 @@ describe('commits mode: into a branch, a stash, a worktree', () => {
     expect(w.runs.some(r => r.join(' ') === `${G} -C ${R} show --no-color --no-renames --format= ${S}^3 -- new.txt`)).toBe(true)
     await press($, 'sdiff-next')
     expect(await shown($)).toContain('2 / 2')
+    await press($, 'sdiff-prev')
+    t = await shown($)
+    expect(t).toContain('1 / 2')
+    expect(t).toMatch(/a\.go\s+\+1 −1/)
+    await press($, 'sdiff-prev')
+    expect(await shown($)).toContain('1 / 2')
     await press($, 'back')
     t = await shown($)
     expect(await current($, 'cm-view-stash')).toBe(true)
@@ -2155,6 +2416,7 @@ describe('commits mode: into a branch, a stash, a worktree', () => {
     await toTree($)
     await press($, 'cm-view-worktrees')
     let t = await shown($)
+    expect(t).toMatch(/◉ a\s+\S+ main\s+乾淨/)
     expect(t).toMatch(/\.claude\/worktrees\/agent-x1\s+\S+ wt\s+±1\s+agent/)
     expect(t).toMatch(/\/w\/gone\s+detached 3333333\s+已不存在/)
     const ui = await pane($)
@@ -2170,6 +2432,50 @@ describe('commits mode: into a branch, a stash, a worktree', () => {
     t = await shown($)
     expect(await current($, 'cm-view-worktrees')).toBe(true)
     expect(t).toContain('agent-x1')
+  })
+
+  test("a branch opened in a worktree's tree: 返回 goes to the worktree's 分支, then the first repo's Worktree tab", async ($, on) => {
+    const LOG_WT_FEAT = `${G} -C ${WT} log --topo-order --decorate=full -n 40 ${FMT} refs/heads/wt-feat`
+    world(on, {
+      git: {
+        ...answers,
+        [`${G} -C ${WT} for-each-ref --sort=-committerdate --format=%(refname)%00%(upstream:short)%00%(upstream:track,nobracket)%00%(committerdate:unix)%00%(objectname:short)%00%(HEAD)%00%(subject)%1e refs/heads refs/remotes`]: {
+          exitCode: 0,
+          stdout: rec('refs/heads/wt', '', '', '80', '6666666', '*', 'wt-commit') + rec('refs/heads/wt-feat', '', '', '70', '7777777', ' ', 'wt-wip'),
+        },
+        [LOG_WT_FEAT]: { exitCode: 0, stdout: `${'7'.repeat(40)}\x00\x00w\x0070\x00refs/heads/wt-feat\x00wt-wip\x1e\n` },
+      },
+    })
+    await toTree($)
+    await press($, 'cm-view-worktrees')
+    await shown($)
+    await press($, `cm-wt-${WT}`)
+    await shown($)
+    await press($, 'cm-view-branches')
+    await shown($)
+    await press($, 'cm-branch-refs/heads/wt-feat')
+    let t = await shown($)
+    expect(t).toContain('wt-wip')
+    await press($, 'back')
+    t = await shown($)
+    expect(await current($, 'cm-view-branches')).toBe(true)
+    expect(t).toContain('wt-feat')
+    await press($, 'back')
+    t = await shown($)
+    expect(await current($, 'cm-view-worktrees')).toBe(true)
+    expect(t).toContain('.claude/worktrees/agent-x1')
+    await press($, `cm-wt-${WT}`)
+    await shown($)
+    await press($, 'cm-view-branches')
+    await shown($)
+    await press($, 'cm-branch-refs/heads/wt-feat')
+    await shown($)
+    // a sub-tab pressed on that branch's tree drops the branch, not where the worktree goes back to
+    await press($, 'cm-view-log')
+    expect(await shown($)).toContain('wt-commit')
+    await press($, 'back')
+    await shown($)
+    expect(await current($, 'cm-view-worktrees')).toBe(true)
   })
 
   test('a /clear on a stash diff goes back to the repo list', async ($, on) => {

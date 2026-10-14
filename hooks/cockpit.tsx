@@ -1928,33 +1928,58 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return out
   }
 
-  // the tree page's sub-tabs, the one shown current; each with its count once git has answered
-  const viewRow = (r: RepoPage, cm: CommitsCtx): Line => ({
-    h: 1,
-    node: (
-      <Box flexDirection="row" gap={TAB_GAP}>
-        {REPO_VIEWS.map(v => {
-          const n = v.view === 'branches' ? r.counts.branches : v.view === 'stash' ? r.counts.stash : v.view === 'worktrees' ? r.counts.worktrees : undefined
-          const label = n === undefined ? v.label : `${v.label} ${n}`
-          return (
-            <Button key={`cm-view-${v.view}`} plain onPress={() => cm.setView(v.view)}>
-              {v.view === r.view ? (
-                <Text bold inverse color={ACCENT}>
-                  {label}
-                </Text>
-              ) : (
-                <Text color={FRAME}>{label}</Text>
-              )}
-            </Button>
-          )
-        })}
-      </Box>
-    ),
-  })
+  // How the sub-tab row fits its width, roomiest first: each count, the full gap, the full label.
+  const TAB_FITS: { counts: boolean; gap: number; full: boolean }[] = [
+    { counts: true, gap: TAB_GAP, full: true },
+    { counts: false, gap: TAB_GAP, full: true },
+    { counts: false, gap: 1, full: true },
+    { counts: false, gap: 1, full: false },
+  ]
+
+  // the tree page's sub-tabs, the one shown current; each with its count once git has answered.
+  // Too wide for `inner`: the counts go, then the gaps narrow, then each label keeps its first
+  // character; the tabs that still do not fit are left off.
+  const viewRow = (r: RepoPage, cm: CommitsCtx, inner: number): Line => {
+    const countOf = (v: RepoView) =>
+      v === 'branches' ? r.counts.branches : v === 'stash' ? r.counts.stash : v === 'worktrees' ? r.counts.worktrees : undefined
+    const labelOf = (v: (typeof REPO_VIEWS)[number], fit: (typeof TAB_FITS)[number]) => {
+      if (!fit.full) return [...v.label][0] ?? v.label
+      const n = countOf(v.view)
+      return fit.counts && n !== undefined ? `${v.label} ${n}` : v.label
+    }
+    const rowWidth = (views: typeof REPO_VIEWS, fit: (typeof TAB_FITS)[number]) =>
+      views.reduce((w, v) => w + cellWidth(labelOf(v, fit)), 0) + Math.max(0, views.length - 1) * fit.gap
+    const narrowest = TAB_FITS[TAB_FITS.length - 1] ?? { counts: false, gap: 1, full: false }
+    const fit = TAB_FITS.find(f => rowWidth(REPO_VIEWS, f) <= inner) ?? narrowest
+    let views = REPO_VIEWS
+    while (views.length > 0 && rowWidth(views, fit) > inner) views = views.slice(0, -1)
+    return {
+      h: 1,
+      node: (
+        <Box flexDirection="row" gap={fit.gap}>
+          {views.map(v => {
+            const label = labelOf(v, fit)
+            return (
+              <Button key={`cm-view-${v.view}`} plain onPress={() => cm.setView(v.view)}>
+                {v.view === r.view ? (
+                  <Text bold inverse color={ACCENT}>
+                    {label}
+                  </Text>
+                ) : (
+                  <Text color={FRAME}>{label}</Text>
+                )}
+              </Button>
+            )
+          })}
+        </Box>
+      ),
+    }
+  }
 
   // The branches: ◉ the current one, ● the other local ones, the remote mark for those only
   // on a remote; ↑ ↓ against the upstream, gone when it was deleted, 無 upstream, 已 merge,
-  // the subject when it fits and the age; a row opens the branch's tree.
+  // the subject when it fits and the age; a row opens the branch's tree. A long name is cut
+  // first: the marks after it stay.
   const branchLines = (b: BranchList | Failed | undefined, cm: CommitsCtx, inner: number): Line[] => {
     if (b === undefined) return [[{ t: '讀取中…', color: MUTED }]]
     if (isFailed(b)) return [[{ t: b.error, color: MUTED }]]
@@ -1973,13 +1998,13 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         ...(r.kind !== 'remote' && !r.upstream ? [{ t: ' 無 upstream', color: MUTED }] : []),
         ...(r.merged ? [{ t: ' 已 merge', color: MUTED }] : []),
       ]
+      const right: Seg[] = [{ t: fmtAgo(cm.now - r.time), color: FRAME }]
       const name: Seg = {
-        t: r.name,
+        t: fitCells(r.name, Math.max(1, inner - segsWidth([sp(1), mark, ...status, ...right]) - 1)),
         color: r.kind === 'current' ? ACCENT : r.kind === 'remote' ? PRIMARY : BRIGHT,
         ...(r.kind === 'current' ? { bold: true } : {}),
       }
       const fixed: Seg[] = [sp(1), mark, name, ...status]
-      const right: Seg[] = [{ t: fmtAgo(cm.now - r.time), color: FRAME }]
       const room = inner - segsWidth(fixed) - segsWidth(right) - 3
       const left: Seg[] = room >= 8 ? [...fixed, sp(2), { t: fitCells(r.subject, room), color: FRAME }] : fixed
       const ref = r.ref
@@ -2026,21 +2051,30 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   // The worktrees: ◉ the repo's own, its branch (or the detached sha), its uncommitted files,
   // 已不存在 when pruned, locked, agent for a subagent's; a row (not a pruned one) opens its tree.
+  // A long path is cut first, from its start, then the branch: the marks after them stay.
   const worktreeLines = (w: WorktreeRow[] | Failed | undefined, cm: CommitsCtx, inner: number): Line[] => {
     if (w === undefined) return [[{ t: '讀取中…', color: MUTED }]]
     if (isFailed(w)) return [[{ t: w.error, color: MUTED }]]
     if (w.length === 0) return [[{ t: '沒有 worktree', color: MUTED }]]
     return w.map(x => {
-      const segs: Seg[] = [
-        sp(1),
-        { t: `${x.main ? COMMIT_ICON.head : COMMIT_ICON.node} `, color: x.main ? ACCENT : SUCCESS },
-        { t: x.name, color: x.main ? ACCENT : BRIGHT, ...(x.main ? { bold: true } : {}) },
-        sp(2),
-        x.branch !== undefined ? { t: withIcon(COMMIT_ICON.branch, x.branch), color: FRAME } : { t: `detached ${x.head.slice(0, 7)}`, color: MUTED },
+      const lead: Seg[] = [sp(1), { t: `${x.main ? COMMIT_ICON.head : COMMIT_ICON.node} `, color: x.main ? ACCENT : SUCCESS }]
+      const branch: Seg =
+        x.branch !== undefined ? { t: withIcon(COMMIT_ICON.branch, x.branch), color: FRAME } : { t: `detached ${x.head.slice(0, 7)}`, color: MUTED }
+      const marks: Seg[] = [
         ...(x.prunable ? [{ t: ' 已不存在', color: ERROR }] : []),
         ...(!x.prunable && x.dirty !== undefined ? [x.dirty > 0 ? { t: ` ±${x.dirty}`, color: PRIMARY } : { t: ' 乾淨', color: MUTED }] : []),
         ...(x.locked ? [{ t: ' locked', color: MUTED }] : []),
         ...(x.agent ? [{ t: ' agent', color: MUTED }] : []),
+      ]
+      // the room the path and the branch share, two cells between them
+      const room = inner - segsWidth([...lead, ...marks]) - 2
+      const name = tailCells(x.name, Math.max(1, Math.min(cellWidth(x.name), room - cellWidth(branch.t))))
+      const segs: Seg[] = [
+        ...lead,
+        { t: name, color: x.main ? ACCENT : BRIGHT, ...(x.main ? { bold: true } : {}) },
+        sp(2),
+        { ...branch, t: fitCells(branch.t, Math.max(1, room - cellWidth(name))) },
+        ...marks,
       ]
       if (x.prunable) return clip(segs, inner)
       const path = x.path
@@ -2117,7 +2151,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       ready ? [{ t: `${ready.commits.length} commits`, color: FRAME }] : [],
       inner,
     )
-    const lines: Line[] = [head, ...remoteLines(shownRepo, cm, inner), viewRow(shownRepo, cm)]
+    const lines: Line[] = [head, ...remoteLines(shownRepo, cm, inner), viewRow(shownRepo, cm, inner)]
     if (shownRepo.view === 'branches') lines.push(...branchLines(shownRepo.branches, cm, inner))
     else if (shownRepo.view === 'stash') lines.push(...stashLines(shownRepo.stashes, cm, inner))
     else if (shownRepo.view === 'worktrees') lines.push(...worktreeLines(shownRepo.worktrees, cm, inner))

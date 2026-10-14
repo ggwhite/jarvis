@@ -263,7 +263,8 @@ const dropUnpushed = (cache: ChangesCache) => {
 // being asked; `gen` counts the drops, so an answer to an older ask stores nothing.
 // `answers`: each tree (`t\x00repo`), commit's files (`f\x00repo\x00sha`) and file diff
 // (`d\x00repo\x00sha\x00path`) as git gave it; `asking`: those keys git is being asked.
-// A fetch runs at most once a repo at a time; its failure is kept until the next fetch or 重新整理.
+// A fetch runs at most once a repo at a time, a drop or not; its failure is kept until the next
+// fetch or 重新整理.
 type CommitsCache = {
   gen: number
   // each repo's own drops: an answer about a repo dropped since it was asked stores nothing
@@ -275,7 +276,8 @@ type CommitsCache = {
   asking: Set<string>
   // each key's own drops (重新整理 on a sub-page): an answer to a key dropped since asked stores nothing
   keyGen: Map<string, number>
-  // the repos a fetch is running for, and why each one's last fetch failed
+  // the repos a fetch is running for (kept by a drop: the fetch still runs), and why each one's
+  // last fetch failed
   fetching: Set<string>
   fetchError: Map<string, string>
 }
@@ -287,7 +289,6 @@ const dropCommits = (cc: CommitsCache) => {
   cc.summaries.clear()
   cc.answers.clear()
   cc.asking.clear()
-  cc.fetching.clear()
   cc.fetchError.clear()
 }
 
@@ -324,6 +325,14 @@ const dropCommitKeys = (cc: CommitsCache, repo: string, kinds: readonly string[]
   }
 }
 
+// What a worktree's tree keeps for its 返回: `back` when it leads to another repo (the worktree
+// was opened from there), else the one a branch opened in that worktree carries; none otherwise.
+const worktreeBack = (back: JarvisUi['repoBack'], repo: string | undefined): JarvisUi['repoBack'] => {
+  if (back === undefined) return undefined
+  if (back.repo !== repo) return { repo: back.repo, view: back.view }
+  return back.back
+}
+
 // what git last said of `key`, counted; undefined until it has answered, or when it failed
 function countOf<T>(cc: CommitsCache, key: string, n: (x: T) => number): number | undefined {
   const hit = cc.answers.get(key) as T | Failed | undefined
@@ -331,7 +340,8 @@ function countOf<T>(cc: CommitsCache, key: string, n: (x: T) => number): number 
 }
 
 // Fetches `repo` in the background, once at a time: when done the repo is asked again,
-// when not the reason is kept until the next fetch or 重新整理. A /clear drops the answer.
+// when not the reason is kept until the next fetch or 重新整理. A /clear drops the answer,
+// not the fetch: until it ends no other one starts.
 function fetchCommits($: Pick<EngineInterface, 'fs' | 'process' | 'ui'>, cc: CommitsCache, repo: string): void {
   if (repo === '' || cc.fetching.has(repo)) return
   cc.fetching.add(repo)
@@ -344,8 +354,11 @@ function fetchCommits($: Pick<EngineInterface, 'fs' | 'process' | 'ui'>, cc: Com
     } catch {
       out = { error: 'fetch 失敗' }
     }
-    if (cc.gen !== gen) return
     cc.fetching.delete(repo)
+    if (cc.gen !== gen) {
+      redraw($)
+      return
+    }
     if (out === true) dropCommitRepo(cc, repo)
     else cc.fetchError.set(repo, out.error)
     redraw($)
@@ -1301,12 +1314,20 @@ export const register: Register = on => {
     const repoView: RepoView = shown.repoView ?? 'log'
     const commitRef = shown.commitRef
     const onTree = (shown.page === 'commitTree' || shown.page === 'commitDiff' || shown.page === 'stashDiff') && commitRepo !== ''
-    const onRepoPage = shown.page === 'commitTree' && commitRepo !== ''
     const onStash = shown.page === 'stashDiff' && commitRepo !== ''
     const gitIo = ioOf($)
     const tree = onTree
       ? askCommits<CommitTree>($, commitsCache, commitRepo, `t\x00${commitRepo}\x00${commitRef ?? ''}`, () => commitTreeOf(gitIo, commitRepo, commitRef), 'git log 失敗')
       : undefined
+    const askStashes = () =>
+      askCommits<StashInfo[]>($, commitsCache, commitRepo, `s\x00${commitRepo}`, () => stashesOf(gitIo, commitRepo), 'git stash 失敗')
+    const commit =
+      shown.page === 'commitDiff' && tree !== undefined && !isFailed(tree) ? tree.commits.find(c => c.sha === shown.commitSha) : undefined
+    const pageStashes = onStash ? askStashes() : undefined
+    const stash = pageStashes !== undefined && !isFailed(pageStashes) ? pageStashes.find(s => s.sha === shown.stashSha) : undefined
+    // the tree page, or a diff page whose commit or stash is not there, which draws the tree page
+    const onRepoPage =
+      onTree && (shown.page === 'commitTree' || (shown.page === 'commitDiff' && !commit) || (shown.page === 'stashDiff' && !stash))
     const remotes = onRepoPage
       ? askCommits<Remotes>($, commitsCache, commitRepo, `r\x00${commitRepo}`, () => remotesOf(gitIo, commitRepo), 'git remote 失敗')
       : undefined
@@ -1314,16 +1335,11 @@ export const register: Register = on => {
       onRepoPage && repoView === 'branches'
         ? askCommits<BranchList>($, commitsCache, commitRepo, `b\x00${commitRepo}`, () => branchesOf(gitIo, commitRepo), 'git for-each-ref 失敗')
         : undefined
-    const stashes =
-      (onRepoPage && repoView === 'stash') || onStash
-        ? askCommits<StashInfo[]>($, commitsCache, commitRepo, `s\x00${commitRepo}`, () => stashesOf(gitIo, commitRepo), 'git stash 失敗')
-        : undefined
+    const stashes = (onRepoPage && repoView === 'stash') || onStash ? askStashes() : undefined
     const worktrees =
       onRepoPage && repoView === 'worktrees'
         ? askCommits<WorktreeRow[]>($, commitsCache, commitRepo, `w\x00${commitRepo}`, () => worktreesOf(gitIo, commitRepo), 'git worktree 失敗')
         : undefined
-    const commit =
-      shown.page === 'commitDiff' && tree !== undefined && !isFailed(tree) ? tree.commits.find(c => c.sha === shown.commitSha) : undefined
     const commitFileList = commit
       ? askCommits<CommitFile[]>($, commitsCache, commitRepo, `f\x00${commitRepo}\x00${commit.sha}`, () => commitFiles(gitIo, commitRepo, commit), 'git diff 失敗')
       : undefined
@@ -1342,7 +1358,6 @@ export const register: Register = on => {
             'git diff 失敗',
           )
         : undefined
-    const stash = onStash && stashes !== undefined && !isFailed(stashes) ? stashes.find(s => s.sha === shown.stashSha) : undefined
     const stashFileList = stash
       ? askCommits<StashFile[]>($, commitsCache, commitRepo, `sf\x00${commitRepo}\x00${stash.sha}`, () => stashFiles(gitIo, commitRepo, stash.sha), 'git stash 失敗')
       : undefined
@@ -1452,11 +1467,15 @@ export const register: Register = on => {
       setView: (view: RepoView) =>
         setUi(u => {
           const { commitRef: _r, repoBack, ...rest } = u
-          const keep = repoBack !== undefined && repoBack.repo !== u.commitRepo
-          return { ...rest, ...(keep && repoBack ? { repoBack } : {}), page: 'commitTree', repoView: view }
+          const outer = worktreeBack(repoBack, u.commitRepo)
+          return { ...rest, ...(outer ? { repoBack: outer } : {}), page: 'commitTree', repoView: view }
         }),
+      // a branch opened in a worktree's tree goes back to its 分支, then where the worktree goes back to
       openBranch: (ref: string) =>
-        setUi(u => ({ ...u, page: 'commitTree', repoView: 'log', commitRef: ref, repoBack: { repo: u.commitRepo ?? '', view: 'branches' } })),
+        setUi(u => {
+          const outer = worktreeBack(u.repoBack, u.commitRepo)
+          return { ...u, page: 'commitTree', repoView: 'log', commitRef: ref, repoBack: { repo: u.commitRepo ?? '', view: 'branches', ...(outer ? { back: outer } : {}) } }
+        }),
       openStash: (sha: string) =>
         setUi(u => {
           const { commitFile: _f, ...rest } = u
@@ -1471,7 +1490,9 @@ export const register: Register = on => {
       back: () =>
         setUi(u => {
           const { commitRef: _r, repoBack, ...rest } = u
-          return repoBack ? { ...rest, page: 'commitTree', commitRepo: repoBack.repo, repoView: repoBack.view } : { ...rest, page: 'changes' }
+          return repoBack
+            ? { ...rest, page: 'commitTree', commitRepo: repoBack.repo, repoView: repoBack.view, ...(repoBack.back ? { repoBack: repoBack.back } : {}) }
+            : { ...rest, page: 'changes' }
         }),
       fetch: () => fetchCommits($, commitsCache, commitRepo),
     }
