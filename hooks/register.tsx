@@ -1261,10 +1261,12 @@ export const register: Register = on => {
       resetChanges()
       try {
         await update($, changes, () => [])
-        // the commit tree, commit diff and stash diff pages go back to the repo list, as a diff page does
+        // the commit tree, commit diff and stash diff pages go back to the repo list, as a diff page
+        // does; the branches' gone group folds
         await update($, ui, (u): JarvisUi => {
-          if (u.page !== 'commitTree' && u.page !== 'commitDiff' && u.page !== 'stashDiff') return u
-          const { commitRef: _r, repoBack: _b, repoView: _v, stashSha: _s, ...rest } = u
+          const { goneOpen: _g, ...kept } = u
+          if (u.page !== 'commitTree' && u.page !== 'commitDiff' && u.page !== 'stashDiff') return u.goneOpen === undefined ? u : kept
+          const { commitRef: _r, repoBack: _b, repoView: _v, stashSha: _s, ...rest } = kept
           return { ...rest, page: 'changes' }
         })
       } catch {
@@ -1442,6 +1444,7 @@ export const register: Register = on => {
                 stash: countOf<StashInfo[]>(commitsCache, `s\x00${commitRepo}`, s => s.length),
                 worktrees: countOf<WorktreeRow[]>(commitsCache, `w\x00${commitRepo}`, w => w.length),
               },
+              goneOpen: shown.goneOpen === true,
             },
           }
         : {}),
@@ -1449,7 +1452,7 @@ export const register: Register = on => {
       ...(stash ? { stashDiff: { stash, files: stashFileList, file: stashFile, rows: stashRows } } : {}),
       openRepo: (repo: string) =>
         setUi(u => {
-          const { commitRef: _r, repoBack: _b, ...rest } = u
+          const { commitRef: _r, repoBack: _b, goneOpen: _g, ...rest } = u
           return { ...rest, page: 'commitTree', commitRepo: repo, repoView: 'log' }
         }),
       openCommit: (sha: string) =>
@@ -1480,6 +1483,11 @@ export const register: Register = on => {
         setUi(u => {
           const outer = worktreeBack(u.repoBack, u.commitRepo)
           return { ...u, page: 'commitTree', repoView: 'log', commitRef: ref, repoBack: { repo: u.commitRepo ?? '', view: 'branches', ...(outer ? { back: outer } : {}) } }
+        }),
+      toggleGone: () =>
+        setUi(u => {
+          const { goneOpen, ...rest } = u
+          return goneOpen === true ? rest : { ...rest, goneOpen: true }
         }),
       openStash: (sha: string) =>
         setUi(u => {

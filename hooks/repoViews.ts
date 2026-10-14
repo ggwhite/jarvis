@@ -29,8 +29,13 @@ export type BranchRow = {
   subject: string
 }
 
+// at most MAX_BRANCHES rows, the rest counted
+export type BranchGroup = { rows: BranchRow[]; more: number }
+
+// `current`: absent on a detached HEAD; `active`: the local ones not gone; `remote`: those only
+// on a remote; `gone`: the local ones whose upstream was deleted; `total`: every row of them;
 // `mergeKnown`: the main branch was found, so `merged` says something
-export type BranchList = { rows: BranchRow[]; more: number; total: number; mergeKnown: boolean }
+export type BranchList = { current?: BranchRow; active: BranchGroup; remote: BranchGroup; gone: BranchGroup; total: number; mergeKnown: boolean }
 
 // a stash by its commit, its `stash@{n}`, when it was made, the branch it was made on and its message
 export type StashInfo = { sha: string; name: string; time: number; branch: string; message: string }
@@ -79,8 +84,9 @@ export function parseBranchRefs(stdout: string): BranchRef[] {
   })
 }
 
-// Local branches, and remote ones no local branch tracks; the current first, then by their
-// last commit, newest first; at most MAX_BRANCHES, the rest counted.
+// Local branches, and remote ones no local branch tracks, in four groups: the current one
+// (gone or not), the local ones not gone (those ahead of their upstream first), the remote
+// ones and the gone ones; each by its last commit, newest first, then by name.
 export function branchRows(refs: readonly BranchRef[], merged: ReadonlySet<string> | undefined): BranchList {
   const tracked = new Set(refs.filter(r => r.ref.startsWith('refs/heads/') && r.upstream !== '').map(r => `refs/remotes/${r.upstream}`))
   const rows: BranchRow[] = []
@@ -98,13 +104,18 @@ export function branchRows(refs: readonly BranchRef[], merged: ReadonlySet<strin
       subject: r.subject,
     })
   }
-  rows.sort(
-    (a, b) =>
-      Number(b.kind === 'current') - Number(a.kind === 'current') ||
-      b.time - a.time ||
-      (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
-  )
-  return { rows: rows.slice(0, MAX_BRANCHES), more: Math.max(0, rows.length - MAX_BRANCHES), total: rows.length, mergeKnown: merged !== undefined }
+  const newest = (a: BranchRow, b: BranchRow) => b.time - a.time || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+  const group = (of: BranchRow[]): BranchGroup => ({ rows: of.slice(0, MAX_BRANCHES), more: Math.max(0, of.length - MAX_BRANCHES) })
+  const current = rows.find(r => r.kind === 'current')
+  const active = rows.filter(r => r.kind === 'local' && !r.gone).sort((a, b) => Number(b.ahead > 0) - Number(a.ahead > 0) || newest(a, b))
+  return {
+    ...(current ? { current } : {}),
+    active: group(active),
+    remote: group(rows.filter(r => r.kind === 'remote').sort(newest)),
+    gone: group(rows.filter(r => r.kind === 'local' && r.gone).sort(newest)),
+    total: rows.length,
+    mergeKnown: merged !== undefined,
+  }
 }
 
 // `stash list --format=%H%x00%gd%x00%ct%x00%gs%x1e`; `%gs` is `WIP on <branch>: <sha> <subject>`

@@ -11,7 +11,7 @@ import {
   shortRef,
   worktreeRows,
 } from '../hooks/repoViews'
-import type { BranchRef } from '../hooks/repoViews'
+import type { BranchList, BranchRef, BranchRow } from '../hooks/repoViews'
 import type { ChangesIo } from '../hooks/changes'
 import { commitTreeOf } from '../hooks/gitCommits'
 import { GIT, isFailed } from '../hooks/gitDiff'
@@ -37,6 +37,9 @@ const fakeIo = (answers: Record<string, Out | undefined>, files: Record<string, 
 const R = '/w/a'
 
 const rec = (...f: string[]) => `${f.join('\x00')}\x1e\n`
+// every row of a branch list, group by group
+const rowsOf = (b: BranchList): BranchRow[] => [...(b.current ? [b.current] : []), ...b.active.rows, ...b.remote.rows, ...b.gone.rows]
+
 const ref = (over: Partial<BranchRef> & Pick<BranchRef, 'ref'>): BranchRef => ({ upstream: '', track: '', time: 0, sha: 'abc1234', head: false, subject: 's', ...over })
 
 describe('shortRef', () => {
@@ -105,7 +108,7 @@ describe('branchRows', () => {
       ],
       undefined,
     )
-    expect(list.rows.map(r => [r.name, r.kind])).toEqual([
+    expect(rowsOf(list).map(r => [r.name, r.kind])).toEqual([
       ['main', 'current'],
       ['origin/only-remote', 'remote'],
     ])
@@ -113,22 +116,52 @@ describe('branchRows', () => {
     expect(list.mergeKnown).toBe(false)
   })
 
-  test('current first, then newest first; ahead, behind, gone, no upstream and merged read from git', () => {
+  test('four groups: the current, the local ones not gone, the remote ones, the gone ones; ahead, behind, gone, no upstream and merged read from git', () => {
     const list = branchRows(
       [
         ref({ ref: 'refs/heads/old', upstream: 'origin/old', track: 'gone', time: 10 }),
         ref({ ref: 'refs/heads/new', upstream: 'origin/new', track: 'ahead 1, behind 2', time: 50 }),
         ref({ ref: 'refs/heads/main', upstream: 'origin/main', head: true, time: 20 }),
         ref({ ref: 'refs/heads/loose', time: 40 }),
+        ref({ ref: 'refs/remotes/origin/theirs', time: 60 }),
+        ref({ ref: 'refs/heads/older', upstream: 'origin/older', track: 'gone', time: 30 }),
       ],
       new Set(['refs/heads/old']),
     )
-    expect(list.rows.map(r => r.name)).toEqual(['main', 'new', 'loose', 'old'])
-    const by = (n: string) => list.rows.find(r => r.name === n)
+    expect(list.current?.name).toBe('main')
+    expect(list.active.rows.map(r => r.name)).toEqual(['new', 'loose'])
+    expect(list.remote.rows.map(r => r.name)).toEqual(['origin/theirs'])
+    expect(list.gone.rows.map(r => r.name)).toEqual(['older', 'old'])
+    expect([list.active.more, list.remote.more, list.gone.more]).toEqual([0, 0, 0])
+    expect(list.total).toBe(6)
+    const by = (n: string) => rowsOf(list).find(r => r.name === n)
     expect(by('new')).toMatchObject({ ahead: 1, behind: 2, gone: false, upstream: true, merged: false })
     expect(by('old')).toMatchObject({ gone: true, upstream: true, merged: true })
     expect(by('loose')).toMatchObject({ upstream: false, kind: 'local' })
     expect(list.mergeKnown).toBe(true)
+  })
+
+  test('the current branch stays the current one when its upstream is gone; no current on a detached HEAD', () => {
+    const list = branchRows(
+      [ref({ ref: 'refs/heads/main', upstream: 'origin/main', track: 'gone', head: true, time: 1 }), ref({ ref: 'refs/heads/x', upstream: 'origin/x', track: 'gone', time: 9 })],
+      undefined,
+    )
+    expect(list.current).toMatchObject({ name: 'main', kind: 'current', gone: true })
+    expect(list.gone.rows.map(r => r.name)).toEqual(['x'])
+    expect(branchRows([ref({ ref: 'refs/heads/a', time: 1 })], undefined).current).toBeUndefined()
+  })
+
+  test('in progress: those ahead of their upstream first, then newest first', () => {
+    const list = branchRows(
+      [
+        ref({ ref: 'refs/heads/fresh', upstream: 'origin/fresh', time: 90 }),
+        ref({ ref: 'refs/heads/ahead-old', upstream: 'origin/ahead-old', track: 'ahead 1', time: 10 }),
+        ref({ ref: 'refs/heads/ahead-new', upstream: 'origin/ahead-new', track: 'ahead 3, behind 1', time: 20 }),
+        ref({ ref: 'refs/heads/behind', upstream: 'origin/behind', track: 'behind 4', time: 80 }),
+      ],
+      undefined,
+    )
+    expect(list.active.rows.map(r => r.name)).toEqual(['ahead-new', 'ahead-old', 'fresh', 'behind'])
   })
 
   test('a local upstream (another local branch) hides no remote branch and still counts as an upstream', () => {
@@ -136,26 +169,33 @@ describe('branchRows', () => {
       [ref({ ref: 'refs/heads/topic', upstream: 'main', time: 5 }), ref({ ref: 'refs/heads/main', time: 4 }), ref({ ref: 'refs/remotes/origin/main', time: 3 })],
       undefined,
     )
-    expect(list.rows.map(r => r.name)).toEqual(['topic', 'main', 'origin/main'])
-    expect(list.rows[0]).toMatchObject({ upstream: true })
+    expect(rowsOf(list).map(r => r.name)).toEqual(['topic', 'main', 'origin/main'])
+    expect(list.active.rows[0]).toMatchObject({ upstream: true })
   })
 
-  test('at most 100 rows, the newest; the rest counted', () => {
-    const refs = Array.from({ length: 107 }, (_, i) => ref({ ref: `refs/heads/b${i}`, time: i }))
-    const list = branchRows(refs, undefined)
-    expect(list.rows.length).toBe(100)
-    expect(list.rows[0]?.name).toBe('b106')
-    expect(list.rows[99]?.name).toBe('b7')
-    expect(list.more).toBe(7)
-    expect(list.total).toBe(107)
-    const exact = branchRows(refs.slice(0, 100), undefined)
-    expect(exact.rows.length).toBe(100)
-    expect(exact.more).toBe(0)
+  test('each group at most 100 rows, the newest; the rest counted per group; total counts them all', () => {
+    const local = Array.from({ length: 107 }, (_, i) => ref({ ref: `refs/heads/b${i}`, time: i }))
+    const remote = Array.from({ length: 103 }, (_, i) => ref({ ref: `refs/remotes/origin/r${i}`, time: i }))
+    const gone = Array.from({ length: 101 }, (_, i) => ref({ ref: `refs/heads/g${i}`, upstream: `origin/g${i}`, track: 'gone', time: i }))
+    const list = branchRows([...local, ...remote, ...gone, ref({ ref: 'refs/heads/main', head: true })], undefined)
+    expect(list.active.rows.length).toBe(100)
+    expect(list.active.rows[0]?.name).toBe('b106')
+    expect(list.active.rows[99]?.name).toBe('b7')
+    expect(list.active.more).toBe(7)
+    expect(list.remote.rows.length).toBe(100)
+    expect(list.remote.more).toBe(3)
+    expect(list.gone.rows.length).toBe(100)
+    expect(list.gone.rows[0]?.name).toBe('g100')
+    expect(list.gone.more).toBe(1)
+    expect(list.total).toBe(107 + 103 + 101 + 1)
+    const exact = branchRows(local.slice(0, 100), undefined)
+    expect(exact.active.rows.length).toBe(100)
+    expect(exact.active.more).toBe(0)
   })
 
   test('branches last committed at the same time are ordered by name', () => {
     const list = branchRows([ref({ ref: 'refs/heads/b', time: 5 }), ref({ ref: 'refs/heads/c', time: 5 }), ref({ ref: 'refs/heads/a', time: 5 })], undefined)
-    expect(list.rows.map(r => r.name)).toEqual(['a', 'b', 'c'])
+    expect(list.active.rows.map(r => r.name)).toEqual(['a', 'b', 'c'])
   })
 })
 
@@ -300,7 +340,7 @@ describe('branchesOf', () => {
     })
     const b = await branchesOf(io, R)
     if (isFailed(b)) throw new Error(b.error)
-    expect(b.rows.map(r => [r.name, r.merged, r.gone])).toEqual([
+    expect(rowsOf(b).map(r => [r.name, r.merged, r.gone])).toEqual([
       ['main', true, false],
       ['old', true, true],
     ])
@@ -311,7 +351,7 @@ describe('branchesOf', () => {
     const b = await branchesOf(fakeIo({ [LIST]: { exitCode: 0, stdout: recs } }), R)
     if (isFailed(b)) throw new Error(b.error)
     expect(b.mergeKnown).toBe(false)
-    expect(b.rows.every(r => !r.merged)).toBe(true)
+    expect(rowsOf(b).every(r => !r.merged)).toBe(true)
     expect(await branchesOf(fakeIo({}), R)).toEqual({ error: 'git for-each-ref 失敗' })
   })
 
@@ -323,7 +363,7 @@ describe('branchesOf', () => {
     const b = await branchesOf(io, R)
     if (isFailed(b)) throw new Error(b.error)
     expect(b.mergeKnown).toBe(false)
-    expect(b.rows.map(r => [r.name, r.merged])).toEqual([
+    expect(rowsOf(b).map(r => [r.name, r.merged])).toEqual([
       ['main', false],
       ['old', false],
     ])

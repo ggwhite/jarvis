@@ -212,6 +212,8 @@ export type JarvisUi = {
   commitRef?: string
   repoBack?: { repo: string; view: 'branches' | 'worktrees'; back?: { repo: string; view: 'branches' | 'worktrees' } }
   stashSha?: string
+  // the 分支 sub-page's gone group is open (absent: folded); a repo opened or a /clear folds it
+  goneOpen?: boolean
 }
 
 declare module 'claude-code' {

@@ -2090,12 +2090,12 @@ describe('commits mode: remotes, sub-pages and fetch', () => {
     expect(count(w, STASHES)).toBe(2)
   })
 
-  test('branch rows: ↑ ↓, gone, 無 upstream, 已 merge and only on a remote; past the cap 還有 N 個分支; a long name is cut, its marks kept', async ($, on) => {
+  const groupsSetup = (on: On) => {
     const longGone = `feature/gone-${'x'.repeat(60)}`
     const longAhead = `feature/ahead-${'y'.repeat(60)}`
     const longMerged = `feature/merged-${'z'.repeat(60)}`
     const fillers = Array.from({ length: 100 }, (_, i) => rec(`refs/heads/f${i}`, '', '', String(10 + i), '3333333', ' ', 'filler')).join('')
-    setup(
+    return setup(
       on,
       answers({
         [BRANCHES]: {
@@ -2114,22 +2114,120 @@ describe('commits mode: remotes, sub-pages and fetch', () => {
         [`${G} -C ${R} for-each-ref --merged=origin/main --format=%(refname) refs/heads refs/remotes`]: { exitCode: 0, stdout: `refs/heads/${longMerged}\n` },
       }),
     )
+  }
+  // the cell where `mark` starts on the first drawn line holding it
+  const colOf = (lines: string[], mark: string) => {
+    const line = lines.find(l => l.includes(mark)) ?? ''
+    return cellWidth(line.slice(0, line.indexOf(mark)))
+  }
+  const GONE_SHUT = '▸ gone 1 個（遠端已刪，多半已 merge）'
+  const GONE_OPEN = '▾ gone 1 個（遠端已刪，多半已 merge）'
+
+  test('branch rows in groups: the current, 進行中, 只在遠端, gone folded; ↑ ↓, 無 upstream, 已 merge; past a group\'s cap 還有 N 個分支; a long name is cut, its marks kept', async ($, on) => {
+    groupsSetup(on)
     await toTree($)
     await press($, 'cm-view-branches')
-    for (const cols of [40, 80]) {
+    for (const cols of [30, 40, 60, 80, 120]) {
       await shown($, cols)
       const lines = await drawn($, cols, 200)
       for (const line of lines) expect(cellWidth(line)).toBeLessThanOrEqual(cols)
       const t = lines.join('\n')
-      expect(t).toMatch(/◉ main ↑2 ↓3/)
-      expect(t).toMatch(/● feature\/gone-x*… gone/)
-      expect(t).toMatch(/● feature\/ahead-y*… ↑4 ↓5/)
-      expect(t).toMatch(/● feature\/(merged-z*)?… 無 upstream 已 merge/)
-      expect(t).toMatch(/origin\/only/)
-      expect(t).not.toMatch(/origin\/main/)
+      if (cols < 40) continue
       expect(t).toContain('分支 105')
-      expect(t).toContain('還有 5 個分支')
+      expect(t).toMatch(/◉ main\s+↑2 ↓3/)
+      expect(t).toMatch(/● feature\/(ahead-y*)?…\s+↑4 ↓5/)
+      expect(t).toMatch(/● feature\/(merged-z*)?…\s+無 upstream 已 merge/)
+      expect(t).toMatch(cols < 60 ? /origin\/o/ : /origin\/only/)
+      expect(t).not.toMatch(/origin\/main/)
+      expect(t).toContain('進行中 102')
+      expect(t).toContain('只在遠端 1')
+      expect(t).toContain(cols < 60 ? '▸ gone 1 個' : GONE_SHUT)
+      expect(t).not.toContain('feature/gone')
+      expect(t).toContain('還有 2 個分支')
+      expect(lines.findIndex(l => l.includes('◉ main'))).toBeLessThan(lines.findIndex(l => l.includes('進行中')))
+      expect(lines.findIndex(l => l.includes('只在遠端'))).toBeLessThan(lines.findIndex(l => l.includes('▸ gone')))
     }
+  })
+
+  test('a short list keeps its names 12 wide, the status after them', async ($, on) => {
+    setup(on)
+    await toTree($)
+    await press($, 'cm-view-branches')
+    const lines = (await shown($, 80)).split('\n')
+    expect(colOf(lines, '無 upstream') - colOf(lines, '● ')).toBe(2 + 12 + 1)
+    expect(lines.find(l => l.includes('◉ main'))).toMatch(/◉ main {8} {12} init/)
+  })
+
+  test('the name and status columns line up: every status starts in the same cell', async ($, on) => {
+    groupsSetup(on)
+    await toTree($)
+    await press($, 'cm-view-branches')
+    for (const cols of [80, 120]) {
+      await shown($, cols)
+      const lines = await drawn($, cols, 200)
+      const at = colOf(lines, '↑2 ↓3')
+      expect(colOf(lines, '↑4 ↓5')).toBe(at)
+      expect(colOf(lines, '無 upstream 已 merge')).toBe(at)
+      expect(colOf(lines, 'origin/only')).toBe(colOf(lines, '◉ ') + 2)
+      // 40% of the width at most: the long names are cut, their statuses whole
+      expect(colOf(lines, '↑2 ↓3') - colOf(lines, '◉ ') - 2).toBeLessThanOrEqual(Math.floor(cols * 0.4) + 1)
+    }
+  })
+
+  test('gone folded to one line: a press opens it, its rows listed with gone muted; another folds it; a sub-tab keeps it open', async ($, on) => {
+    groupsSetup(on)
+    await toTree($)
+    await press($, 'cm-view-branches')
+    let t = await shown($)
+    expect(t).toContain(GONE_SHUT)
+    await press($, 'cm-branches-gone')
+    t = (await drawn($, 80, 200)).join('\n')
+    expect(t).toContain(GONE_OPEN)
+    expect(t).toMatch(/● feature\/gone-x*…\s+gone/)
+    const ui = await pane($, 80, 200)
+    const tree = (await ui.drawn()) as unknown as Node
+    await ui.unmount()
+    const goneTexts: Node[] = []
+    const walk = (n: Node | string) => {
+      if (typeof n === 'string') return
+      if (n.type === 'Text' && textOf(n).trim() === 'gone') goneTexts.push(n)
+      for (const k of n.children ?? []) walk(k)
+    }
+    walk(tree)
+    expect(goneTexts.length).toBeGreaterThan(0)
+    for (const n of goneTexts) expect(n.props?.['color']).toBe(THEME.muted)
+    await press($, 'cm-view-log')
+    await shown($)
+    await press($, 'cm-view-branches')
+    t = (await drawn($, 80, 200)).join('\n')
+    expect(t).toContain(GONE_OPEN)
+    await press($, 'cm-branches-gone')
+    t = (await drawn($, 80, 200)).join('\n')
+    expect(t).toContain(GONE_SHUT)
+    expect(t).not.toContain('feature/gone')
+  })
+
+  test('gone opened folds again when a repo is opened and on /clear', async ($, on) => {
+    groupsSetup(on)
+    await toTree($)
+    await press($, 'cm-view-branches')
+    await shown($)
+    await press($, 'cm-branches-gone')
+    expect((await drawn($, 80, 200)).join('\n')).toContain(GONE_OPEN)
+    await press($, 'back')
+    await shown($)
+    await press($, `cm-repo-${R}`)
+    await shown($)
+    await press($, 'cm-view-branches')
+    expect(await shown($)).toContain(GONE_SHUT)
+    await press($, 'cm-branches-gone')
+    expect((await drawn($, 80, 200)).join('\n')).toContain(GONE_OPEN)
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    await shown($)
+    await press($, `cm-repo-${R}`)
+    await shown($)
+    await press($, 'cm-view-branches')
+    expect(await shown($)).toContain(GONE_SHUT)
   })
 
   test('worktree rows: a long path is cut from its start, its marks kept; a pruned one cannot be pressed', async ($, on) => {
