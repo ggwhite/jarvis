@@ -259,6 +259,13 @@ describe('built-in task tools mirrored', () => {
     expect(fromTaskCreate(b, undefined, 'x')).toBe(b)
   })
 
+  test('TaskUpdate without a taskId leaves a model-added subtask alone', () => {
+    let b = fromTaskCreate(EMPTY_BOARD, '7', '跑測試')
+    b = ok(applyTask(b, { op: 'add', to: '1', subtasks: ['mine'] }))
+    expect(fromTaskUpdate(b, { status: 'deleted' })).toBe(b)
+    expect(fromTaskUpdate(b, { taskId: '', status: 'deleted' })).toBe(b)
+  })
+
   test('mirroring respects the caps', () => {
     const many = Array.from({ length: MAX_SUBTASKS + 5 }, (_, k) => todo(`t${k}`, 'pending'))
     expect(fromTodos(EMPTY_BOARD, many).items[0]?.subtasks).toHaveLength(MAX_SUBTASKS)
@@ -282,6 +289,18 @@ describe('task board rows', () => {
       { op: 'update', id: '1.1', status: 'in_progress' },
       { op: 'update', id: '1.2', agent: 'agent-7' },
     )
+
+  test('a title with newline or tab collapses to one line; every row is exactly width cells', () => {
+    const b = build({ op: 'add', item: 'a\nb\tc', subtasks: ['x\ny'] })
+    const rows = taskRows(b, 40, 10, owner)
+    for (const row of rows) {
+      const t = row.map(s => s.t).join('')
+      expect(t).not.toMatch(/[\n\t]/)
+      expect(cellWidth(t)).toBe(40)
+    }
+    expect(rows[0]?.map(s => s.t).join('')).toContain('a b c')
+  })
+
 
   test('an empty board is one row of EMPTY_TEXT', () => {
     expect(taskRows(EMPTY_BOARD, 76, 10, owner).map(text)).toEqual([EMPTY_TEXT])
@@ -335,7 +354,7 @@ describe('task board rows', () => {
 
 // the test-side bottom of the chain, standing for the engine
 const TASK_CREATE_ID = '7'
-const world = (on: On) => {
+const world = (on: On, outcome: Record<string, unknown> = {}) => {
   const registered: { name: string; isDeferred?: boolean }[] = []
   mock.clock(on, { now: 0 })
   mock.env(on, {})
@@ -348,9 +367,14 @@ const world = (on: On) => {
     return { value: { tool: `mcp__jarvis__${e.name}` } }
   })
   on('prompt.compose', async () => ({ sections: [{ id: 'intro', text: 'intro', scope: 'shared' as const }] }))
-  on('tool.call', async (_$, e) => ({
-    result: (e.tool === 'TaskCreate' ? { task: { id: TASK_CREATE_ID, subject: 's' } } : {}) as never,
-  }))
+  on('tool.call', async (_$, e) =>
+    'deny' in outcome
+      ? (outcome as never)
+      : {
+          result: (e.tool === 'TaskCreate' ? { task: { id: TASK_CREATE_ID, subject: 's' } } : {}) as never,
+          ...outcome,
+        },
+  )
   return { registered }
 }
 
@@ -437,6 +461,22 @@ describe('task board tool', () => {
     expect(text).toContain('  [>] 1.2 改檔')
     expect(text).toContain('[x] 2 內建任務')
     expect(text).toContain('  [x] 2.1 跑測試')
+  })
+
+  const mirrorNothing = async ($: Engine) => {
+    await $.tool.call({ tool: 'TodoWrite', todos: [{ content: '讀檔', status: 'pending', activeForm: '讀檔中' }] })
+    await $.tool.call({ tool: 'TaskCreate', subject: '跑測試', description: 'd' })
+    expect(await boardOf($)).toBe('任務看板是空的。')
+  }
+
+  test('an isError result is not mirrored onto the board', async ($, on) => {
+    world(on, { isError: true })
+    await mirrorNothing($)
+  })
+
+  test('a denied call is not mirrored onto the board', async ($, on) => {
+    world(on, { deny: 'no' })
+    await mirrorNothing($)
   })
 
   test('a new, cleared or resumed session empties the board; a compaction keeps it', async ($, on) => {

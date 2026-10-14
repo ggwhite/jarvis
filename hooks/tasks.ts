@@ -62,7 +62,8 @@ const SUB_ID = /^(\d+)\.\d+$/
 
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
 
-export const titleOf = (v: unknown): string => [...str(v)].slice(0, TITLE_MAX).join('')
+// whitespace runs (newline, tab) collapse to one space so a title is always one line
+export const titleOf = (v: unknown): string => [...str(v).replace(/\s+/g, ' ').trim()].slice(0, TITLE_MAX).join('')
 
 export const isStatus = (v: unknown): v is JarvisTaskStatus =>
   typeof v === 'string' && (TASK_STATUSES as readonly string[]).includes(v)
@@ -295,8 +296,10 @@ export function fromTaskCreate(board: JarvisTaskBoard, extId: unknown, subject: 
 
 // TaskUpdate on a mirrored task: its status and subject; `deleted` removes it.
 export function fromTaskUpdate(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>): JarvisTaskBoard {
+  const taskId = input['taskId']
+  if (typeof taskId !== 'string' || taskId === '') return board
   const item = board.items.find(i => i.origin === TASKS_ORIGIN)
-  const sub = item?.subtasks.find(s => s.extId === input['taskId'])
+  const sub = item?.subtasks.find(s => s.extId === taskId)
   if (!item || !sub) return board
   const status = input['status']
   if (status === 'deleted') return replaceItem(board, { ...item, subtasks: item.subtasks.filter(s => s !== sub) })

@@ -1315,8 +1315,12 @@ export const register: Register = on => {
     if (e.source === 'startup' || e.source === 'clear' || e.source === 'resume') {
       resetChanges()
       try {
-        await update($, changes, () => [])
         await update($, tasks, () => EMPTY_BOARD)
+      } catch {
+        // bookkeeping only
+      }
+      try {
+        await update($, changes, () => [])
         // the commit tree, commit diff and stash diff pages go back to the repo list, as a diff page
         // does; the branches' gone and 只在遠端 groups fold
         await update($, ui, (u): JarvisUi => {

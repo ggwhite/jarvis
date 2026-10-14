@@ -1892,7 +1892,7 @@ describe('pages', () => {
     engineAll(on)
     await press($, 'tab-log', 30, 40)
     let ui = await mountPane($, 30, 40)
-    // five tabs and 暫停 are too wide for 40 columns with every label: the tabs not shown keep their icon
+    // six tabs and 暫停 are too wide for 40 columns with every label: the tabs not shown keep their icon
     const bar = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('tab-') || b.key === 'pause')
     expect(bar.filter(b => b.key?.startsWith('tab-')).map(b => b.text)).toEqual([
       `${TAB_ICON.now} `,
