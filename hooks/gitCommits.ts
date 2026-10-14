@@ -2,6 +2,7 @@ import { dirOf } from './changes'
 import type { ChangesIo } from './changes'
 import { GIT, answered, parseDiff, parseNumstatZ } from './gitDiff'
 import type { DiffRow, Failed, NumstatRow } from './gitDiff'
+import { shortRef } from './repoViews'
 
 export const FIND = '/usr/bin/find'
 // how deep under the session directory a repo's .git is looked for
@@ -85,21 +86,24 @@ export async function repoSummary(io: Pick<ChangesIo, 'run'>, repo: string): Pro
   return { branch: headBranch(parseRefs(refs)) ?? short, ...(ahead !== undefined ? { ahead } : {}), time: Number(ct) * 1000 || 0 }
 }
 
-export async function commitTreeOf(io: Pick<ChangesIo, 'run'>, repo: string): Promise<CommitTree | Failed> {
-  const u = await io.run([GIT, '-C', repo, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
+// `ref`: a full refname to log instead of HEAD, with its own upstream (a remote branch has none)
+export async function commitTreeOf(io: Pick<ChangesIo, 'run'>, repo: string, ref?: string): Promise<CommitTree | Failed> {
+  const tip = ref ?? 'HEAD'
+  const u = await io.run([GIT, '-C', repo, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', ref === undefined ? '@{u}' : `${ref}@{u}`])
   const upstream = u?.exitCode === 0 && u.stdout.trim() !== '' ? u.stdout.trim() : undefined
-  const r = await io.run([GIT, '-C', repo, 'log', '--topo-order', '--decorate=full', '-n', String(MAX_COMMITS), LOG_FORMAT, 'HEAD', ...(upstream ? [upstream] : [])])
+  const r = await io.run([GIT, '-C', repo, 'log', '--topo-order', '--decorate=full', '-n', String(MAX_COMMITS), LOG_FORMAT, tip, ...(upstream ? [upstream] : [])])
   if (!answered(r)) return { error: 'git log 失敗' }
   const commits = parseLog(r.stdout)
   let unpushed: string[] = []
   let unpushedFailed = false
   if (upstream !== undefined) {
-    const p = await io.run([GIT, '-C', repo, 'rev-list', `${upstream}..HEAD`])
+    const p = await io.run([GIT, '-C', repo, 'rev-list', `${upstream}..${tip}`])
     if (p?.exitCode === 0) unpushed = p.stdout.split('\n').map(s => s.trim()).filter(s => s !== '').slice(0, MAX_UNPUSHED)
     else unpushedFailed = true
   }
   const refs = commits.flatMap(c => c.refs)
-  const branch = (await headName(io, repo)) ?? headBranch(refs) ?? (refs.includes('HEAD') ? '(detached)' : '?')
+  const branch =
+    ref !== undefined ? shortRef(ref) : ((await headName(io, repo)) ?? headBranch(refs) ?? (refs.includes('HEAD') ? '(detached)' : '?'))
   return { branch, ...(upstream !== undefined ? { upstream } : {}), ahead: unpushed.length, commits, unpushed, ...(unpushedFailed ? { unpushedFailed: true as const } : {}) }
 }
 

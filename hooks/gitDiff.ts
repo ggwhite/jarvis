@@ -109,7 +109,7 @@ export async function sessionDiff(io: ChangesIo, c: Source): Promise<DiffRow[] |
   return answered(r, true) ? parseDiff(r.stdout) : { error: 'git diff 失敗' }
 }
 
-export async function pickTarget(io: ChangesIo, repo: string): Promise<string | undefined> {
+export async function pickTarget(io: Pick<ChangesIo, 'run'>, repo: string): Promise<string | undefined> {
   const head = await io.run([GIT, '-C', repo, 'symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD'])
   const named = head?.exitCode === 0 ? head.stdout.trim() : ''
   if (named !== '') return named

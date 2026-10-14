@@ -13,6 +13,29 @@ import {
   worktreeRows,
 } from '../hooks/repoViews'
 import type { BranchRef } from '../hooks/repoViews'
+import type { ChangesIo } from '../hooks/changes'
+import { commitTreeOf } from '../hooks/gitCommits'
+import { GIT, isFailed } from '../hooks/gitDiff'
+import { BRANCH_FORMAT, ENV, STASH_FORMAT, branchesOf, fetchArgv, fetchRepo, remotesOf, stashFileDiff, stashFiles, stashesOf, worktreesOf } from '../hooks/gitRepo'
+
+type Out = { exitCode: number; stdout?: string; stderr?: string }
+
+// git answering by argv joined with spaces, anything else failing; a fake disk of files by mtime
+const fakeIo = (answers: Record<string, Out | undefined>, files: Record<string, number> = {}): Pick<ChangesIo, 'run' | 'stat'> & { runs: string[][] } => {
+  const runs: string[][] = []
+  return {
+    runs,
+    run: async argv => {
+      runs.push(argv)
+      const key = argv.join(' ')
+      if (key in answers && answers[key] === undefined) return undefined
+      const a = answers[key] ?? { exitCode: 128, stdout: '', stderr: 'fatal: no' }
+      return { exitCode: a.exitCode, stdout: a.stdout ?? '', stderr: a.stderr ?? '' }
+    },
+    stat: async path => (files[path] === undefined ? undefined : { kind: 'file', size: 1, mtimeMs: files[path] ?? 0 }),
+  }
+}
+const R = '/w/a'
 
 const rec = (...f: string[]) => `${f.join('\x00')}\x1e\n`
 const ref = (over: Partial<BranchRef> & Pick<BranchRef, 'ref'>): BranchRef => ({ upstream: '', track: '', time: 0, sha: 'abc1234', head: false, subject: 's', ...over })
@@ -184,5 +207,180 @@ describe('worktreeRows', () => {
       ['.claude/worktrees/agent-x1', false, true, 0],
       ['/w/z-other', false, false, undefined],
     ])
+  })
+})
+
+describe('remotesOf', () => {
+  test('the remotes and FETCH_HEAD under a relative common dir', async () => {
+    const io = fakeIo(
+      {
+        [`${GIT} -C ${R} remote -v`]: { exitCode: 0, stdout: 'origin\tssh://h/a.git (fetch)\norigin\tssh://h/a.git (push)\n' },
+        [`${GIT} -C ${R} rev-parse --git-common-dir`]: { exitCode: 0, stdout: '.git\n' },
+      },
+      { [`${R}/.git/FETCH_HEAD`]: 1234 },
+    )
+    expect(await remotesOf(io, R)).toEqual({ remotes: [{ name: 'origin', url: 'ssh://h/a.git' }], fetchedAt: 1234 })
+  })
+
+  test('a linked worktree answers an absolute common dir', async () => {
+    const W = '/w/a/.claude/worktrees/agent-x1'
+    const io = fakeIo(
+      {
+        [`${GIT} -C ${W} remote -v`]: { exitCode: 0, stdout: '' },
+        [`${GIT} -C ${W} rev-parse --git-common-dir`]: { exitCode: 0, stdout: '/w/a/.git\n' },
+      },
+      { '/w/a/.git/FETCH_HEAD': 99 },
+    )
+    expect(await remotesOf(io, W)).toEqual({ remotes: [], fetchedAt: 99 })
+  })
+
+  test('never fetched: no fetchedAt; remote -v failing is an error', async () => {
+    const ok = fakeIo({ [`${GIT} -C ${R} remote -v`]: { exitCode: 0, stdout: '' }, [`${GIT} -C ${R} rev-parse --git-common-dir`]: { exitCode: 0, stdout: '.git\n' } })
+    expect(await remotesOf(ok, R)).toEqual({ remotes: [] })
+    expect(await remotesOf(fakeIo({}), R)).toEqual({ error: 'git remote 失敗' })
+  })
+})
+
+describe('branchesOf', () => {
+  const LIST = `${GIT} -C ${R} for-each-ref --sort=-committerdate ${BRANCH_FORMAT} refs/heads refs/remotes`
+  const recs =
+    rec('refs/heads/main', 'origin/main', '', '100', 'aaaaaaa', '*', 'init') +
+    rec('refs/heads/old', 'origin/old', 'gone', '50', 'bbbbbbb', ' ', 'old') +
+    rec('refs/remotes/origin/main', '', '', '100', 'aaaaaaa', ' ', 'init')
+
+  test('the merged ones are asked against origin/HEAD', async () => {
+    const io = fakeIo({
+      [LIST]: { exitCode: 0, stdout: recs },
+      [`${GIT} -C ${R} symbolic-ref -q --short refs/remotes/origin/HEAD`]: { exitCode: 0, stdout: 'origin/main\n' },
+      [`${GIT} -C ${R} for-each-ref --merged=origin/main --format=%(refname) refs/heads refs/remotes`]: { exitCode: 0, stdout: 'refs/heads/main\nrefs/heads/old\nrefs/remotes/origin/main\n' },
+    })
+    const b = await branchesOf(io, R)
+    if (isFailed(b)) throw new Error(b.error)
+    expect(b.rows.map(r => [r.name, r.merged, r.gone])).toEqual([
+      ['main', true, false],
+      ['old', true, true],
+    ])
+    expect(b.mergeKnown).toBe(true)
+  })
+
+  test('no origin: nothing marked merged; for-each-ref failing is an error', async () => {
+    const b = await branchesOf(fakeIo({ [LIST]: { exitCode: 0, stdout: recs } }), R)
+    if (isFailed(b)) throw new Error(b.error)
+    expect(b.mergeKnown).toBe(false)
+    expect(b.rows.every(r => !r.merged)).toBe(true)
+    expect(await branchesOf(fakeIo({}), R)).toEqual({ error: 'git for-each-ref 失敗' })
+  })
+})
+
+describe('stashes', () => {
+  const S = '5'.repeat(40)
+  test('the list', async () => {
+    const io = fakeIo({ [`${GIT} -C ${R} stash list ${STASH_FORMAT}`]: { exitCode: 0, stdout: rec(S, 'stash@{0}', '10', 'On main: 半成品') } })
+    expect(await stashesOf(io, R)).toEqual([{ sha: S, name: 'stash@{0}', time: 10_000, branch: 'main', message: '半成品' }])
+  })
+
+  test('its files, the untracked ones by its third parent; their diffs from the right commits', async () => {
+    const io = fakeIo({
+      [`${GIT} -C ${R} stash show --include-untracked --numstat -z --no-renames ${S}`]: { exitCode: 0, stdout: '1\t1\ta.go\x002\t0\tnew.txt\x00' },
+      [`${GIT} -C ${R} ls-tree -r --name-only -z ${S}^3`]: { exitCode: 0, stdout: 'new.txt\x00' },
+      [`${GIT} -C ${R} diff --no-color --no-renames ${S}^1 ${S} -- a.go`]: { exitCode: 0, stdout: '@@ -1 +1 @@\n-old\n+new\n' },
+      [`${GIT} -C ${R} show --no-color --no-renames --format= ${S}^3 -- new.txt`]: { exitCode: 0, stdout: '@@ -0,0 +1,2 @@\n+x\n+y\n' },
+    })
+    const files = await stashFiles(io, R, S)
+    if (isFailed(files)) throw new Error(files.error)
+    expect(files).toEqual([
+      { path: 'a.go', add: 1, del: 1, binary: false, untracked: false },
+      { path: 'new.txt', add: 2, del: 0, binary: false, untracked: true },
+    ])
+    const [tracked, untracked] = files
+    if (!tracked || !untracked) throw new Error('two files')
+    expect(await stashFileDiff(io, R, S, tracked)).toEqual([
+      { kind: 'hunk', text: '@@ -1 +1 @@' },
+      { kind: 'del', old: 1, text: 'old' },
+      { kind: 'add', new: 1, text: 'new' },
+    ])
+    const rows = await stashFileDiff(io, R, S, untracked)
+    if (isFailed(rows)) throw new Error(rows.error)
+    expect(rows.filter(r => r.kind === 'add').length).toBe(2)
+  })
+
+  test('a stash without untracked files: ls-tree failing marks none untracked', async () => {
+    const io = fakeIo({ [`${GIT} -C ${R} stash show --include-untracked --numstat -z --no-renames ${S}`]: { exitCode: 0, stdout: '1\t0\ta.go\x00' } })
+    expect(await stashFiles(io, R, S)).toEqual([{ path: 'a.go', add: 1, del: 0, binary: false, untracked: false }])
+  })
+})
+
+describe('worktreesOf', () => {
+  test('each worktree with its uncommitted files; a pruned one is not asked', async () => {
+    const W = `${R}/.claude/worktrees/agent-x1`
+    const io = fakeIo({
+      [`${GIT} -C ${R} worktree list --porcelain -z`]: {
+        exitCode: 0,
+        stdout:
+          `worktree ${R}\x00HEAD ${'1'.repeat(40)}\x00branch refs/heads/main\x00\x00` +
+          `worktree ${W}\x00HEAD ${'2'.repeat(40)}\x00branch refs/heads/wt\x00\x00` +
+          `worktree /w/gone\x00HEAD ${'3'.repeat(40)}\x00detached\x00prunable gitdir file points to non-existent location\x00\x00`,
+      },
+      [`${GIT} -C ${R} status --porcelain=v1 -z --no-renames --untracked-files=normal`]: { exitCode: 0, stdout: ' M a.go\x00?? b.go\x00' },
+      [`${GIT} -C ${W} status --porcelain=v1 -z --no-renames --untracked-files=normal`]: { exitCode: 0, stdout: '' },
+    })
+    const rows = await worktreesOf(io, R)
+    if (isFailed(rows)) throw new Error(rows.error)
+    expect(rows.map(r => [r.name, r.dirty, r.prunable, r.agent])).toEqual([
+      ['a', 2, false, false],
+      ['.claude/worktrees/agent-x1', 0, false, true],
+      ['/w/gone', undefined, true, false],
+    ])
+    expect(io.runs.some(a => a.includes('/w/gone'))).toBe(false)
+  })
+
+  test('worktree list failing is an error', async () => {
+    expect(await worktreesOf(fakeIo({}), R)).toEqual({ error: 'git worktree 失敗' })
+  })
+})
+
+describe('fetch', () => {
+  test('prompts off, ssh in batch mode, every remote, pruned', () => {
+    expect(fetchArgv(R)).toEqual([ENV, 'GIT_TERMINAL_PROMPT=0', GIT, '-C', R, '-c', 'core.sshCommand=ssh -o BatchMode=yes -o ConnectTimeout=10', 'fetch', '--all', '--prune'])
+  })
+
+  test('done, failed with the last stderr line, or past its time', async () => {
+    const key = fetchArgv(R).join(' ')
+    expect(await fetchRepo(fakeIo({ [key]: { exitCode: 0, stderr: 'From ssh://h/a\n' } }), R)).toBe(true)
+    expect(await fetchRepo(fakeIo({ [key]: { exitCode: 128, stderr: 'Fetching origin\nfatal: Could not read from remote repository.\n\n' } }), R)).toEqual({
+      error: 'fatal: Could not read from remote repository.',
+    })
+    expect(await fetchRepo(fakeIo({ [key]: { exitCode: 1, stderr: '' } }), R)).toEqual({ error: 'fetch 失敗' })
+    expect(await fetchRepo(fakeIo({ [key]: undefined }), R)).toEqual({ error: 'fetch 逾時' })
+  })
+})
+
+describe('commitTreeOf with a ref', () => {
+  const FMT = '--format=%H%x00%P%x00%an%x00%ct%x00%D%x00%s%x1e'
+  const log = `${'2'.repeat(40)}\x00\x00w\x0090\x00refs/heads/feat\x00wip\x1e\n`
+
+  test('a local branch is logged with its upstream, named by its short name', async () => {
+    const io = fakeIo({
+      [`${GIT} -C ${R} rev-parse --abbrev-ref --symbolic-full-name refs/heads/feat@{u}`]: { exitCode: 0, stdout: 'origin/feat\n' },
+      [`${GIT} -C ${R} log --topo-order --decorate=full -n 40 ${FMT} refs/heads/feat origin/feat`]: { exitCode: 0, stdout: log },
+      [`${GIT} -C ${R} rev-list origin/feat..refs/heads/feat`]: { exitCode: 0, stdout: `${'2'.repeat(40)}\n` },
+    })
+    const t = await commitTreeOf(io, R, 'refs/heads/feat')
+    if (isFailed(t)) throw new Error(t.error)
+    expect(t.branch).toBe('feat')
+    expect(t.upstream).toBe('origin/feat')
+    expect(t.ahead).toBe(1)
+    expect(io.runs.some(a => a.includes('symbolic-ref'))).toBe(false)
+  })
+
+  test('a remote branch has no upstream and nothing unpushed', async () => {
+    const io = fakeIo({
+      [`${GIT} -C ${R} log --topo-order --decorate=full -n 40 ${FMT} refs/remotes/origin/x`]: { exitCode: 0, stdout: log },
+    })
+    const t = await commitTreeOf(io, R, 'refs/remotes/origin/x')
+    if (isFailed(t)) throw new Error(t.error)
+    expect(t.branch).toBe('origin/x')
+    expect(t.upstream).toBeUndefined()
+    expect(t.unpushed).toEqual([])
   })
 })
