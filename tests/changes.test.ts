@@ -2019,8 +2019,8 @@ describe('commits mode: remotes, sub-pages and fetch', () => {
     t = await shown($)
     expect(t).not.toContain('fetch 中…')
     expect(count(w, FETCH)).toBe(1)
-    // asked again after the fetch (重新整理 while it ran may have asked once more)
-    expect(count(w, LOG)).toBeGreaterThanOrEqual(2)
+    // once on opening, once on 重新整理 while it ran, once after it
+    expect(count(w, LOG)).toBe(3)
     expect(w.runs.find(r => r.includes('fetch'))).toEqual([
       '/usr/bin/env', 'GIT_TERMINAL_PROMPT=0', G, '-C', R, '-c', 'core.sshCommand=ssh -o BatchMode=yes -o ConnectTimeout=10', 'fetch', '--all', '--prune',
     ])
@@ -2241,6 +2241,103 @@ describe('commits mode: remotes, sub-pages and fetch', () => {
     const after = await pane($)
     expect((await after.find({ key: 'cm-fetch' }))?.text).toBe('fetch')
     await after.unmount()
+  })
+
+  test('a fetch done after a /clear still drops what the reopened repo read before it ended', async ($, on) => {
+    let release = () => {}
+    const gate = new Promise<void>(r => (release = r))
+    const w = setup(on, answers(), argv => (argv.join(' ') === FETCH ? gate : Promise.resolve()))
+    await toTree($)
+    await press($, 'cm-fetch')
+    await shown($)
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    await shown($)
+    await press($, `cm-repo-${R}`)
+    await shown($)
+    await press($, 'cm-view-branches')
+    await shown($)
+    expect(count(w, BRANCHES)).toBe(1)
+    expect(count(w, REMOTES)).toBe(2)
+    release()
+    await settle()
+    const t = await shown($)
+    expect(t).not.toContain('fetch 中…')
+    expect(count(w, BRANCHES)).toBe(2)
+    expect(count(w, REMOTES)).toBe(3)
+  })
+
+  describe('a repo with a linked worktree', () => {
+    const WT = `${R}/.claude/worktrees/agent-x1`
+    const WT_LIST = `worktree ${R}\x00HEAD ${H}\x00branch refs/heads/main\x00\x00worktree ${WT}\x00HEAD ${H}\x00branch refs/heads/wt\x00\x00`
+    const WT_REMOTES = `${G} -C ${WT} remote -v`
+    const WT_BRANCHES = `${G} -C ${WT} for-each-ref --sort=-committerdate --format=%(refname)%00%(upstream:short)%00%(upstream:track,nobracket)%00%(committerdate:unix)%00%(objectname:short)%00%(HEAD)%00%(subject)%1e refs/heads refs/remotes`
+    const WT_FETCH = FETCH.replace(`-C ${R}`, `-C ${WT}`)
+    const SUMMARY = `${G} -C ${R} log -1 --decorate=full --format=%ct%x00%h%x00%D HEAD`
+    const linked = () =>
+      answers({
+        [WORKTREES]: { exitCode: 0, stdout: WT_LIST },
+        [`${G} -C ${WT} worktree list --porcelain -z`]: { exitCode: 0, stdout: WT_LIST },
+        [`${G} -C ${WT} status --porcelain=v1 -z --no-renames --untracked-files=normal`]: { exitCode: 0, stdout: '' },
+        [`${G} -C ${WT} log --topo-order --decorate=full -n 40 --format=%H%x00%P%x00%an%x00%ct%x00%D%x00%s%x1e HEAD`]: {
+          exitCode: 0,
+          stdout: `${H}\x00\x00w\x00100\x00HEAD -> refs/heads/wt\x00wt-commit\x1e\n`,
+        },
+        [WT_REMOTES]: answers()[REMOTES] as Run,
+        [`${G} -C ${WT} rev-parse --git-common-dir`]: { exitCode: 0, stdout: `${R}/.git\n` },
+        [WT_BRANCHES]: answers()[BRANCHES] as Run,
+        [WT_FETCH]: { exitCode: 0, stdout: '' },
+      })
+
+    test("a fetch in a worktree drops its main repo's remotes, branches and list summary too", async ($, on) => {
+      const w = setup(on, linked())
+      await toTree($)
+      await press($, 'cm-view-branches')
+      await shown($)
+      await press($, 'cm-view-worktrees')
+      await shown($)
+      expect(count(w, REMOTES)).toBe(1)
+      expect(count(w, BRANCHES)).toBe(1)
+      expect(count(w, SUMMARY)).toBe(1)
+      await press($, `cm-wt-${WT}`)
+      expect(await shown($)).toContain('wt-commit')
+      await press($, 'cm-fetch')
+      await shown($)
+      expect(count(w, WT_FETCH)).toBe(1)
+      await press($, 'back')
+      await shown($)
+      expect(await current($, 'cm-view-worktrees')).toBe(true)
+      expect(count(w, REMOTES)).toBe(2)
+      await press($, 'cm-view-branches')
+      await shown($)
+      expect(count(w, BRANCHES)).toBe(2)
+      await press($, 'back')
+      expect(await shown($)).toContain('1 repos')
+      expect(count(w, SUMMARY)).toBe(2)
+    })
+
+    test("a fetch in the main repo drops a worktree's remotes and branches read before it", async ($, on) => {
+      const w = setup(on, linked())
+      await toTree($)
+      await press($, 'cm-view-worktrees')
+      await shown($)
+      await press($, `cm-wt-${WT}`)
+      await shown($)
+      await press($, 'cm-view-branches')
+      await shown($)
+      expect(count(w, WT_REMOTES)).toBe(1)
+      expect(count(w, WT_BRANCHES)).toBe(1)
+      await press($, 'back')
+      await shown($)
+      await press($, 'cm-fetch')
+      await shown($)
+      expect(count(w, FETCH)).toBe(1)
+      await press($, `cm-wt-${WT}`)
+      await shown($)
+      await press($, 'cm-view-branches')
+      await shown($)
+      expect(count(w, WT_REMOTES)).toBe(2)
+      expect(count(w, WT_BRANCHES)).toBe(2)
+    })
   })
 
   test('the sub-tab row fits 30, 40 and 60 columns gaps included, with and without counts', async ($, on) => {

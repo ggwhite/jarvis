@@ -80,6 +80,14 @@ export async function worktreesOf(io: Pick<ChangesIo, 'run'>, repo: string): Pro
   return worktreeRows(list, dirty)
 }
 
+// `repo` and every worktree of its repository (they share its remote refs and FETCH_HEAD);
+// `repo` alone when git cannot list them
+export async function sameRepoPaths(io: Pick<ChangesIo, 'run'>, repo: string): Promise<string[]> {
+  const r = await io.run([GIT, '-C', repo, 'worktree', 'list', '--porcelain', '-z'])
+  const paths = answered(r) ? parseWorktrees(r.stdout).map(w => w.path) : []
+  return [...new Set([repo, ...paths])]
+}
+
 // Fetches every remote and prunes the gone branches, never asking for a password or passphrase.
 export function fetchArgv(repo: string): string[] {
   return [ENV, 'GIT_TERMINAL_PROMPT=0', GIT, '-C', repo, '-c', 'core.sshCommand=ssh -o BatchMode=yes -o ConnectTimeout=10', 'fetch', '--all', '--prune']

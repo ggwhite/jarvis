@@ -15,7 +15,7 @@ import type { BranchRef } from '../hooks/repoViews'
 import type { ChangesIo } from '../hooks/changes'
 import { commitTreeOf } from '../hooks/gitCommits'
 import { GIT, isFailed } from '../hooks/gitDiff'
-import { BRANCH_FORMAT, ENV, STASH_FORMAT, branchesOf, fetchArgv, fetchRepo, remotesOf, stashFileDiff, stashFiles, stashesOf, worktreesOf } from '../hooks/gitRepo'
+import { BRANCH_FORMAT, ENV, STASH_FORMAT, branchesOf, fetchArgv, fetchRepo, remotesOf, sameRepoPaths, stashFileDiff, stashFiles, stashesOf, worktreesOf } from '../hooks/gitRepo'
 
 type Out = { exitCode: number; stdout?: string; stderr?: string }
 
@@ -447,6 +447,14 @@ describe('fetch', () => {
     })
     expect(await fetchRepo(fakeIo({ [key]: { exitCode: 1, stderr: '' } }), R)).toEqual({ error: 'fetch 失敗' })
     expect(await fetchRepo(fakeIo({ [key]: undefined }), R)).toEqual({ error: 'fetch 逾時' })
+  })
+
+  test('a fetch reaches the repo and every worktree of it; the repo alone when git cannot list them', async () => {
+    const key = `${GIT} -C ${R} worktree list --porcelain -z`
+    const list = `worktree ${R}\x00HEAD ${'1'.repeat(40)}\x00branch refs/heads/main\x00\x00worktree /w/wt\x00HEAD ${'2'.repeat(40)}\x00detached\x00\x00`
+    expect(await sameRepoPaths(fakeIo({ [key]: { exitCode: 0, stdout: list } }), R)).toEqual([R, '/w/wt'])
+    expect(await sameRepoPaths(fakeIo({ [`${GIT} -C /w/wt worktree list --porcelain -z`]: { exitCode: 0, stdout: list } }), '/w/wt')).toEqual(['/w/wt', R])
+    expect(await sameRepoPaths(fakeIo({ [key]: { exitCode: 128, stdout: '' } }), R)).toEqual([R])
   })
 })
 

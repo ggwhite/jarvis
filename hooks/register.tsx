@@ -45,7 +45,7 @@ import { commitFileDiff, commitFiles, commitTreeOf, findRepos, repoSummary } fro
 import type { CommitFile, CommitTree, RepoSummary } from './gitCommits'
 import { commitRepoName, repoRows } from './commitsView'
 import type { CommitsCtx, RepoList } from './commitsView'
-import { FETCH_TIMEOUT_MS, branchesOf, fetchRepo, remotesOf, stashFileDiff, stashFiles, stashesOf, worktreesOf } from './gitRepo'
+import { FETCH_TIMEOUT_MS, branchesOf, fetchRepo, remotesOf, sameRepoPaths, stashFileDiff, stashFiles, stashesOf, worktreesOf } from './gitRepo'
 import type { StashFile } from './gitRepo'
 import type { BranchList, Remotes, RepoView, StashInfo, WorktreeRow } from './repoViews'
 
@@ -339,9 +339,10 @@ function countOf<T>(cc: CommitsCache, key: string, n: (x: T) => number): number 
   return hit === undefined || isFailed(hit) ? undefined : n(hit)
 }
 
-// Fetches `repo` in the background, once at a time: when done the repo is asked again,
-// when not the reason is kept until the next fetch or 重新整理. A /clear drops the answer,
-// not the fetch: until it ends no other one starts.
+// Fetches `repo` in the background, once at a time: when done the repo and its other
+// worktrees are asked again (a /clear since included: what was read after it predates the
+// fetch), when not the reason is kept until the next fetch or 重新整理, unless a /clear came
+// since. A /clear does not stop the fetch: until it ends no other one starts.
 function fetchCommits($: Pick<EngineInterface, 'fs' | 'process' | 'ui'>, cc: CommitsCache, repo: string): void {
   if (repo === '' || cc.fetching.has(repo)) return
   cc.fetching.add(repo)
@@ -354,13 +355,17 @@ function fetchCommits($: Pick<EngineInterface, 'fs' | 'process' | 'ui'>, cc: Com
     } catch {
       out = { error: 'fetch 失敗' }
     }
-    cc.fetching.delete(repo)
-    if (cc.gen !== gen) {
-      redraw($)
-      return
+    let group = [repo]
+    if (out === true) {
+      try {
+        group = await sameRepoPaths(ioOf($), repo)
+      } catch {
+        // its own path is dropped still
+      }
     }
-    if (out === true) dropCommitRepo(cc, repo)
-    else cc.fetchError.set(repo, out.error)
+    cc.fetching.delete(repo)
+    if (out === true) for (const r of group) dropCommitRepo(cc, r)
+    else if (cc.gen === gen) cc.fetchError.set(repo, out.error)
     redraw($)
   })()
   redraw($)
