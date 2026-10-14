@@ -1262,10 +1262,10 @@ export const register: Register = on => {
       try {
         await update($, changes, () => [])
         // the commit tree, commit diff and stash diff pages go back to the repo list, as a diff page
-        // does; the branches' gone group folds
+        // does; the branches' gone and 只在遠端 groups fold
         await update($, ui, (u): JarvisUi => {
-          const { goneOpen: _g, ...kept } = u
-          if (u.page !== 'commitTree' && u.page !== 'commitDiff' && u.page !== 'stashDiff') return u.goneOpen === undefined ? u : kept
+          const { goneOpen: _g, remoteOpen: _o, ...kept } = u
+          if (u.page !== 'commitTree' && u.page !== 'commitDiff' && u.page !== 'stashDiff') return u.goneOpen === undefined && u.remoteOpen === undefined ? u : kept
           const { commitRef: _r, repoBack: _b, repoView: _v, stashSha: _s, ...rest } = kept
           return { ...rest, page: 'changes' }
         })
@@ -1445,6 +1445,7 @@ export const register: Register = on => {
                 worktrees: countOf<WorktreeRow[]>(commitsCache, `w\x00${commitRepo}`, w => w.length),
               },
               goneOpen: shown.goneOpen === true,
+              remoteOpen: shown.remoteOpen === true,
             },
           }
         : {}),
@@ -1452,7 +1453,7 @@ export const register: Register = on => {
       ...(stash ? { stashDiff: { stash, files: stashFileList, file: stashFile, rows: stashRows } } : {}),
       openRepo: (repo: string) =>
         setUi(u => {
-          const { commitRef: _r, repoBack: _b, goneOpen: _g, ...rest } = u
+          const { commitRef: _r, repoBack: _b, goneOpen: _g, remoteOpen: _o, ...rest } = u
           return { ...rest, page: 'commitTree', commitRepo: repo, repoView: 'log' }
         }),
       openCommit: (sha: string) =>
@@ -1488,6 +1489,11 @@ export const register: Register = on => {
         setUi(u => {
           const { goneOpen, ...rest } = u
           return goneOpen === true ? rest : { ...rest, goneOpen: true }
+        }),
+      toggleRemote: () =>
+        setUi(u => {
+          const { remoteOpen, ...rest } = u
+          return remoteOpen === true ? rest : { ...rest, remoteOpen: true }
         }),
       openStash: (sha: string) =>
         setUi(u => {

@@ -2122,8 +2122,10 @@ describe('commits mode: remotes, sub-pages and fetch', () => {
   }
   const GONE_SHUT = '▸ gone 1 個（遠端已刪，多半已 merge）'
   const GONE_OPEN = '▾ gone 1 個（遠端已刪，多半已 merge）'
+  const REMOTE_SHUT = '▸ 只在遠端 1 個'
+  const REMOTE_OPEN = '▾ 只在遠端 1 個'
 
-  test('branch rows in groups: the current, 進行中, 只在遠端, gone folded; ↑ ↓, 無 upstream, 已 merge; past a group\'s cap 還有 N 個分支; a long name is cut, its marks kept', async ($, on) => {
+  test('branch rows in groups: the current, 進行中, 只在遠端 and gone folded; ↑ ↓, 無 upstream, 已 merge; past a group\'s cap 還有 N 個分支; a long name is cut, its marks kept', async ($, on) => {
     groupsSetup(on)
     await toTree($)
     await press($, 'cm-view-branches')
@@ -2137,15 +2139,16 @@ describe('commits mode: remotes, sub-pages and fetch', () => {
       expect(t).toMatch(/◉ main\s+↑2 ↓3/)
       expect(t).toMatch(/● feature\/(ahead-y*)?…\s+↑4 ↓5/)
       expect(t).toMatch(/● feature\/(merged-z*)?…\s+無 upstream 已 merge/)
-      expect(t).toMatch(cols < 60 ? /origin\/o/ : /origin\/only/)
+      expect(t).not.toMatch(/origin\/only/)
       expect(t).not.toMatch(/origin\/main/)
       expect(t).toContain('進行中 102')
-      expect(t).toContain('只在遠端 1')
+      expect(t).toContain(REMOTE_SHUT)
       expect(t).toContain(cols < 60 ? '▸ gone 1 個' : GONE_SHUT)
       expect(t).not.toContain('feature/gone')
       expect(t).toContain('還有 2 個分支')
       expect(lines.findIndex(l => l.includes('◉ main'))).toBeLessThan(lines.findIndex(l => l.includes('進行中')))
-      expect(lines.findIndex(l => l.includes('只在遠端'))).toBeLessThan(lines.findIndex(l => l.includes('▸ gone')))
+      expect(lines.findIndex(l => l.includes('還有 2 個分支'))).toBeLessThan(lines.findIndex(l => l.includes(REMOTE_SHUT)))
+      expect(lines.findIndex(l => l.includes(REMOTE_SHUT))).toBeLessThan(lines.findIndex(l => l.includes('▸ gone')))
     }
   })
 
@@ -2162,6 +2165,8 @@ describe('commits mode: remotes, sub-pages and fetch', () => {
     groupsSetup(on)
     await toTree($)
     await press($, 'cm-view-branches')
+    await shown($)
+    await press($, 'cm-branches-remote')
     for (const cols of [80, 120]) {
       await shown($, cols)
       const lines = await drawn($, cols, 200)
@@ -2207,27 +2212,66 @@ describe('commits mode: remotes, sub-pages and fetch', () => {
     expect(t).not.toContain('feature/gone')
   })
 
-  test('gone opened folds again when a repo is opened and on /clear', async ($, on) => {
+  test('只在遠端 folded to one line: a press opens it, its rows listed; another folds it; gone opens and folds apart from it', async ($, on) => {
+    groupsSetup(on)
+    await toTree($)
+    await press($, 'cm-view-branches')
+    let t = await shown($)
+    expect(t).toContain(REMOTE_SHUT)
+    expect(t).not.toContain('origin/only')
+    await press($, 'cm-branches-remote')
+    t = (await drawn($, 80, 200)).join('\n')
+    expect(t).toContain(REMOTE_OPEN)
+    expect(t).toMatch(/origin\/only\s+theirs/)
+    expect(t).toContain(GONE_SHUT)
+    await press($, 'cm-branches-gone')
+    t = (await drawn($, 80, 200)).join('\n')
+    expect(t).toContain(REMOTE_OPEN)
+    expect(t).toContain(GONE_OPEN)
+    await press($, 'cm-branches-remote')
+    t = (await drawn($, 80, 200)).join('\n')
+    expect(t).toContain(REMOTE_SHUT)
+    expect(t).not.toContain('origin/only')
+    expect(t).toContain(GONE_OPEN)
+    await press($, 'cm-branches-remote')
+    await press($, 'cm-view-log')
+    await shown($)
+    await press($, 'cm-view-branches')
+    t = (await drawn($, 80, 200)).join('\n')
+    expect(t).toContain(REMOTE_OPEN)
+  })
+
+  test('gone and 只在遠端 opened fold again when a repo is opened and on /clear', async ($, on) => {
     groupsSetup(on)
     await toTree($)
     await press($, 'cm-view-branches')
     await shown($)
     await press($, 'cm-branches-gone')
-    expect((await drawn($, 80, 200)).join('\n')).toContain(GONE_OPEN)
+    await press($, 'cm-branches-remote')
+    let t = (await drawn($, 80, 200)).join('\n')
+    expect(t).toContain(GONE_OPEN)
+    expect(t).toContain(REMOTE_OPEN)
     await press($, 'back')
     await shown($)
     await press($, `cm-repo-${R}`)
     await shown($)
     await press($, 'cm-view-branches')
-    expect(await shown($)).toContain(GONE_SHUT)
+    t = await shown($)
+    expect(t).toContain(GONE_SHUT)
+    expect(t).toContain(REMOTE_SHUT)
     await press($, 'cm-branches-gone')
-    expect((await drawn($, 80, 200)).join('\n')).toContain(GONE_OPEN)
+    await press($, 'cm-branches-remote')
+    t = (await drawn($, 80, 200)).join('\n')
+    expect(t).toContain(GONE_OPEN)
+    expect(t).toContain(REMOTE_OPEN)
     await $.classic.SessionStart({ source: 'clear' } as never)
     await shown($)
     await press($, `cm-repo-${R}`)
     await shown($)
     await press($, 'cm-view-branches')
-    expect(await shown($)).toContain(GONE_SHUT)
+    t = await shown($)
+    expect(t).toContain(GONE_SHUT)
+    expect(t).toContain(REMOTE_SHUT)
   })
 
   test('worktree rows: a long path is cut from its start, its marks kept; a pruned one cannot be pressed', async ($, on) => {

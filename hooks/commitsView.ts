@@ -108,7 +108,7 @@ export function commitRows(tree: CommitTree, startedAt: number | undefined): Com
 // A repo's tree page: its commits (of `ref`, HEAD when absent), the sub-page shown, its
 // remotes, whether a fetch is running or why the last one failed, the sub-pages as git gave
 // them (undefined while asked or when not shown), each one's count once answered and whether
-// the branches' gone group is open.
+// the branches' gone and 只在遠端 groups are open.
 export type RepoPage = {
   path: string
   name: string
@@ -123,6 +123,7 @@ export type RepoPage = {
   worktrees: WorktreeRow[] | Failed | undefined
   counts: { branches: number | undefined; stash: number | undefined; worktrees: number | undefined }
   goneOpen: boolean
+  remoteOpen: boolean
 }
 
 // the stash diff page: the stash, its files, the file shown and that file's diff
@@ -149,8 +150,9 @@ export type CommitsCtx = {
   refreshTree: () => void
   setView: (view: RepoView) => void
   openBranch: (ref: string) => void
-  // opens the branches' gone group, or folds it
+  // opens the branches' gone group, or folds it; the same for 只在遠端
   toggleGone: () => void
+  toggleRemote: () => void
   openStash: (sha: string) => void
   openStashFile: (path: string) => void
   openWorktree: (path: string) => void

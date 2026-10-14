@@ -1976,12 +1976,12 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     }
   }
 
-  // The branches in groups: ◉ the current one, 進行中 (● the local ones), 只在遠端 (the remote
-  // mark) and the gone ones folded to one press; columns lined up over the rows drawn: the
+  // The branches in groups: ◉ the current one, 進行中 (● the local ones), then 只在遠端 (the
+  // remote mark) and the gone ones, each folded to one press; columns lined up over the rows drawn: the
   // name (12 to 40% of the width, cut first), ↑ ↓ against the upstream, gone when it was
   // deleted, 無 upstream, 已 merge (whole), the subject when it fits and the age; a row opens
   // the branch's tree.
-  const branchLines = (b: BranchList | Failed | undefined, cm: CommitsCtx, inner: number, goneOpen: boolean): Line[] => {
+  const branchLines = (b: BranchList | Failed | undefined, cm: CommitsCtx, inner: number, open: { remote: boolean; gone: boolean }): Line[] => {
     if (b === undefined) return [[{ t: '讀取中…', color: MUTED }]]
     if (isFailed(b)) return [[{ t: b.error, color: MUTED }]]
     if (b.total === 0) return [[{ t: '沒有分支', color: MUTED }]]
@@ -1994,7 +1994,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         ...(r.merged ? [{ t: '已 merge', color: MUTED }] : []),
       ].flatMap((x, i) => (i === 0 ? [x] : [sp(1), x]))
     const ageOf = (r: BranchRow): Seg[] => [{ t: fmtAgo(cm.now - r.time), color: FRAME }]
-    const drawnRows = [...(b.current ? [b.current] : []), ...b.active.rows, ...b.remote.rows, ...(goneOpen ? b.gone.rows : [])]
+    const drawnRows = [...(b.current ? [b.current] : []), ...b.active.rows, ...(open.remote ? b.remote.rows : []), ...(open.gone ? b.gone.rows : [])]
     const statusW = Math.max(0, ...drawnRows.map(r => segsWidth(statusOf(r))))
     const ageW = Math.max(0, ...drawnRows.map(r => segsWidth(ageOf(r))))
     const lead = 3
@@ -2030,24 +2030,24 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     }
     const more = (n: number): Line[] => (n > 0 ? [[{ t: `還有 ${n} 個分支`, color: MUTED }]] : [])
     const out: Line[] = b.current ? [row(b.current)] : []
-    for (const [title, g] of [
-      ['進行中', b.active],
-      ['只在遠端', b.remote],
+    if (b.active.rows.length > 0) {
+      out.push([sp(1), { t: fitCells(`進行中 ${b.active.rows.length + b.active.more}`, inner - 1), color: MUTED }], ...b.active.rows.map(row), ...more(b.active.more))
+    }
+    for (const [key, title, g, isOpen, toggle] of [
+      ['remote', '只在遠端', b.remote, open.remote, cm.toggleRemote],
+      ['gone', 'gone', b.gone, open.gone, cm.toggleGone],
     ] as const) {
       if (g.rows.length === 0) continue
-      out.push([sp(1), { t: fitCells(`${title} ${g.rows.length + g.more}`, inner - 1), color: MUTED }], ...g.rows.map(row), ...more(g.more))
-    }
-    if (b.gone.rows.length > 0) {
-      const label = `${goneOpen ? '▾' : '▸'} gone ${b.gone.rows.length + b.gone.more} 個（遠端已刪，多半已 merge）`
+      const label = `${isOpen ? '▾' : '▸'} ${title} ${g.rows.length + g.more} 個${key === 'gone' ? '（遠端已刪，多半已 merge）' : ''}`
       out.push({
         h: 1,
         node: (
-          <Button key="cm-branches-gone" plain onPress={() => cm.toggleGone()}>
+          <Button key={`cm-branches-${key}`} plain onPress={() => toggle()}>
             <Text>{texts([sp(1), { t: fitCells(label, inner - 1), color: MUTED }])}</Text>
           </Button>
         ),
       })
-      if (goneOpen) out.push(...b.gone.rows.map(row), ...more(b.gone.more))
+      if (isOpen) out.push(...g.rows.map(row), ...more(g.more))
     }
     return out
   }
@@ -2183,7 +2183,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       inner,
     )
     const lines: Line[] = [head, ...remoteLines(shownRepo, cm, inner), viewRow(shownRepo, cm, inner)]
-    if (shownRepo.view === 'branches') lines.push(...branchLines(shownRepo.branches, cm, inner, shownRepo.goneOpen))
+    if (shownRepo.view === 'branches') lines.push(...branchLines(shownRepo.branches, cm, inner, { remote: shownRepo.remoteOpen, gone: shownRepo.goneOpen }))
     else if (shownRepo.view === 'stash') lines.push(...stashLines(shownRepo.stashes, cm, inner))
     else if (shownRepo.view === 'worktrees') lines.push(...worktreeLines(shownRepo.worktrees, cm, inner))
     else lines.push(...logLines(t, cm, inner))
