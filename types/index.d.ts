@@ -212,6 +212,10 @@ export type JarvisUi = {
   commitRef?: string
   repoBack?: { repo: string; view: 'branches' | 'worktrees'; back?: { repo: string; view: 'branches' | 'worktrees' } }
   stashSha?: string
+  // the 分支 sub-page's gone and 只在遠端 groups are open (absent: folded); a repo opened or a
+  // /clear folds them
+  goneOpen?: boolean
+  remoteOpen?: boolean
 }
 
 declare module 'claude-code' {

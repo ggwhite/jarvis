@@ -45,7 +45,7 @@ import type { ChangeMode } from './changes'
 import { commitRows, laneColor, relTime } from './commitsView'
 import type { CommitsCtx, RefLabel, RepoPage } from './commitsView'
 import { MAX_REMOTES } from './repoViews'
-import type { BranchList, RepoView, StashInfo, WorktreeRow } from './repoViews'
+import type { BranchList, BranchRow, RepoView, StashInfo, WorktreeRow } from './repoViews'
 import { graphWidth } from './commitGraph'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
 import type { CardLines } from './fleetCards'
@@ -1976,37 +1976,48 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     }
   }
 
-  // The branches: ◉ the current one, ● the other local ones, the remote mark for those only
-  // on a remote; ↑ ↓ against the upstream, gone when it was deleted, 無 upstream, 已 merge,
-  // the subject when it fits and the age; a row opens the branch's tree. A long name is cut
-  // first: the marks after it stay.
-  const branchLines = (b: BranchList | Failed | undefined, cm: CommitsCtx, inner: number): Line[] => {
+  // The branches in groups: ◉ the current one, 進行中 (● the local ones), then 只在遠端 (the
+  // remote mark) and the gone ones, each folded to one press; columns lined up over the rows drawn: the
+  // name (12 to 40% of the width, cut first), ↑ ↓ against the upstream, gone when it was
+  // deleted, 無 upstream, 已 merge (whole), the subject when it fits and the age; a row opens
+  // the branch's tree.
+  const branchLines = (b: BranchList | Failed | undefined, cm: CommitsCtx, inner: number, open: { remote: boolean; gone: boolean }): Line[] => {
     if (b === undefined) return [[{ t: '讀取中…', color: MUTED }]]
     if (isFailed(b)) return [[{ t: b.error, color: MUTED }]]
-    if (b.rows.length === 0) return [[{ t: '沒有分支', color: MUTED }]]
-    const out: Line[] = b.rows.map(r => {
+    if (b.total === 0) return [[{ t: '沒有分支', color: MUTED }]]
+    const statusOf = (r: BranchRow): Seg[] =>
+      [
+        ...(r.ahead > 0 ? [{ t: `↑${r.ahead}`, color: SUCCESS }] : []),
+        ...(r.behind > 0 ? [{ t: `↓${r.behind}`, color: PRIMARY }] : []),
+        ...(r.gone ? [{ t: 'gone', color: MUTED }] : []),
+        ...(r.kind !== 'remote' && !r.upstream ? [{ t: '無 upstream', color: MUTED }] : []),
+        ...(r.merged ? [{ t: '已 merge', color: MUTED }] : []),
+      ].flatMap((x, i) => (i === 0 ? [x] : [sp(1), x]))
+    const ageOf = (r: BranchRow): Seg[] => [{ t: fmtAgo(cm.now - r.time), color: FRAME }]
+    const drawnRows = [...(b.current ? [b.current] : []), ...b.active.rows, ...(open.remote ? b.remote.rows : []), ...(open.gone ? b.gone.rows : [])]
+    const statusW = Math.max(0, ...drawnRows.map(r => segsWidth(statusOf(r))))
+    const ageW = Math.max(0, ...drawnRows.map(r => segsWidth(ageOf(r))))
+    const lead = 3
+    const widest = Math.max(12, Math.min(Math.max(0, ...drawnRows.map(r => cellWidth(r.name))), Math.floor(inner * 0.4)))
+    // a narrow pane cuts the name further so the status stays whole
+    const nameW = Math.max(1, Math.min(widest, inner - ageW - 1 - lead - (statusW > 0 ? statusW + 1 : 0)))
+    const row = (r: BranchRow): Line => {
       const mark: Seg =
         r.kind === 'current'
           ? { t: `${COMMIT_ICON.head} `, color: ACCENT, bold: true }
           : r.kind === 'local'
             ? { t: `${COMMIT_ICON.node} `, color: SUCCESS }
             : { t: withIcon(COMMIT_ICON.remote, ''), color: PRIMARY }
-      const status: Seg[] = [
-        ...(r.ahead > 0 ? [{ t: ` ↑${r.ahead}`, color: SUCCESS }] : []),
-        ...(r.behind > 0 ? [{ t: ` ↓${r.behind}`, color: PRIMARY }] : []),
-        ...(r.gone ? [{ t: ' gone', color: ERROR }] : []),
-        ...(r.kind !== 'remote' && !r.upstream ? [{ t: ' 無 upstream', color: MUTED }] : []),
-        ...(r.merged ? [{ t: ' 已 merge', color: MUTED }] : []),
-      ]
-      const right: Seg[] = [{ t: fmtAgo(cm.now - r.time), color: FRAME }]
+      const status = statusOf(r)
+      const right = ageOf(r)
       const name: Seg = {
-        t: fitCells(r.name, Math.max(1, inner - segsWidth([sp(1), mark, ...status, ...right]) - 1)),
+        t: padCells(fitCells(r.name, nameW), nameW),
         color: r.kind === 'current' ? ACCENT : r.kind === 'remote' ? PRIMARY : BRIGHT,
         ...(r.kind === 'current' ? { bold: true } : {}),
       }
-      const fixed: Seg[] = [sp(1), mark, name, ...status]
-      const room = inner - segsWidth(fixed) - segsWidth(right) - 3
-      const left: Seg[] = room >= 8 ? [...fixed, sp(2), { t: fitCells(r.subject, room), color: FRAME }] : fixed
+      const fixed: Seg[] = [sp(1), mark, name, ...(statusW > 0 ? [sp(1), ...status, sp(statusW - segsWidth(status))] : [])]
+      const room = inner - segsWidth(fixed) - segsWidth(right) - 2
+      const left: Seg[] = room >= 8 ? [...fixed, sp(1), { t: fitCells(r.subject, room), color: FRAME }] : fixed
       const ref = r.ref
       return {
         h: 1,
@@ -2016,8 +2027,28 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
           </Button>
         ),
       }
-    })
-    if (b.more > 0) out.push([{ t: `還有 ${b.more} 個分支`, color: MUTED }])
+    }
+    const more = (n: number): Line[] => (n > 0 ? [[{ t: `還有 ${n} 個分支`, color: MUTED }]] : [])
+    const out: Line[] = b.current ? [row(b.current)] : []
+    if (b.active.rows.length > 0) {
+      out.push([sp(1), { t: fitCells(`進行中 ${b.active.rows.length + b.active.more}`, inner - 1), color: MUTED }], ...b.active.rows.map(row), ...more(b.active.more))
+    }
+    for (const [key, title, g, isOpen, toggle] of [
+      ['remote', '只在遠端', b.remote, open.remote, cm.toggleRemote],
+      ['gone', 'gone', b.gone, open.gone, cm.toggleGone],
+    ] as const) {
+      if (g.rows.length === 0) continue
+      const label = `${isOpen ? '▾' : '▸'} ${title} ${g.rows.length + g.more} 個${key === 'gone' ? '（遠端已刪，多半已 merge）' : ''}`
+      out.push({
+        h: 1,
+        node: (
+          <Button key={`cm-branches-${key}`} plain onPress={() => toggle()}>
+            <Text>{texts([sp(1), { t: fitCells(label, inner - 1), color: MUTED }])}</Text>
+          </Button>
+        ),
+      })
+      if (isOpen) out.push(...g.rows.map(row), ...more(g.more))
+    }
     return out
   }
 
@@ -2152,7 +2183,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       inner,
     )
     const lines: Line[] = [head, ...remoteLines(shownRepo, cm, inner), viewRow(shownRepo, cm, inner)]
-    if (shownRepo.view === 'branches') lines.push(...branchLines(shownRepo.branches, cm, inner))
+    if (shownRepo.view === 'branches') lines.push(...branchLines(shownRepo.branches, cm, inner, { remote: shownRepo.remoteOpen, gone: shownRepo.goneOpen }))
     else if (shownRepo.view === 'stash') lines.push(...stashLines(shownRepo.stashes, cm, inner))
     else if (shownRepo.view === 'worktrees') lines.push(...worktreeLines(shownRepo.worktrees, cm, inner))
     else lines.push(...logLines(t, cm, inner))

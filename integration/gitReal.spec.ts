@@ -123,13 +123,14 @@ describe('branchesOf, on real git', () => {
     const b = await branchesOf(io, work)
     if (isFailed(b)) throw new Error(b.error)
     expect(b.mergeKnown).toBe(true)
-    const by = (n: string) => b.rows.find(r => r.name === n)
+    const rows = [...(b.current ? [b.current] : []), ...b.active.rows, ...b.remote.rows, ...b.gone.rows]
+    const by = (n: string) => rows.find(r => r.name === n)
     expect(by('main')).toMatchObject({ kind: 'current', upstream: true, merged: true })
     expect(by('done/y')).toMatchObject({ kind: 'local', upstream: false, merged: true })
     expect(by('feat/x')).toMatchObject({ kind: 'local', upstream: true, ahead: 1, behind: 0, merged: false })
     // origin/main and origin/feat/x are tracked by local branches, so listed once
-    expect(b.rows.some(r => r.name.startsWith('origin/'))).toBe(false)
-    expect(b.more).toBe(0)
+    expect(rows.some(r => r.name.startsWith('origin/'))).toBe(false)
+    expect([b.active.more, b.remote.more, b.gone.more]).toEqual([0, 0, 0])
   })
 })
 
