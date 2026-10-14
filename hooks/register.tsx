@@ -45,6 +45,8 @@ import { commitFileDiff, commitFiles, commitTreeOf, findRepos, repoSummary } fro
 import type { CommitFile, CommitTree, RepoSummary } from './gitCommits'
 import { commitRepoName, repoRows } from './commitsView'
 import type { CommitsCtx, RepoList } from './commitsView'
+import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, fromTaskCreate, fromTaskUpdate, fromTodos } from './tasks'
+import type { TaskReply } from './tasks'
 import { FETCH_TIMEOUT_MS, branchesOf, fetchRepo, remotesOf, sameRepoPaths, stashFileDiff, stashFiles, stashesOf, worktreesOf } from './gitRepo'
 import type { StashFile } from './gitRepo'
 import type { BranchList, Remotes, RepoView, StashInfo, WorktreeRow } from './repoViews'
@@ -91,6 +93,7 @@ const fleetCursor = atom({ plugin: 'jarvis', key: 'fleetCursor' } as const, {})
 const standbyQuota = atom({ plugin: 'jarvis', key: 'standbyQuota' } as const, null as FleetQuota | null)
 const suit = atom({ plugin: 'jarvis', key: 'suit' } as const, { n: 0 })
 const changes = atom({ plugin: 'jarvis', key: 'changes' } as const, [] as JarvisChange[])
+const tasks = atom({ plugin: 'jarvis', key: 'tasks' } as const, EMPTY_BOARD)
 
 // Tool calls that last as long as the agents they start, whose own calls are tracked:
 // counting them in flight would hide a stuck subagent.
@@ -146,6 +149,28 @@ async function firstOrig($: Pick<EngineInterface, 'fs' | 'process' | 'state'>, s
     return (await ioOf($).write(file, seen.original)) ? file : UNKNOWN
   } catch {
     return UNKNOWN
+  }
+}
+
+// The built-in task tools' calls, mirrored onto the board.
+async function recordTasks(
+  $: Pick<EngineInterface, 'state'>,
+  tool: string,
+  input: Record<string, unknown>,
+  result: unknown,
+  actor: string | undefined,
+): Promise<void> {
+  try {
+    if (tool === 'TodoWrite') {
+      await update($, tasks, b => fromTodos(b, input['todos'], actor))
+    } else if (tool === 'TaskCreate') {
+      const created = (result as { task?: { id?: unknown } } | undefined)?.task
+      await update($, tasks, b => fromTaskCreate(b, created?.id, input['subject'], actor))
+    } else if (tool === 'TaskUpdate') {
+      await update($, tasks, b => fromTaskUpdate(b, input))
+    }
+  } catch {
+    // bookkeeping only
   }
 }
 
@@ -823,6 +848,11 @@ export const register: Register = on => {
     } catch {
       // the command is optional
     }
+    try {
+      await $.tool.register(TASK_TOOL_SPEC)
+    } catch {
+      // no board tool: the tasks page shows what the built-in task tools did
+    }
 
     try {
       sessionStartedAt = await $.clock.now()
@@ -1035,6 +1065,13 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // the board's instructions, where the request offers the board's tool
+  on('prompt.compose', async ($, e, next) => {
+    const out = await next(e)
+    if (!e.tools.includes(TASK_TOOL) || out.sections.some(s => s.id === TASK_SECTION_ID)) return out
+    return { sections: [...out.sections, { id: TASK_SECTION_ID, text: TASK_PROMPT, scope: 'session' as const }] }
+  })
+
   on('command.run', { command: 'jarvis' }, async $ =>
     (await openPane($, setBoot)) ? { text: 'Jarvis 面板已開啟' } : { text: 'Jarvis 面板開啟失敗' },
   )
@@ -1081,6 +1118,23 @@ export const register: Register = on => {
     }
 
     return next(e)
+  })
+
+  // The board's tool. The board is changed inside the write, so calls from parallel
+  // subagents each land on the board the last one left.
+  on('tool.call', { tool: 'mcp__jarvis__task' }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    const box: { reply: TaskReply } = { reply: { error: '看板暫時無法寫入' } }
+    try {
+      await update($, tasks, b => {
+        box.reply = applyTask(b, input, e.agentId)
+        return 'error' in box.reply ? b : box.reply.board
+      })
+    } catch {
+      box.reply = { error: '看板暫時無法寫入' }
+    }
+    const reply = box.reply
+    return 'error' in reply ? { deny: reply.error } : { result: reply.text }
   })
 
   on('tool.call', async ($, e, next) => {
@@ -1165,6 +1219,7 @@ export const register: Register = on => {
       const out = await next(e)
       ok = out.isError !== true
       if (ok && out.deny === undefined) await recordChange($, tool, out.result, id ?? MAIN_ACTOR, cacheDir, repoCache, origs, worktrees)
+      if (ok && out.deny === undefined) await recordTasks($, tool, e as unknown as Record<string, unknown>, out.result, id)
       if (tool === 'Bash' && out.deny === undefined)
         await recordBash($, (e as unknown as Record<string, unknown>)['command'], shell, { cwd, home: changesHome }, changesCache, repoCache)
       return out
@@ -1261,6 +1316,7 @@ export const register: Register = on => {
       resetChanges()
       try {
         await update($, changes, () => [])
+        await update($, tasks, () => EMPTY_BOARD)
         // the commit tree, commit diff and stash diff pages go back to the repo list, as a diff page
         // does; the branches' gone and 只在遠端 groups fold
         await update($, ui, (u): JarvisUi => {

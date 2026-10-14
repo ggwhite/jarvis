@@ -265,6 +265,13 @@ declare module 'claude-code' {
       suit: JarvisSuit
       // the files this session's edit tools changed, in the order first seen
       changes: JarvisChange[]
+      // the session's task board, kept by the model through mcp__jarvis__task
+      tasks: JarvisTaskBoard
     }
+  }
+
+  // the board's own tool, registered at session.start
+  interface McpToolInputs {
+    mcp__jarvis__task: Record<string, unknown>
   }
 }

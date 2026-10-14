@@ -1,4 +1,6 @@
-import { describe, expect, test } from 'claude-code/testing'
+import type { On } from 'claude-code'
+import type { Engine } from 'claude-code/testing'
+import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { JarvisTaskBoard } from '../types'
 import {
@@ -6,6 +8,8 @@ import {
   MAX_ITEMS,
   MAX_SUBTASKS,
   TASKS_TITLE,
+  TASK_PROMPT,
+  TASK_SECTION_ID,
   TASK_TOOL,
   TASK_TOOL_SPEC,
   TITLE_MAX,
@@ -326,5 +330,123 @@ describe('task board rows', () => {
     expect(rows[2]).toBe('還有 3 列')
     expect(taskRows(board(), 60, 0, owner)).toEqual([])
     expect(taskRows(board(), 60, 1, owner).map(text)).toEqual(['還有 5 列'])
+  })
+})
+
+// the test-side bottom of the chain, standing for the engine
+const TASK_CREATE_ID = '7'
+const world = (on: On) => {
+  const registered: { name: string; isDeferred?: boolean }[] = []
+  mock.clock(on, { now: 0 })
+  mock.env(on, {})
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('classic.SessionStart', async () => ({}))
+  on('agent.spawn', async () => ({ model: 'claude-haiku-5-5', agentId: 'agent-7' }))
+  on('agent.list', async () => ({ value: [{ id: 'agent-7', status: 'running', type: 'worker', description: 'd' }] as never }))
+  on('tool.register', async (_$, e) => {
+    registered.push({ name: e.name, ...(e.isDeferred === undefined ? {} : { isDeferred: e.isDeferred }) })
+    return { value: { tool: `mcp__jarvis__${e.name}` } }
+  })
+  on('prompt.compose', async () => ({ sections: [{ id: 'intro', text: 'intro', scope: 'shared' as const }] }))
+  on('tool.call', async (_$, e) => ({
+    result: (e.tool === 'TaskCreate' ? { task: { id: TASK_CREATE_ID, subject: 's' } } : {}) as never,
+  }))
+  return { registered }
+}
+
+const startSession = ($: Engine) => $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+
+// a call of the board's tool; `agentId` as the engine stamps a subagent's call
+const task = ($: Engine, input: Record<string, unknown>, agentId?: string) =>
+  $.tool.call({ tool: TASK_TOOL, ...input, ...(agentId === undefined ? {} : { agentId }) } as never)
+
+const boardOf = async ($: Engine): Promise<string> => String((await task($, { op: 'list' })).result)
+
+// a full prompt.compose input offering `tools`
+const composeFor = (tools: string[]) => ({
+  model: 'claude-opus-5-5',
+  promptModel: 'claude-opus-5-5',
+  surfaces: [],
+  tools,
+  outputStyle: null,
+  traits: [],
+})
+
+describe('task board tool', () => {
+  test('session.start registers the board tool, its schema in the prompt', async ($, on) => {
+    const w = world(on)
+    await startSession($)
+    expect(w.registered).toContainEqual({ name: 'task', isDeferred: false })
+  })
+
+  test('a call answers with the board; a bad call is refused and changes nothing', async ($, on) => {
+    world(on)
+    const added = await task($, { op: 'add', item: '加看板', subtasks: ['調查', '實作'] })
+    expect(added.deny).toBeUndefined()
+    expect(String(added.result)).toContain('[ ] 1.1 調查')
+    const bad = await task($, { op: 'update', id: '9.9', status: 'completed' })
+    expect(bad.deny).toContain('找不到')
+    expect(await boardOf($)).toBe(String(added.result))
+  })
+
+  test("a subagent's update marks the subtask its own", async ($, on) => {
+    world(on)
+    await task($, { op: 'add', item: 'A', subtasks: ['a1'] })
+    await task($, { op: 'update', id: '1.1', status: 'in_progress' }, 'agent-7')
+    expect(await boardOf($)).toContain('[>] 1.1 a1 (agent agent-7)')
+  })
+
+  test('parallel calls each land on the board', async ($, on) => {
+    world(on)
+    await task($, { op: 'add', item: 'A', subtasks: ['a1', 'a2', 'a3'] })
+    await Promise.all(['1.1', '1.2', '1.3'].map((id, k) => task($, { op: 'update', id, status: 'completed' }, `agent-${k}`)))
+    expect(await boardOf($)).toContain('[x] 1 A')
+  })
+
+  test('session.start again (a hot reload) keeps the board', async ($, on) => {
+    world(on)
+    await startSession($)
+    await task($, { op: 'add', item: 'A' })
+    await startSession($)
+    expect(await boardOf($)).toContain('[ ] 1 A')
+  })
+
+  test('the system prompt gains the board section only where the request offers the tool', async ($, on) => {
+    world(on)
+    const withTool = await $.prompt.compose(composeFor([TASK_TOOL]))
+    expect(withTool.sections.at(-1)).toEqual({ id: TASK_SECTION_ID, text: TASK_PROMPT, scope: 'session' })
+    expect(withTool.sections.filter(s => s.id === TASK_SECTION_ID)).toHaveLength(1)
+    const without = await $.prompt.compose(composeFor(['Read']))
+    expect(without.sections.some(s => s.id === TASK_SECTION_ID)).toBe(false)
+  })
+
+  test('TodoWrite, TaskCreate and TaskUpdate are mirrored onto the board', async ($, on) => {
+    world(on)
+    await $.tool.call({
+      tool: 'TodoWrite',
+      todos: [
+        { content: '讀檔', status: 'completed', activeForm: '讀檔中' },
+        { content: '改檔', status: 'in_progress', activeForm: '改檔中' },
+      ],
+    })
+    await $.tool.call({ tool: 'TaskCreate', subject: '跑測試', description: 'd' })
+    await $.tool.call({ tool: 'TaskUpdate', taskId: TASK_CREATE_ID, status: 'completed' })
+    const text = await boardOf($)
+    expect(text).toContain('[>] 1 TodoWrite')
+    expect(text).toContain('  [x] 1.1 讀檔')
+    expect(text).toContain('  [>] 1.2 改檔')
+    expect(text).toContain('[x] 2 內建任務')
+    expect(text).toContain('  [x] 2.1 跑測試')
+  })
+
+  test('a new, cleared or resumed session empties the board; a compaction keeps it', async ($, on) => {
+    world(on)
+    for (const source of ['startup', 'clear', 'resume']) {
+      await task($, { op: 'add', item: 'A' })
+      await $.classic.SessionStart({ source: 'compact' } as never)
+      expect(await boardOf($)).toContain('[ ] 1 A')
+      await $.classic.SessionStart({ source } as never)
+      expect(await boardOf($)).toBe('任務看板是空的。')
+    }
   })
 })
