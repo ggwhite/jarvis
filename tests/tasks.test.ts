@@ -21,7 +21,11 @@ import {
   putItem,
   sortedItems,
 } from '../hooks/tasks'
+import type { Seg } from '../hooks/cockpit'
+import { TASK_ICON } from '../hooks/icons'
+import { THEME, cellWidth } from '../hooks/jarvis'
 import type { TaskReply } from '../hooks/tasks'
+import { EMPTY_TEXT, SUB_INDENT, taskRows } from '../hooks/tasksView'
 
 const ok = (r: TaskReply): JarvisTaskBoard => {
   if ('error' in r) throw new Error(r.error)
@@ -258,5 +262,69 @@ describe('built-in task tools mirrored', () => {
     for (let i = 0; i < MAX_ITEMS; i += 1) full = ok(applyTask(full, { op: 'add', item: `i${i}` }))
     expect(fromTodos(full, [todo('a', 'pending')])).toBe(full)
     expect(fromTaskCreate(full, '1', 'a')).toBe(full)
+  })
+})
+
+describe('task board rows', () => {
+  const MEMBER = '#E879F9'
+  const owner = (id: string) => (id === 'agent-7' ? { t: 'MK-1', color: MEMBER } : { t: 'MK', color: THEME.frame })
+  const text = (row: readonly Seg[]) => row.map(s => s.t).join('')
+  const board = () =>
+    build(
+      { op: 'add', item: 'A', subtasks: ['a1', 'a2'] },
+      { op: 'add', item: 'B', subtasks: ['b1'] },
+      { op: 'add', item: 'C' },
+      { op: 'update', id: '2.1', status: 'completed' },
+      { op: 'update', id: '1.1', status: 'in_progress' },
+      { op: 'update', id: '1.2', agent: 'agent-7' },
+    )
+
+  test('an empty board is one row of EMPTY_TEXT', () => {
+    expect(taskRows(EMPTY_BOARD, 76, 10, owner).map(text)).toEqual([EMPTY_TEXT])
+  })
+
+  test('items running first, a done item folded, counts at the right, subtasks indented', () => {
+    const rows = taskRows(board(), 60, 20, owner).map(text)
+    expect(rows).toHaveLength(5)
+    expect(rows[0]?.startsWith(`${TASK_ICON.in_progress} A`)).toBe(true)
+    expect(rows[0]?.endsWith(' 0/2')).toBe(true)
+    expect(rows[1]?.startsWith(`${' '.repeat(SUB_INDENT)}${TASK_ICON.in_progress} a1`)).toBe(true)
+    expect(rows[2]?.startsWith(`${' '.repeat(SUB_INDENT)}${TASK_ICON.pending} a2`)).toBe(true)
+    expect(rows[2]?.endsWith(' MK-1')).toBe(true)
+    expect(rows[3]?.startsWith(`${TASK_ICON.pending} C`)).toBe(true)
+    expect(rows[3]?.trimEnd()).toBe(`${TASK_ICON.pending} C`)
+    expect(rows[4]?.startsWith(`${TASK_ICON.completed} B`)).toBe(true)
+    expect(rows[4]?.endsWith(' 1/1')).toBe(true)
+  })
+
+  test('colors by status; the owner mark in its color, an unknown owner a bare MK in frame', () => {
+    const rows = taskRows(board(), 60, 20, owner)
+    expect(rows[0]?.[0]).toEqual({ t: `${TASK_ICON.in_progress} `, color: THEME.accent })
+    expect(rows[0]?.[1]).toMatchObject({ color: THEME.bright, bold: true })
+    expect(rows[2]?.[1]).toEqual({ t: `${TASK_ICON.pending} `, color: THEME.frame })
+    expect(rows[2]?.[2]).toMatchObject({ color: THEME.primary })
+    expect(rows[2]?.at(-1)).toEqual({ t: 'MK-1', color: MEMBER })
+    expect(rows[4]?.[0]).toEqual({ t: `${TASK_ICON.completed} `, color: THEME.success })
+    expect(rows[4]?.[1]).toMatchObject({ color: THEME.frame })
+    const stranger = build({ op: 'add', item: 'A', subtasks: ['a1'] }, { op: 'update', id: '1.1', agent: 'agent-x' })
+    expect(taskRows(stranger, 40, 5, owner)[1]?.at(-1)).toEqual({ t: 'MK', color: THEME.frame })
+  })
+
+  test('every row is exactly width cells; long CJK titles end in an ellipsis', () => {
+    const long = build({ op: 'add', item: '很長的工作項目標題'.repeat(6), subtasks: ['很長的細項標題'.repeat(8)] }, { op: 'update', id: '1.1', agent: 'agent-7' })
+    for (const width of [24, 40, 76]) {
+      const rows = taskRows(long, width, 10, owner)
+      for (const row of rows) expect(cellWidth(text(row))).toBe(width)
+      expect(text(rows[0] ?? []).includes('…')).toBe(true)
+      expect(text(rows[1] ?? []).endsWith(' MK-1')).toBe(true)
+    }
+  })
+
+  test('more rows than room: the last row says how many are left out; no room draws nothing', () => {
+    const rows = taskRows(board(), 60, 3, owner).map(text)
+    expect(rows).toHaveLength(3)
+    expect(rows[2]).toBe('還有 3 列')
+    expect(taskRows(board(), 60, 0, owner)).toEqual([])
+    expect(taskRows(board(), 60, 1, owner).map(text)).toEqual(['還有 5 列'])
   })
 })

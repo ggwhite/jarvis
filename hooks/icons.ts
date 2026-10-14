@@ -48,6 +48,13 @@ export const CHANGE_ICON = {
   repo: '\uf401',
 } as const
 
+// a task's status: waiting, running, done
+export const TASK_ICON = {
+  pending: '\uf10c',
+  in_progress: '\uf192',
+  completed: PHASE_ICON.complete,
+} as const
+
 // a commit tree's nodes (the plain and HEAD ones are not PUA glyphs: no space after them),
 // and the branch and tag marks before a ref's name
 export const COMMIT_ICON = {
