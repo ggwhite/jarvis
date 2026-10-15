@@ -20,19 +20,22 @@ const OPS = ['add', 'update', 'remove', 'list'] as const
 
 export const TASK_PROMPT = [
   '# 任務看板',
-  '多步工作（三步以上，或會派 subagent）開始前，用 mcp__jarvis__task 把工作寫成工作項目與細項；使用者在 jarvis 面板的「任務」分頁看這張看板。',
+  '使用者在 jarvis 面板的「任務」分頁看這個 session 正在做、預計要做、做完的事。jarvis 會把使用者送出的每個請求自動記成一個進行中的項目，回覆結束時自動標完成；你用 mcp__jarvis__task 補上計畫。',
+  '- 多步工作（三步以上，或會派 subagent）開始前，用 add 列出細項：只帶 subtasks 會掛到本輪請求；帶 item 時，本輪請求還沒有細項就直接併入它（標題換成 item），不會多一個項目。',
   '- 開始做一個細項時標 in_progress，做完立刻標 completed，不要留到最後一起標。',
+  '- 請求項目的標題取自使用者原文；原文看不出在做什麼（例如「1」「好」）時，用 update 帶 title 改成一句精簡標題。',
+  '- 之後要做、這輪不做的事：用 add 只帶 item（不帶 subtasks），記成預計項目。',
   '- 計畫變了就 add 新細項，或 remove 用不到的。',
   '- 派 subagent 做某個細項後，用 update 帶 agent（Agent 工具回傳的 agentId）。',
   '- 你是 subagent 時，只 update 交給你的細項，不新增工作項目。',
-  '- 一問一答或單步的小事不用建看板。',
+  '- 一問一答不用拆細項。',
 ].join('\n')
 
 export const TASK_TOOL_SPEC = {
   name: TASK_TOOL_NAME,
   description: [
     '維護本 session 的任務看板（jarvis 面板「任務」分頁）。兩層：工作項目（id 如 "2"）→ 細項（id 如 "2.3"）。',
-    'op=add：item 建新項目，可同時帶 subtasks；或 to=既有項目 id，把 subtasks 加進去。',
+    'op=add：item 建新項目，可同時帶 subtasks；或 to=既有項目 id，把 subtasks 加進去；不帶 item 和 to、只帶 subtasks 時，掛到本輪請求項目。帶 item 和 subtasks、本輪請求項目還沒有細項時，併入本輪請求項目（標題換成 item）。只帶 item 是預計項目。',
     'op=update：id 指項目或細項，帶 status（pending／in_progress／completed）、title 或 agent（負責這個細項的 subagent 的 agentId）。有細項的項目狀態由細項推出，把它標 completed 會把細項全部標 completed。',
     'op=remove：刪除 id 指的項目或細項。',
     'op=list：回傳整張看板。',
@@ -122,10 +125,21 @@ function add(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>, a
     return replaceItem(board, withSubtasks(item, titles, actor))
   }
   const title = titleOf(input['item'])
-  if (title === '') return 'add 要帶 item（新項目標題）或 to（既有項目 id）'
-  if (board.items.length >= MAX_ITEMS) return `看板最多 ${MAX_ITEMS} 個項目，先 remove 用不到的項目`
+  // the request being worked on, which the main loop's plans hang on; a subagent's never do
+  const current = actor === undefined ? currentRequest(board) : undefined
+  if (title === '') {
+    if (!current || titles.length === 0) return 'add 要帶 item（新項目標題）或 to（既有項目 id）'
+    if (current.subtasks.length + titles.length > MAX_SUBTASKS) return `一個項目最多 ${MAX_SUBTASKS} 個細項`
+    return replaceItem(board, withSubtasks(current, titles, actor))
+  }
   if (titles.length > MAX_SUBTASKS) return `一個項目最多 ${MAX_SUBTASKS} 個細項`
-  return putItem(board, title, titles, actor)
+  // a plan for the request being worked on folds into its item rather than standing beside it
+  if (current && current.subtasks.length === 0 && titles.length > 0) {
+    return replaceItem(board, withSubtasks({ ...current, title }, titles, actor))
+  }
+  const roomy = makeRoom(board)
+  if (roomy.items.length >= MAX_ITEMS) return `看板最多 ${MAX_ITEMS} 個項目，先 remove 用不到的項目`
+  return putItem(roomy, title, titles, actor)
 }
 
 function update(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>, actor: string | undefined): JarvisTaskBoard | string {
@@ -229,12 +243,14 @@ export const countsText = (c: BoardCounts): string => `${c.itemsDone}/${c.items}
 
 const MARK: Record<JarvisTaskStatus, string> = { pending: '[ ]', in_progress: '[>]', completed: '[x]' }
 
-// The board as the model reads it, in the order added so the ids read in order.
+// The board as the model reads it, in the order added so the ids read in order; the request
+// being worked on is marked.
 export function boardText(board: JarvisTaskBoard): string {
   if (board.items.length === 0) return '任務看板是空的。'
+  const current = currentRequest(board)
   const lines = [`任務看板（${countsText(boardCounts(board))}）`]
   for (const item of board.items) {
-    lines.push(`${MARK[itemStatus(item)]} ${item.id} ${item.title}`)
+    lines.push(`${MARK[itemStatus(item)]} ${item.id} ${item.title}${item === current ? '（本輪請求）' : ''}`)
     for (const s of item.subtasks) {
       lines.push(`  ${MARK[s.status]} ${s.id} ${s.title}${s.agentId === undefined ? '' : ` (agent ${s.agentId})`}`)
     }
@@ -336,6 +352,10 @@ export function endTurn(board: JarvisTaskBoard, turnId: string, reason: string):
 export function currentRequest(board: JarvisTaskBoard): JarvisTaskItem | undefined {
   return board.items.findLast(i => isRequest(i) && i.status === 'in_progress')
 }
+
+// The note beside each recorded prompt: which item it is, and what the model may do with it.
+export const requestContext = (id: string): string =>
+  `jarvis 任務看板：這個請求已記成項目 ${id}，回覆結束時自動標完成。多步工作用 mcp__jarvis__task add 只帶 subtasks，把細項掛到這個項目；原文看不出在做什麼時，用 update id=${id} 帶 title 改成一句精簡標題。`
 
 // ---- the built-in task tools, mirrored when the session has them ----
 

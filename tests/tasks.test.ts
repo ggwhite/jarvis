@@ -30,6 +30,7 @@ import {
   openRequest,
   putItem,
   recordsRequest,
+  requestContext,
   requestTitle,
   sortedItems,
   startTurn,
@@ -319,6 +320,61 @@ describe('task board requests', () => {
     expect(made.board.items).toHaveLength(MAX_ITEMS)
     expect(made.board.items.some(i => i.id === '3')).toBe(false)
     expect(made.board.items.some(i => i.id === '5')).toBe(true)
+  })
+})
+
+describe('the model and the request items', () => {
+  const asked = (text = '加看板') => startTurn(openRequest(EMPTY_BOARD, text).board, 't1', text)
+
+  test('add with only subtasks hangs them on the request being worked on; with none, it is refused', () => {
+    const b = ok(applyTask(asked(), { op: 'add', subtasks: ['調查', '實作'] }))
+    expect(b.items).toHaveLength(1)
+    expect(b.items[0]?.subtasks.map(s => s.id)).toEqual(['1.1', '1.2'])
+    expect(errorOf(EMPTY_BOARD, { op: 'add', subtasks: ['x'] })).toContain('item')
+  })
+
+  test('an item with subtasks folds into the request that has none yet, taking its title', () => {
+    const b = ok(applyTask(asked('1'), { op: 'add', item: '合併任務看板', subtasks: ['測試', '合併'] }))
+    expect(b.items).toHaveLength(1)
+    expect(b.items[0]).toMatchObject({ id: '1', title: '合併任務看板', origin: REQUEST_ORIGIN })
+    expect(b.items[0]?.subtasks.map(s => s.title)).toEqual(['測試', '合併'])
+    const again = ok(applyTask(b, { op: 'add', item: '另一件事', subtasks: ['x'] }))
+    expect(again.items.map(i => i.title)).toEqual(['合併任務看板', '另一件事'])
+  })
+
+  test('an item with no subtasks is a planned item of its own; a subagent never folds into the request', () => {
+    const planned = ok(applyTask(asked(), { op: 'add', item: '之後查 general-purpose' }))
+    expect(planned.items.map(i => [i.title, i.status])).toEqual([
+      ['加看板', 'in_progress'],
+      ['之後查 general-purpose', 'pending'],
+    ])
+    const sub = ok(applyTask(asked(), { op: 'add', item: '子工作', subtasks: ['x'] }, 'agent-7'))
+    expect(sub.items).toHaveLength(2)
+    expect(errorOf(asked(), { op: 'add', subtasks: ['x'] }, 'agent-7')).toContain('item')
+  })
+
+  test('add on a full board drops the oldest done item; full of unfinished work it is refused', () => {
+    let b = EMPTY_BOARD
+    for (let i = 0; i < MAX_ITEMS; i += 1) b = ok(applyTask(b, { op: 'add', item: `i${i}` }))
+    expect(errorOf(b, { op: 'add', item: 'more' })).toContain(String(MAX_ITEMS))
+    b = ok(applyTask(b, { op: 'update', id: '2', status: 'completed' }))
+    const more = ok(applyTask(b, { op: 'add', item: 'more' }))
+    expect(more.items).toHaveLength(MAX_ITEMS)
+    expect(more.items.some(i => i.id === '2')).toBe(false)
+    expect(more.items.at(-1)?.title).toBe('more')
+  })
+
+  test('the text the model reads marks the request being worked on', () => {
+    expect(boardText(asked())).toBe(['任務看板（0/1 項目 · 細項 0/0）', '[>] 1 加看板（本輪請求）'].join('\n'))
+  })
+
+  test('the prompt and the note beside each request tell the model what jarvis records and what is its to do', () => {
+    expect(TASK_PROMPT).toContain('自動')
+    expect(TASK_PROMPT).toContain('預計')
+    expect(TASK_TOOL_SPEC.description).toContain('本輪請求')
+    const note = requestContext('7')
+    expect(note).toContain('項目 7')
+    expect(note).toContain('id=7')
   })
 })
 
