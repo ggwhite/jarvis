@@ -317,11 +317,22 @@ export function requestTitle(text: string): string {
 // what of a prompt.submit decides whether it is recorded
 export type RequestSubmission = { text: string; command?: unknown; isMeta?: true; origin: { kind: string } }
 
+// a slash command's line: `/name` then a space, a line break or the end; a path's first word
+// holds another slash and names none
+const SLASH_LINE = /^\/([\w:.-]+)(?:\s|$)/
+
+// The command name a prompt's text opens with, as `/name`; undefined when it opens with none.
+export const slashName = (text: string): string | undefined => SLASH_LINE.exec(text)?.[1]
+
 // The person's own prompts, typed or through Remote Control; not a slash command, not one
-// the person does not see, not a notification, a peer's message or a plugin's.
-export function recordsRequest(e: RequestSubmission): boolean {
+// the person does not see, not a notification, a peer's message or a plugin's. A slash command
+// absorbed into a running turn comes as its bare line with no `command`: one opening with a
+// name in `commands` is a slash command too.
+export function recordsRequest(e: RequestSubmission, commands: ReadonlySet<string> = new Set()): boolean {
+  const slash = slashName(e.text)
   return (
     e.command === undefined &&
+    (slash === undefined || !commands.has(slash)) &&
     e.isMeta !== true &&
     (e.origin.kind === 'composer' || e.origin.kind === 'bridge') &&
     requestTitle(e.text) !== ''

@@ -286,6 +286,21 @@ describe('task board requests', () => {
     expect(recordsRequest(sub({ text: '  \n ' }))).toBe(false)
   })
 
+  test('recordsRequest: a bare line opening with a known command is a slash command; a path or an unknown name is a request', () => {
+    const sub = (text: string) => ({ text, origin: { kind: 'composer' } }) as Parameters<typeof recordsRequest>[0]
+    const known = new Set(['jarvis', 'superpowers:brainstorming', 'code-review'])
+    expect(recordsRequest(sub('/jarvis'), known)).toBe(false)
+    expect(recordsRequest(sub('/jarvis 參數'), known)).toBe(false)
+    expect(recordsRequest(sub('/code-review\n第二行'), known)).toBe(false)
+    expect(recordsRequest(sub('/superpowers:brainstorming 想一下'), known)).toBe(false)
+    expect(recordsRequest(sub('/Users/u/a.md 看一下'), known)).toBe(true)
+    expect(recordsRequest(sub('/jarvis/hooks 裡有什麼'), known)).toBe(true)
+    expect(recordsRequest(sub('/tmp 下有什麼'), known)).toBe(true)
+    expect(recordsRequest(sub('/jarvisx'), known)).toBe(true)
+    expect(recordsRequest(sub('打開 /jarvis'), known)).toBe(true)
+    expect(recordsRequest(sub('/jarvis'))).toBe(true)
+  })
+
   test('openRequest: a running request item; one typed over a turn is tied to it and marked queued', () => {
     const idle = openRequest(EMPTY_BOARD, '修 bug')
     expect(idle.id).toBe('1')
@@ -1122,6 +1137,25 @@ describe('task board requests wired', () => {
     await send($, '背景任務完成', { origin: { kind: 'task-notification' } })
     await send($, '看不到的', { isMeta: true })
     expect(await boardOf($)).toBe('任務看板是空的。')
+  })
+
+  test('a slash command absorbed into a running turn, its bare line with no command, is not recorded', async ($, on) => {
+    world(on)
+    on('command.list', async () => ({ value: [{ name: 'jarvis', description: 'd', source: 'plugin' as const, plugin: 'jarvis' }] }))
+    const out = await send($, '/jarvis', { turnId: 't0' })
+    expect(out.context ?? []).not.toContain(requestContext('1'))
+    expect(await boardOf($)).toBe('任務看板是空的。')
+    await send($, '/Users/u/a.md 看一下', { turnId: 't0' })
+    expect(await boardOf($)).toContain('1 /Users/u/a.md 看一下')
+  })
+
+  test('a slash-looking line is a request when the commands cannot be listed', async ($, on) => {
+    world(on)
+    on('command.list', async () => {
+      throw new Error('no list')
+    })
+    await send($, '/jarvis')
+    expect(await boardOf($)).toContain('1 /jarvis')
   })
 
   test("an interrupted turn leaves its request pending; a subagent's turn closes nothing", async ($, on) => {

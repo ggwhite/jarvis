@@ -46,7 +46,7 @@ import type { CommitFile, CommitTree, RepoSummary } from './gitCommits'
 import { forDesktop } from './icons'
 import { commitRepoName, repoRows } from './commitsView'
 import type { CommitsCtx, RepoList } from './commitsView'
-import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, boardLive, closeResults, dropEmptyTopics, dropIdle, endTurn, fromTaskCreate, fromTaskUpdate, fromTodos, markWorked, openRequest, recordsRequest, requestContext, requestTitle, requestsEnding, startTurn, topicCandidates, withClassified, withResult } from './tasks'
+import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, boardLive, closeResults, dropEmptyTopics, dropIdle, endTurn, fromTaskCreate, fromTaskUpdate, fromTodos, markWorked, openRequest, recordsRequest, requestContext, requestTitle, requestsEnding, slashName, startTurn, topicCandidates, withClassified, withResult } from './tasks'
 import type { TaskReply, TopicCandidate } from './tasks'
 import { keptFolds } from './tasksView'
 import {
@@ -144,6 +144,15 @@ async function askSmall($: Pick<EngineInterface, 'model'>, system: string, promp
 // One summary from the small model, '' when there is none.
 async function summarize($: Pick<EngineInterface, 'model'>, prompt: string, max: number): Promise<string> {
   return cleanSummary(await askSmall($, SUMMARY_SYSTEM, prompt), max)
+}
+
+// The names of the slash commands the person can run; none when they cannot be listed.
+async function commandNames($: Pick<EngineInterface, 'command'>): Promise<Set<string>> {
+  try {
+    return new Set((await $.command.list()).map(c => c.name))
+  } catch {
+    return new Set()
+  }
 }
 
 // how many recorded prompts are kept for their results' summaries
@@ -1477,7 +1486,9 @@ export const register: Register = on => {
     const box: { id?: string; rid?: string } = {}
     const now = await stampNow($)
     try {
-      if (recordsRequest(e)) {
+      // a slash command absorbed into a running turn comes as its bare line with no command
+      const commands = slashName(e.text) === undefined ? new Set<string>() : await commandNames($)
+      if (recordsRequest(e, commands)) {
         const rid = crypto.randomUUID()
         await updateBoard($, b => {
           const made = openRequest(b, e.text, e.turnId, now, rid)
