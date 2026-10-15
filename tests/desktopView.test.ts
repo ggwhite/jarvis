@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { DT } from '../hooks/desktopTheme'
-import { eventsTable, mdCell } from '../hooks/desktopView'
+import { mdCell } from '../hooks/desktopView'
 import { SUIT_TICK_MS } from '../hooks/suit'
 import { cellPx, rowPx } from '../hooks/svgArt'
 import { all, altOf, complete, drawOn, engine, pressOn, sourceOf, spawnInput, svgs, textOf, wellFormed } from './helpers'
@@ -29,34 +29,32 @@ const pills = (tree: Node) =>
   all(tree, x => x.type === 'Box' && x.props?.['borderStyle'] === 'round' && (x.children ?? []).some(c => typeof c !== 'string' && c.type === 'Button'))
 
 describe('desktop native: frame', () => {
-  test('the root fills the pane in the light background with the backdrop behind', async ($, on) => {
+  test('the root fills the pane in the dark background, in flow, growing with its content', async ($, on) => {
     native(on)
     const tree = await drawOn($, 'desktop', 45, 80)
     expect(tree.type).toBe('Box')
     expect(tree.props?.['backgroundColor']).toBe(DT.bg)
     expect(tree.props?.['minHeight']).toBe(45)
-    expect(tree.props?.['position']).toBe('relative')
-    const layer = (tree.children ?? [])[0] as Node
-    expect(layer.props?.['position']).toBe('absolute')
-    const bd = svgs(layer)[0]
-    expect(bd?.props?.['width']).toBe(cellPx(80))
-    expect(bd?.props?.['height']).toBe(rowPx(45))
+    expect(tree.props?.['paddingX']).toBe(2)
+    expect(tree.props?.['paddingY']).toBe(1)
+    expect(tree.props?.['flexDirection']).toBe('column')
+    expect(all(tree, x => x.props?.['position'] !== undefined)).toHaveLength(0)
   })
 
-  test('the title bar, tabs and page sit in an absolute box after the absolute backdrop, painted over it', async ($, on) => {
+  test('the title bar, tabs and page sit in flow; the glow strip is in the title card, under the title', async ($, on) => {
     native(on)
     const tree = await drawOn($, 'desktop', 45, 80)
-    const [layer, content] = (tree.children ?? []) as Node[]
-    expect(layer?.props?.['position']).toBe('absolute')
-    expect(tree.props?.['position']).toBe('relative')
-    expect(content?.props?.['position']).toBe('absolute')
-    expect(content?.props?.['top']).toBe(1)
-    expect(content?.props?.['left']).toBe(2)
-    expect(content?.props?.['width']).toBe(76)
-    expect(content?.props?.['flexDirection']).toBe('column')
-    expect(content?.props?.['gap']).toBe(1)
-    expect(textOf(content as Node)).toContain('J.A.R.V.I.S.')
-    expect(svgs(content as Node).some(s => altOf(s) === 'MARK XLII')).toBe(true)
+    const [title, tabs, page] = (tree.children ?? []) as Node[]
+    expect(textOf(title as Node)).toContain('J.A.R.V.I.S.')
+    expect(title?.props?.['backgroundColor']).toBe(DT.glass)
+    expect(textOf(tabs as Node)).toContain('統計')
+    expect(svgs(page as Node).some(s => altOf(s) === 'MARK XLII')).toBe(true)
+    const strip = (title?.children ?? []).filter((c): c is Node => typeof c !== 'string').at(-1)
+    expect(strip?.type).toBe('Svg')
+    expect(altOf(strip as Node)).toBe('背景')
+    expect(strip?.props?.['width']).toBe(cellPx(80 - 4 - 6))
+    expect(strip?.props?.['height']).toBe(rowPx(1))
+    wellFormed(tree, 80)
   })
 
   test('a throw in the native layout draws the cell grid instead of a blank pane', async ($, on) => {
@@ -73,14 +71,16 @@ describe('desktop native: frame', () => {
     expect(svgs(tree).some(s => altOf(s) === '背景')).toBe(false)
   })
 
-  test('the tabs are orange pills: the current solid, the rest pale; no native variant anywhere', async ($, on) => {
+  test('the tabs are orange glass pills: the current lit, the rest faint glass; no native variant anywhere', async ($, on) => {
     native(on)
     const tree = await drawOn($, 'desktop')
     const tabs = pills(tree).filter(p => textOf(p).includes('現況') || textOf(p).includes('統計'))
     const now = tabs.find(p => textOf(p).includes('現況'))
     const stats = tabs.find(p => textOf(p).includes('統計'))
-    expect(now?.props?.['backgroundColor']).toBe(DT.orange500)
-    expect(stats?.props?.['backgroundColor']).toBe(DT.orange50)
+    expect(now?.props?.['backgroundColor']).toBe(DT.orangeFill)
+    expect(now?.props?.['borderColor']).toBe(DT.orange)
+    expect(stats?.props?.['backgroundColor']).toBe(DT.pillBg)
+    expect(stats?.props?.['borderColor']).toBe(DT.orangeLine)
     expect(all(tree, x => x.type === 'Button' && x.props?.['variant'] !== undefined)).toHaveLength(0)
     expect(textOf(tree)).toContain('J.A.R.V.I.S.')
   })
@@ -91,7 +91,24 @@ describe('desktop native: frame', () => {
     const tree = await drawOn($, 'desktop')
     expect(tree.props?.['backgroundColor']).toBe(DT.bg)
     const stats = pills(tree).find(p => textOf(p).includes('統計'))
-    expect(stats?.props?.['backgroundColor']).toBe(DT.orange500)
+    expect(stats?.props?.['backgroundColor']).toBe(DT.orangeFill)
+  })
+
+  test('an inactive tab reads in orange, the current one in bright orange and bold', async ($, on) => {
+    native(on)
+    const tree = await drawOn($, 'desktop')
+    const label = (word: string) => all(pills(tree).find(p => textOf(p).includes(word)) as Node, x => x.type === 'Text')[0]
+    expect(label('統計')?.props?.['color']).toBe(DT.orange)
+    expect(label('統計')?.props?.['bold']).toBeFalsy()
+    expect(label('現況')?.props?.['color']).toBe(DT.orangeBright)
+    expect(label('現況')?.props?.['bold']).toBe(true)
+  })
+
+  test('the MARK line is orange, not a faint tone', async ($, on) => {
+    native(on)
+    const tree = await drawOn($, 'desktop', 50, 100)
+    const mark = all(tree, x => x.type === 'Text' && textOf(x) === 'MARK XLII · STANDBY')[0]
+    expect(mark?.props?.['color']).toBe(DT.orange)
   })
 
   test('only props Desktop 2.1.295 accepts', async ($, on) => {
@@ -158,17 +175,36 @@ describe('desktop native: now page', () => {
     }
   })
 
-  test('recent events are a Markdown table; a | in a description is escaped', async ($, on) => {
+  test('recent events are rows of fixed columns under a header; a | in a description stays as written', async ($, on) => {
     native(on)
     await $.agent.spawn(spawnInput('a | b', 'Explore'))
     await $.turn.complete(complete('agent-1'))
     await $.tool.call({ tool: 'Bash', command: 'echo a | b' } as never)
     const tree = await drawOn($, 'desktop', 50, 100)
-    const md = all(tree, x => x.type === 'Markdown')[0]
-    const text = String(md?.props?.['text'] ?? '')
-    expect(text).toContain('| 時間 |')
-    expect(text).toContain('echo a \\| b')
-    expect(text.split('\n').filter(l => l.startsWith('|')).every(l => !/[^\\]\|[^|]*[^\\]\|.*a \| b/.test(l))).toBe(true)
+    expect(all(tree, x => x.type === 'Markdown' && String(x.props?.['text'] ?? '').includes('時間'))).toHaveLength(0)
+    const header = all(tree, x => x.type === 'Box' && x.props?.['flexDirection'] === 'row' && textOf(x).includes('描述') && textOf(x).includes('結果')).at(-1)
+    expect(header).toBeDefined()
+    expect(all(header as Node, x => x.type === 'Text').every(t => t.props?.['color'] === DT.textSub)).toBe(true)
+    expect(textOf(tree)).toContain('echo a | b')
+  })
+
+  test('a recent event row never reaches past its card: fixed columns add up within the card', async ($, on) => {
+    native(on)
+    await $.tool.call({ tool: 'Bash', command: 'a command long enough to need cutting short in a narrow card '.repeat(3) } as never)
+    for (const cols of [50, 80, 100, 140]) {
+      const tree = await drawOn($, 'desktop', 50, cols)
+      const row = all(tree, x => x.type === 'Box' && x.props?.['flexDirection'] === 'row' && textOf(x).includes('描述') && textOf(x).includes('結果')).at(-1) as Node
+      const kids = (row.children ?? []).filter((c): c is Node => typeof c !== 'string')
+      const widths = kids.map(k => Number(k.props?.['width']))
+      expect(widths.every(w => Number.isFinite(w) && w > 0)).toBe(true)
+      expect(all(row, x => x.type === 'Text').every(t => t.props?.['wrap'] === 'truncate')).toBe(true)
+      const gap = Number(row.props?.['gap'] ?? 0)
+      // the card's inner width: half the pane beside the in-flight card when wide (gap 2), less the card's frame and padding
+      const inner = cols - 4
+      const cardInner = cols >= 90 ? Math.floor((inner - 2) / 2) - 6 : inner - 6
+      expect(widths.reduce((x, y) => x + y, 0) + gap * (kids.length - 1)).toBeLessThanOrEqual(cardInner)
+      if (cols === 50) expect(textOf(row)).not.toContain('時間')
+    }
   })
 
   test('mdCell escapes backslashes, Markdown marks and lone carriage returns', () => {
@@ -179,22 +215,8 @@ describe('desktop native: now page', () => {
     expect(mdCell('`x` *y* [z] <w> ~v~')).toBe('\\`x\\` \\*y\\* \\[z\\] \\<w\\> \\~v\\~')
   })
 
-  test('a description with an escaped pipe keeps the row to its six columns', () => {
-    const t = eventsTable([{ time: '10:00:00', who: '主線', tool: 'Grep', desc: "grep 'a\\|b' x", took: '1.2s', mark: '✓' }])
-    const row = cells(t.split('\n')[2] ?? '')
-    expect(row).toHaveLength(6)
-    expect(row[3]).toBe("grep 'a\\\\\\|b' x")
-    expect(row[4]).toBe('1.2s')
-  })
-
-  test('mdCell escapes pipes and flattens line breaks; eventsTable writes a header and one row each', () => {
+  test('mdCell escapes pipes and flattens line breaks', () => {
     expect(mdCell('a|b\nc')).toBe('a\\|b c')
-    const t = eventsTable([{ time: '10:00:00', who: '主線', tool: 'Bash', desc: 'x|y', took: '1.2s', mark: '✓' }])
-    const lines = t.split('\n')
-    expect(lines[0]).toBe('| 時間 | 誰 | 工具 | 描述 | 耗時 | |')
-    expect(lines[1]).toBe('|---|---|---|---|---:|:-:|')
-    expect(lines[2]).toBe('| 10:00:00 | 主線 | Bash | x\\|y | 1.2s | ✓ |')
-    expect(eventsTable([])).toBe('')
   })
 
   test('the tick never changes a picture while nothing else does', async ($, on) => {

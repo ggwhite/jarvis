@@ -4,7 +4,7 @@ import { THEME } from './jarvis'
 
 // The tones a picture's quiet parts take: the track and unlit cells, the sights' frame, the
 // scan line, the reactor's core. DARK is the terminal's and the cell-grid Desktop's; the
-// native Desktop layout passes its light one.
+// native Desktop layout passes its dark-glass one.
 export type Palette = { muted: string; frame: string; bright: string; accent: string }
 export const DARK: Palette = { muted: THEME.muted, frame: THEME.frame, bright: THEME.bright, accent: THEME.accent }
 

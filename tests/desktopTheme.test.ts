@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { DT, LIGHT, backdropSvg } from '../hooks/desktopTheme'
+import { DT, GLASS, backdropSvg } from '../hooks/desktopTheme'
 import { DARK, meterSvg, rampBarSvg, reactorSvg, sparkSvg, stackedBarSvg, suitSvg, svgSafe, cellPx, rowPx } from '../hooks/svgArt'
 import { THEME } from '../hooks/jarvis'
 import { framePixels } from '../hooks/suit'
@@ -17,13 +17,13 @@ describe('desktop theme: palettes', () => {
     expect(reactorSvg(false)).toBe(reactorSvg(false, DARK))
   })
 
-  test('the light palette paints the muted parts in its own tones', () => {
-    expect(meterSvg(1, 3, DT.orange500, LIGHT)).toContain(`fill="${DT.orange200}"`)
-    expect(meterSvg(1, 3, DT.orange500, LIGHT)).not.toContain(THEME.muted)
-    expect(rampBarSvg(10, 0, [DT.orange400], LIGHT)).toContain(`fill="${DT.orange200}"`)
-    expect(reactorSvg(true, LIGHT)).toContain(`fill="${DT.data}"`)
+  test('the glass palette paints the muted parts in its own tones', () => {
+    expect(meterSvg(1, 3, DT.orange, GLASS)).toContain(`fill="${GLASS.muted}"`)
+    expect(meterSvg(1, 3, DT.orange, GLASS)).not.toContain(THEME.muted)
+    expect(rampBarSvg(10, 0, [DT.orangeBright], GLASS)).toContain(`fill="${GLASS.muted}"`)
+    expect(reactorSvg(true, GLASS)).toContain(`fill="${DT.data}"`)
     const px = framePixels(0, { busy: false, now: 0, still: true }).px
-    expect(suitSvg(px, { sights: true }, LIGHT)).toContain(`stroke="${DT.orange700}"`)
+    expect(suitSvg(px, { sights: true }, GLASS)).toContain(`stroke="${DT.orange}"`)
   })
 
   test('the backdrop fills the pane: gradient, glows, dots; safe; only cols and rows decide it', () => {
@@ -35,6 +35,15 @@ describe('desktop theme: palettes', () => {
     expect(s).toContain('radialGradient')
     expect(s).toContain('<pattern')
     expect(backdropSvg(80, 45)).toBe(s)
+  })
+
+  test('the backdrop is dark: charcoal to navy, an orange glow, a blue glow, faint white dots', () => {
+    const s = backdropSvg(80, 1)
+    expect(s).toContain(`stop-color="${DT.bg}"`)
+    expect(s).toContain(`stop-color="${DT.bgTo}"`)
+    expect(s).toContain(`stop-color="${DT.orange}" stop-opacity="0.18"`)
+    expect(s).toContain(`stop-color="${DT.blue}" stop-opacity="0.12"`)
+    expect(s).toContain('fill="#FFFFFF" fill-opacity="0.04"')
   })
 })
 

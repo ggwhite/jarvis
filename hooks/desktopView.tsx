@@ -2,10 +2,10 @@ import type { ElementConstructor, MarkdownProps, RenderElement } from 'claude-co
 
 import { HEALTH_TEXT, TABS } from './cockpit'
 import type { Ctx, Ui } from './cockpit'
-import { DT, LIGHT, backdropSvg } from './desktopTheme'
+import { DT, GLASS, backdropSvg } from './desktopTheme'
 import { BIG_ROWS, bigWidth } from './fleetChart'
 import { ROLE_ICON, forDesktop } from './icons'
-import { CHAIN_WARN, MAIN_ACTOR, MAIN_SOURCE, ROLE_LABEL, THEME, elapsedMs, fitCells, fmtClock, fmtDur, fmtK, fmtMs, fmtUsd, phaseOf, roleModels, roleOf, shareLabel, shortModel, tokenTotal, tokensOf, topTools } from './jarvis'
+import { CHAIN_WARN, MAIN_ACTOR, MAIN_SOURCE, ROLE_LABEL, THEME, elapsedMs, fmtClock, fmtDur, fmtK, fmtMs, fmtUsd, phaseOf, roleModels, roleOf, shareLabel, shortModel, tokenTotal, tokensOf, topTools } from './jarvis'
 import type { Cockpit, Phase } from './jarvis'
 import { POWER_METER_W, SUIT_CANVAS_COLS, SUIT_CANVAS_ROWS, crewDeployed, framePixels, standbyReadouts } from './suit'
 import type { Readout } from './suit'
@@ -23,16 +23,6 @@ export const desktopPage = (page: JarvisPage, ctx: Pick<Ctx, 'boot'>): boolean =
 // a Markdown table cell: line breaks flattened, pipes and inline Markdown marks escaped
 export const mdCell = (s: string): string => s.replace(/\r\n?|\n/g, ' ').replace(/[\\`*_[\]<>|~]/g, '\\$&')
 
-export type EventCell = { time: string; who: string; tool: string; desc: string; took: string; mark: string }
-
-// The recent events as a Markdown table, newest first as given; nothing to show, ''.
-export function eventsTable(rows: readonly EventCell[]): string {
-  if (rows.length === 0) return ''
-  const head = ['| 時間 | 誰 | 工具 | 描述 | 耗時 | |', '|---|---|---|---|---:|:-:|']
-  const body = rows.map(r => `| ${[r.time, r.who, r.tool, r.desc, r.took, r.mark].map(mdCell).join(' | ')} |`)
-  return [...head, ...body].join('\n')
-}
-
 // The most rows a page is drawn for, whatever the room says.
 const MAX_ROWS = 500
 
@@ -49,35 +39,44 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
       <Text color={DT.textSub}>{alt}</Text>
     )
 
-  // an orange pill: a round box round a frameless button; solid for the current or main one
+  // an orange glass pill: a round box round a frameless button; lit for the current or main one
   const pill = (key: string, label: string, solid: boolean, onPress: () => void): RenderElement => (
-    <Box borderStyle="round" borderColor={solid ? DT.orange500 : DT.orange200} backgroundColor={solid ? DT.orange500 : DT.orange50} paddingX={1}>
+    <Box borderStyle="round" borderColor={solid ? DT.orange : DT.orangeLine} backgroundColor={solid ? DT.orangeFill : DT.pillBg} paddingX={1}>
       <Button key={key} plain onPress={onPress}>
-        <Text color={solid ? DT.onSolid : DT.orange700} bold={solid}>
+        <Text color={solid ? DT.orangeBright : DT.orange} bold={solid}>
           {label}
         </Text>
       </Button>
     </Box>
   )
 
+  // the pane less its padding, and a card's inside less its frame and padding
+  const inner = Math.max(20, cols - 4)
+  const cardInner = Math.max(16, inner - 6)
+  const wide = cols >= 90
+
+  // a glass card with the glow and dot grid as an in-flow strip under the title, never over it
   const live = view.running.length > 0
   const titleBar = (
-    <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-      <Box flexDirection="row" gap={1} alignItems="center">
-        <Text color={DT.orange900} bold>
-          ⌜
+    <Box flexDirection="column" backgroundColor={DT.glass} borderStyle="round" borderColor={DT.glassBorder} paddingX={2}>
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+        <Box flexDirection="row" gap={1} alignItems="center">
+          <Text color={DT.orange} bold>
+            ⌜
+          </Text>
+          <Text color={THEME.suitRed} bold>
+            J.A.R.V.I.S.
+          </Text>
+          <Text color={DT.orange} bold>
+            ⌝
+          </Text>
+          {picture(reactorSvg(live, GLASS), live ? '反應爐運轉中' : '反應爐待機', 1, 1, live)}
+        </Box>
+        <Text color={view.health === 'ok' ? DT.orange : DT.fail} bold>
+          {HEALTH_TEXT[view.health]}
         </Text>
-        <Text color={THEME.suitRed} bold>
-          J.A.R.V.I.S.
-        </Text>
-        <Text color={DT.orange900} bold>
-          ⌝
-        </Text>
-        {picture(reactorSvg(live, LIGHT), live ? '反應爐運轉中' : '反應爐待機', 1, 1, live)}
       </Box>
-      <Text color={view.health === 'ok' ? DT.orange700 : DT.fail} bold>
-        {HEALTH_TEXT[view.health]}
-      </Text>
+      {Svg ? picture(backdropSvg(cardInner, 1), '背景', cardInner, 1) : null}
     </Box>
   )
 
@@ -87,21 +86,17 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     </Box>
   )
 
-  // the pane less its padding, and a card's inside less its frame and padding
-  const inner = Math.max(20, cols - 4)
-  const cardInner = Math.max(16, inner - 6)
-  const wide = cols >= 90
 
   const head = (icon: string, title: string, right?: string): RenderElement => (
     <Box flexDirection="row" justifyContent="space-between">
-      <Text color={DT.orange500} bold>
+      <Text color={DT.orange} bold>
         {`${icon} ${title}`}
       </Text>
       {right === undefined ? null : <Text color={DT.textSub}>{right}</Text>}
     </Box>
   )
 
-  // a glass card: translucent white, a pale orange round frame, padded and spaced inside
+  // a glass card: translucent white on the dark page, a faint white round frame, padded and spaced inside
   const card = (top: RenderElement, body: readonly RenderElement[], accent?: string, grow = false): RenderElement => (
     <Box
       flexDirection="column"
@@ -120,19 +115,19 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
 
   // a raised tile inside a card
   const tile = (body: readonly RenderElement[]): RenderElement => (
-    <Box flexDirection="column" backgroundColor={DT.glassRaised} borderStyle="round" borderColor={DT.orange200} paddingX={1}>
+    <Box flexDirection="column" backgroundColor={DT.glassRaised} borderStyle="round" borderColor={DT.glassBorder} paddingX={1}>
       {body}
     </Box>
   )
 
   const toneColor = (t: Readout['tone']): string =>
-    t === 'error' ? DT.fail : t === 'bright' ? DT.orange700 : t === 'frame' ? DT.textSub : DT.orange500
+    t === 'error' ? DT.fail : t === 'bright' ? DT.orangeBright : t === 'frame' ? DT.textSub : DT.orange
 
   const readoutLine = (x: Readout): RenderElement => (
     <Box flexDirection="row" gap={1} alignItems="center">
       {x.label === '' ? null : <Text color={DT.textSub}>{x.label}</Text>}
       {x.meter
-        ? picture(meterSvg(Math.round(clamp01(x.meter.pct) * POWER_METER_W), POWER_METER_W, toneColor(x.tone), LIGHT), `${x.label} ${x.value}`, POWER_METER_W, 1)
+        ? picture(meterSvg(Math.round(clamp01(x.meter.pct) * POWER_METER_W), POWER_METER_W, toneColor(x.tone), GLASS), `${x.label} ${x.value}`, POWER_METER_W, 1)
         : null}
       <Text color={toneColor(x.tone)} bold>
         {x.value}
@@ -140,7 +135,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     </Box>
   )
 
-  const memberOf = (a: JarvisAgent) => view.roster.get(a.id) ?? { n: 0, color: DT.orange500 }
+  const memberOf = (a: JarvisAgent) => view.roster.get(a.id) ?? { n: 0, color: DT.orange }
   const PHASE_TEXT: Record<Phase, string> = { init: 'INIT', active: 'ACTIVE', waiting: 'WAITING', complete: 'COMPLETE', failed: 'FAILED', lost: 'LOST' }
   const phaseColor = (p: Phase): string => (p === 'failed' || p === 'lost' ? DT.fail : p === 'complete' ? DT.ok : DT.data)
   // a row's columns in fixed widths, one cell apart; where the card is too narrow the model,
@@ -215,7 +210,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     const paused = ctx.suitPaused === true
     const crew = crewDeployed(now, ctx.deployedAt)
     const suitPic = picture(
-      suitSvg(framePixels(0, { busy, now, still: true }).px, { busy, crewFlash: crew, paused, sights: true }, LIGHT),
+      suitSvg(framePixels(0, { busy, now, still: true }).px, { busy, crewFlash: crew, paused, sights: true }, GLASS),
       'MARK XLII',
       SUIT_CANVAS_COLS + 4,
       SUIT_CANVAS_ROWS,
@@ -223,7 +218,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     )
     const mark = `MARK XLII · ${paused ? 'PAUSED' : busy ? 'ACTIVE' : 'STANDBY'}`
     const suitCard = (
-      <Box flexDirection="column" backgroundColor={DT.glass} borderStyle="round" borderColor={DT.orange500} paddingX={2} paddingY={1} gap={1} alignItems="center">
+      <Box flexDirection="column" backgroundColor={DT.glass} borderStyle="round" borderColor={DT.orange} paddingX={2} paddingY={1} gap={1} alignItems="center">
         <Box flexDirection={wide ? 'row' : 'column'} gap={2} alignItems="center">
           {tile(r.left.map(readoutLine))}
           {suitPic}
@@ -231,16 +226,16 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
         </Box>
         {ctx.toggleSuit ? (
           <Button key="suit-mark" plain onPress={ctx.toggleSuit}>
-            <Text color={DT.text} bold>
+            <Text color={DT.orange} bold>
               {mark}
             </Text>
           </Button>
         ) : (
-          <Text color={DT.text} bold>
+          <Text color={DT.orange} bold>
             {mark}
           </Text>
         )}
-        <Text color={DT.orange700}>{crew ? '◆ CREW DEPLOYED' : view.running.length > 0 ? 'CREW DEPLOYED, SIR.' : 'ALL CREW DOCKED, SIR.'}</Text>
+        <Text color={DT.orangeBright}>{crew ? '◆ CREW DEPLOYED' : view.running.length > 0 ? 'CREW DEPLOYED, SIR.' : 'ALL CREW DOCKED, SIR.'}</Text>
       </Box>
     )
 
@@ -249,7 +244,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     const listCard = card(
       head('👥', '子代理', `▶${view.running.length} 執行中 · ${done} 完成`),
       agents.length === 0 ? [<Text color={DT.textSub}>還沒有派工。派出 subagent 後這裡會即時顯示。</Text>] : agents.slice(0, Math.max(3, rows - 30)).map(agentRow),
-      view.running.length > 0 ? DT.data : undefined,
+      view.running.length > 0 ? DT.orangeEdge : undefined,
     )
 
     const flights = view.inflight.slice(-5)
@@ -260,7 +255,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
         : flights.map(f => (
             <Box flexDirection="row" gap={1} alignItems="center">
               <Box width={6} flexShrink={0}>
-                <Text color={DT.orange700}>{actorName(f.actor)}</Text>
+                <Text color={DT.orange}>{actorName(f.actor)}</Text>
               </Box>
               <Box width={10} flexShrink={0} overflow="hidden">
                 <Text color={DT.text} bold wrap="truncate">
@@ -272,31 +267,75 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
                   {f.desc ?? ''}
                 </Text>
               </Box>
-              <Text color={DT.textFaint}>{fmtDur(now - f.startedAt)}</Text>
+              <Text color={DT.textSub}>{fmtDur(now - f.startedAt)}</Text>
             </Box>
           )),
       undefined,
       true,
     )
 
-    const recentRows = view.events
-      .slice(-6)
-      .reverse()
-      .map(ev => ({
-        time: fmtClock(ev.ts),
-        who: actorName(ev.actor),
-        tool: ev.tool,
-        desc: fitCells(ev.desc, 40),
-        took: fmtMs(ev.ms),
-        mark: ev.ok ? '✓' : '✗',
-      }))
-    const { Markdown } = ui
-    const table = eventsTable(recentRows)
+    // as the subagent rows: fixed columns within the card, which is half the pane when wide;
+    // where it is too narrow the time and then the tool give way
+    const recentInner = wide ? Math.max(16, Math.floor((inner - 2) / 2) - 6) : cardInner
+    const ECOL = { time: 8, who: 6, tool: 10, took: 6, mark: 4 }
+    const eShown = new Set<keyof typeof ECOL>(['time', 'who', 'tool', 'took', 'mark'])
+    const eFixedW = () => [...eShown].reduce((sum, k) => sum + ECOL[k], 0) + eShown.size
+    for (const k of ['time', 'tool'] as const) if (eFixedW() + DESC_MIN > recentInner) eShown.delete(k)
+    const eDescW = Math.max(1, recentInner - eFixedW())
+    const cell = (w: number, body: RenderElement, end = false): RenderElement => (
+      <Box width={w} flexShrink={0} overflow="hidden" {...(end ? { justifyContent: 'flex-end' } : {})}>
+        {body}
+      </Box>
+    )
+    const eventRow = (c: Record<keyof typeof ECOL | 'desc', RenderElement>): RenderElement => (
+      <Box flexDirection="row" gap={1} alignItems="center">
+        {eShown.has('time') ? cell(ECOL.time, c.time) : null}
+        {cell(ECOL.who, c.who)}
+        {eShown.has('tool') ? cell(ECOL.tool, c.tool) : null}
+        {cell(eDescW, c.desc)}
+        {cell(ECOL.took, c.took, true)}
+        {cell(ECOL.mark, c.mark, true)}
+      </Box>
+    )
+    const sub = (t: string): RenderElement => (
+      <Text color={DT.textSub} wrap="truncate">
+        {t}
+      </Text>
+    )
+    const recent = view.events.slice(-6).reverse()
     const recentCard = card(
       head('🕘', '最近事件', `${view.events.length} 則`),
-      table === ''
+      recent.length === 0
         ? [<Text color={DT.textSub}>還沒有工具呼叫</Text>]
-        : [Markdown ? <Markdown key="recent-events" text={table} /> : <Text color={DT.text}>{table}</Text>],
+        : [
+            eventRow({ time: sub('時間'), who: sub('誰'), tool: sub('工具'), desc: sub('描述'), took: sub('耗時'), mark: sub('結果') }),
+            ...recent.map(ev =>
+              eventRow({
+                time: sub(fmtClock(ev.ts)),
+                who: (
+                  <Text color={DT.orange} wrap="truncate">
+                    {actorName(ev.actor)}
+                  </Text>
+                ),
+                tool: (
+                  <Text color={DT.text} bold wrap="truncate">
+                    {ev.tool}
+                  </Text>
+                ),
+                desc: (
+                  <Text color={DT.text} wrap="truncate">
+                    {ev.desc.replace(/\r\n?|\n/g, ' ')}
+                  </Text>
+                ),
+                took: sub(fmtMs(ev.ms)),
+                mark: (
+                  <Text color={ev.ok ? DT.ok : DT.fail} bold>
+                    {ev.ok ? '✓' : '✗'}
+                  </Text>
+                ),
+              }),
+            ),
+          ],
       undefined,
       true,
     )
@@ -315,15 +354,15 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     )
   }
 
-  const MODEL_COLORS = [DT.orange500, DT.data, DT.ok, DT.orange200]
+  const MODEL_COLORS = [DT.orange, DT.data, DT.ok, DT.blue]
 
   const statsPage = (): RenderElement => {
     const m = view.main
     const total = m.ok + m.fail
     const rate = total === 0 ? undefined : Math.round((m.ok / total) * 100)
     const rateText = rate === undefined ? '--' : `${rate}%`
-    const rateColor = rate === undefined ? DT.textFaint : rate >= 90 ? DT.orange500 : rate >= 70 ? DT.orange700 : DT.fail
-    const chainColor = m.chain >= CHAIN_WARN ? DT.fail : DT.orange500
+    const rateColor = rate === undefined ? DT.textFaint : rate >= 90 ? DT.orange : rate >= 70 ? DT.orangeBright : DT.fail
+    const chainColor = m.chain >= CHAIN_WARN ? DT.fail : DT.orange
     const top = topTools(m.toolCounts, 1)[0]
     const mainCard = card(head('💻', 'MAIN LINE', `${shortModel(m.model)} · ${m.isRunning ? '● 運作中' : '○ 閒置'}`), [
       <Box flexDirection="row" gap={1} flexWrap="wrap">
@@ -335,7 +374,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
         {tile([
           <Text color={DT.textSub}>CHAIN</Text>,
           <Box flexDirection="row" gap={1} alignItems="center">
-            {picture(meterSvg(Math.min(m.chain, CHAIN_WARN), CHAIN_WARN, chainColor, LIGHT), `CHAIN ${m.chain}/${CHAIN_WARN}`, CHAIN_WARN, 1)}
+            {picture(meterSvg(Math.min(m.chain, CHAIN_WARN), CHAIN_WARN, chainColor, GLASS), `CHAIN ${m.chain}/${CHAIN_WARN}`, CHAIN_WARN, 1)}
             <Text color={chainColor} bold>{`${m.chain}/${CHAIN_WARN}`}</Text>
           </Box>,
         ])}
@@ -364,7 +403,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
           <Box flexDirection="row" gap={1} alignItems="center">
             <Box width={DCOL.name} flexShrink={0}>
               <Button key={`role-${d.role}`} plain onPress={() => ctx.openRole?.(d.role)}>
-                <Text color={DT.orange700} bold>{`${ROLE_ICON[d.role]} ${d.label}`}</Text>
+                <Text color={DT.orange} bold>{`${ROLE_ICON[d.role]} ${d.label}`}</Text>
               </Button>
             </Box>
             {showModel ? (
@@ -374,7 +413,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
                 </Text>
               </Box>
             ) : null}
-            {picture(rampBarSvg(barW, n / dmax, d.failed > 0 ? [DT.orange400, DT.orange500, DT.fail] : [DT.orange400, DT.orange500], LIGHT), `${d.label} ${n}`, barW, 1)}
+            {picture(rampBarSvg(barW, n / dmax, d.failed > 0 ? [DT.orangeBright, DT.orange, DT.fail] : [DT.orangeBright, DT.orange], GLASS), `${d.label} ${n}`, barW, 1)}
             <Box width={DCOL.count} flexShrink={0} justifyContent="flex-end">
               <Text color={n > 0 ? DT.text : DT.textFaint} bold={n > 0}>
                 {String(n)}
@@ -393,7 +432,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
         : ['| 模型 | 比例 | 次數 |', '|---|---:|---:|', ...view.models.map(x => `| ${mdCell(x.label)} | ${shareLabel(x.share)} | ${x.count} |`)].join('\n')
     const modelsCard = card(head('🧠', 'MODELS', s.savedPct === undefined ? undefined : `SAVED ${Math.round(s.savedPct)}%`), [
       picture(
-        stackedBarSvg(cardInner, view.models.map((x, i) => ({ share: x.share, color: MODEL_COLORS[i % MODEL_COLORS.length] ?? DT.orange500 })), LIGHT),
+        stackedBarSvg(cardInner, view.models.map((x, i) => ({ share: x.share, color: MODEL_COLORS[i % MODEL_COLORS.length] ?? DT.orange })), GLASS),
         'MODELS',
         cardInner,
         1,
@@ -405,7 +444,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
       ) : (
         <Text color={DT.text}>{modelsTable}</Text>
       ),
-      <Text color={DT.orange700}>{`SAVED ${s.savedPct === undefined ? '--' : `${Math.round(s.savedPct)}%`}  ≈${fmtUsd(s.cost)} vs Opus ${fmtUsd(s.opusCost)}`}</Text>,
+      <Text color={DT.orange}>{`SAVED ${s.savedPct === undefined ? '--' : `${Math.round(s.savedPct)}%`}  ≈${fmtUsd(s.cost)} vs Opus ${fmtUsd(s.opusCost)}`}</Text>,
     ])
 
     return (
@@ -421,18 +460,10 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
   if (ctx.page !== 'now') ctx.onStandby?.(false)
 
   return (
-    <Box flexDirection="column" position="relative" backgroundColor={DT.bg} minHeight={rows} paddingX={2} paddingY={1}>
-      {Svg ? (
-        <Box position="absolute" top={0} left={0}>
-          {picture(backdropSvg(cols, rows), '背景', cols, rows)}
-        </Box>
-      ) : null}
-      {/* Desktop paints an absolute backdrop over in-flow content, so the content is absolute too, as the later sibling */}
-      <Box position="absolute" top={1} left={2} width={Math.max(1, cols - 4)} flexDirection="column" gap={1}>
-        {titleBar}
-        {tabBar}
-        {page}
-      </Box>
+    <Box flexDirection="column" backgroundColor={DT.bg} minHeight={rows} paddingX={2} paddingY={1} gap={1}>
+      {titleBar}
+      {tabBar}
+      {page}
     </Box>
   )
 }
