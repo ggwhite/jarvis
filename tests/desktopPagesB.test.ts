@@ -175,6 +175,40 @@ describe('desktop native B: fleet page', () => {
       expect(badProps(tree)).toEqual([])
     }
   })
+
+  test('the fleet tab stays lit on a session page', () => {
+    const tree = draw(baseCtx([], { herdr: true, fleet, page: 'fleetDetail', paneId: 'w1:p2' }))
+    const lit = all(tree, x => x.type === 'Box' && x.props?.['backgroundColor'] === DT.orangeFill)
+    expect(lit.map(textOf).join()).toContain('艦隊')
+  })
+})
+
+describe('desktop native B: fleet detail page', () => {
+  const fleet: FleetView = {
+    ...EMPTY_FLEET,
+    at: T0,
+    sessions: [suit({ paneId: 'w1:p2', title: 'Busy one', status: 'working', model: 'claude-opus-5-5', lastUser: 'please fix it', lastReply: 'done '.repeat(80), tools: 7 })],
+    jumpError: { paneId: 'w1:p2', text: '\nno such pane\nmore' },
+  }
+
+  test('back and jump pills; its fields, the last ask and reply, and why a jump failed', () => {
+    const calls: Calls = []
+    const tree = draw(baseCtx(calls, { herdr: true, fleet, page: 'fleetDetail', paneId: 'w1:p2' }))
+    const t = textOf(tree)
+    for (const word of ['Busy one', 'IN FLIGHT', '工作區', 'Acme', '/srv/alpha', '7 次', 'please fix it', 'done']) expect(t).toContain(word)
+    expect(texts(tree, DT.fail)).toContain('no such pane')
+    press(tree, 'back')
+    press(tree, 'jump')
+    expect(calls).toEqual(['go:fleet', 'jump:w1:p2'])
+    expect(badProps(tree)).toEqual([])
+    for (const cols of WIDTHS) expect(fixedRowsFit(draw(baseCtx([], { herdr: true, fleet, page: 'fleetDetail', paneId: 'w1:p2', cols })), cols)).toBeGreaterThan(0)
+  })
+
+  test('a session that left the fleet draws the fleet page', () => {
+    const tree = draw(baseCtx([], { herdr: true, fleet, page: 'fleetDetail', paneId: 'gone' }))
+    expect(button(tree, 'suit-1')).toBeDefined()
+    expect(button(tree, 'jump')).toBeUndefined()
+  })
 })
 
 describe('desktop native B: through the engine', () => {

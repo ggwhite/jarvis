@@ -23,7 +23,7 @@ import type { FleetQuota, FleetSession, FleetStatus, JarvisPage, QuotaWindow } f
 
 // The native Desktop pages of the fleet and the changes: the fleet, one session, the changes,
 // one file's diff, a repo's tree, a commit's and a stash's diff.
-export const B_PAGES: readonly JarvisPage[] = ['fleet']
+export const B_PAGES: readonly JarvisPage[] = ['fleet', 'fleetDetail']
 
 // the tab a sub-page lights: the session page the fleet's, the diff and tree pages the changes'
 export const tabOfB = (page: JarvisPage): JarvisPage | undefined =>
@@ -296,7 +296,57 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
     )
   }
 
+  const fleetDetailPage = (s: FleetSession): RenderElement => {
+    const st = FLEET_STATUS[s.status]
+    const LABEL_W = 8
+    const valueW = Math.max(1, cardInner - LABEL_W - 1)
+    const field = (label: string, value: string | undefined, color: string = DT.text): RenderElement =>
+      row([
+        { w: LABEL_W, node: say(label) },
+        { w: valueW, node: value ? say(value, color) : say('（無）', DT.textFaint) },
+      ])
+    const para = (label: string, text: string | undefined, max: number, color: string): RenderElement[] => {
+      const lines = wrapCells(text ?? '', valueW, max)
+      if (lines.length === 0) return [field(label, undefined)]
+      return lines.map((l, i) => row([{ w: LABEL_W, node: say(i === 0 ? label : '') }, { w: valueW, node: say(l, color) }]))
+    }
+    const jumpText = fleet.jumpError?.paneId === s.paneId ? fleet.jumpError.text : undefined
+    const jumpError = jumpText === undefined ? undefined : (jumpText.split('\n').map(l => l.trim()).find(l => l !== '') ?? '')
+    const paneId = s.paneId
+    return (
+      <Box flexDirection="column" gap={1}>
+        {actions([pill('back', '返回', false, () => ctx.go('fleet')), pill('jump', '跳轉', true, () => ctx.jump(paneId))])}
+        {card(
+          headWith(`${st.icon}`, s.title, <Text color={st.color} bold>{s.status === 'idle' ? idleText(s) : st.label}</Text>),
+          [
+            list([
+              field('工作區', s.workspace),
+              field('目錄', s.cwd),
+              field('模型', s.model && shortModel(s.model), DT.data),
+              field('閒置', s.lastAt === undefined ? undefined : fmtAgo(now - s.lastAt)),
+              row([
+                { w: LABEL_W, node: say('今日') },
+                { w: valueW, node: say(`${fmtBig(s.todayTokens)} tok · ${fmtUsd(s.todayCost)}`, DT.orange, true) },
+              ]),
+              row([
+                { w: LABEL_W, node: say('Context') },
+                { w: valueW, node: say(s.contextPct === undefined ? '--' : `${s.contextPct}%`, ctxColor(s.contextPct), true) },
+              ]),
+              field('近期工具', `${s.tools} 次`),
+            ]),
+            list(para('最後提問', s.lastUser, 3, DT.text)),
+            list(para('最後回覆', s.lastReply, 5, DT.orangeBright)),
+            ...(jumpError !== undefined ? [say(jumpError, DT.fail, true)] : []),
+          ],
+          st.accent,
+        )}
+      </Box>
+    )
+  }
+
   // ---- 分流 -------------------------------------------------------------
 
+  // a sub-page whose session, file, repo, commit or stash left is the page above it
+  if (ctx.page === 'fleetDetail') return fleetSelected ? fleetDetailPage(fleetSelected) : fleetPage()
   return fleetPage()
 }
