@@ -65,11 +65,15 @@ import {
   SUMMARY_SYSTEM,
   SUMMARY_TIMEOUT_MS,
   SUMMARY_TITLE_MAX,
+  CLASSIFY_SYSTEM,
+  TOPIC_TITLE_MAX,
+  classifyAsk,
   cleanSummary,
+  parseClassify,
   resultAsk,
   titleAsk,
 } from '../hooks/summary'
-import type { TaskReply, TopicChoice } from '../hooks/tasks'
+import type { TaskReply, TopicCandidate, TopicChoice } from '../hooks/tasks'
 import { EMPTY_TEXT, SUB_INDENT, TITLE_MIN, TOOL_MAX, isFolded, keptFolds, spinnerAt, taskLines, taskRows } from '../hooks/tasksView'
 import type { AgentBadge, OwnerMark } from '../hooks/tasksView'
 
@@ -2068,5 +2072,59 @@ describe('requests that did nothing wired', () => {
     await clock.settle()
     expect(asked).toHaveLength(1)
     expect(await boardOf($)).toBe('任務看板是空的。')
+  })
+})
+
+describe('request topic asks', () => {
+  const cands: TopicCandidate[] = [
+    { id: '3', title: 'Jamie 七日簽到累計充值', latest: '確認送出' },
+    { id: '1', title: '客服 issue 留言', latest: '查看 issue 最新動態' },
+  ]
+
+  test('the ask offers the topics in order, the last request with its topic, and the prompt', () => {
+    const ask = classifyAsk('確認送出', cands, { title: '查看 Jamie 訊息', topic: '3' })
+    expect(ask).toContain('3 Jamie 七日簽到累計充值（最近的請求：確認送出）\n1 客服 issue 留言（最近的請求：查看 issue 最新動態）')
+    expect(ask).toContain('上一個請求：查看 Jamie 訊息（話題 3）')
+    expect(ask).toContain('請求：\n確認送出')
+    expect(ask).toContain(`不超過 ${SUMMARY_TITLE_MAX} 個字`)
+    expect(ask).toContain(`不超過 ${TOPIC_TITLE_MAX} 個字`)
+    expect(ask).not.toContain('回答：')
+  })
+
+  test('no topics yet, no last request, a last request whose topic is not offered', () => {
+    expect(classifyAsk('a', [])).toContain('既有話題（最近活動的在前）：\n（還沒有）')
+    expect(classifyAsk('a', [])).not.toContain('上一個請求')
+    expect(classifyAsk('a', cands, { title: '舊的', topic: '9' })).toContain('上一個請求：舊的\n')
+    expect(classifyAsk('a', cands, { title: '舊的' })).toContain('上一個請求：舊的\n')
+  })
+
+  test('the prompt is cut to SUMMARY_INPUT_MAX', () => {
+    const ask = classifyAsk('x'.repeat(SUMMARY_INPUT_MAX + 5), [])
+    expect(ask).toContain('x'.repeat(SUMMARY_INPUT_MAX))
+    expect(ask).not.toContain('x'.repeat(SUMMARY_INPUT_MAX + 1))
+  })
+
+  test('a reply naming an offered topic joins it; 話題 3 reads the same', () => {
+    expect(parseClassify('確認送出\n3', cands)).toEqual({ title: '確認送出', choice: { kind: 'join', id: '3', title: 'Jamie 七日簽到累計充值' } })
+    expect(parseClassify('確認送出\n話題 3', cands).choice).toEqual({ kind: 'join', id: '3', title: 'Jamie 七日簽到累計充值' })
+    expect(parseClassify('「確認送出」。\n\n 1 ', cands)).toEqual({ title: '確認送出', choice: { kind: 'join', id: '1', title: '客服 issue 留言' } })
+  })
+
+  test('a reply naming a new topic opens it, cut to TOPIC_TITLE_MAX', () => {
+    expect(parseClassify('查看 Andy 問題\n新 Andy 大樂透門檻', cands).choice).toEqual({ kind: 'new', title: 'Andy 大樂透門檻' })
+    expect(parseClassify('查看\n新：Andy', cands).choice).toEqual({ kind: 'new', title: 'Andy' })
+    expect([...(parseClassify('查看\n新 ' + '字'.repeat(30), cands).choice.title)]).toHaveLength(TOPIC_TITLE_MAX)
+  })
+
+  test('anything else opens a new topic under the request title', () => {
+    expect(parseClassify('查看 Andy\n9', cands).choice).toEqual({ kind: 'new', title: '查看 Andy' })
+    expect(parseClassify('查看 Andy', cands).choice).toEqual({ kind: 'new', title: '查看 Andy' })
+    expect(parseClassify('查看 Andy\n新', cands).choice).toEqual({ kind: 'new', title: '查看 Andy' })
+    expect(parseClassify('', cands)).toEqual({ title: '', choice: { kind: 'new', title: '' } })
+  })
+
+  test('the system asks for the lines as told, without the wide symbols', () => {
+    expect(CLASSIFY_SYSTEM).toContain('照指示的行數')
+    expect(CLASSIFY_SYSTEM).toContain('→')
   })
 })

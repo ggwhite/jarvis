@@ -117,21 +117,26 @@ async function stampNow($: Pick<EngineInterface, 'clock'>): Promise<number | und
   }
 }
 
-// One summary from the small model, '' when there is none: refused, failed, cut off or empty.
-async function summarize($: Pick<EngineInterface, 'model'>, prompt: string, max: number): Promise<string> {
+// The small model's reply as it came, '' when there is none: refused, failed, cut off or empty.
+async function askSmall($: Pick<EngineInterface, 'model'>, system: string, prompt: string): Promise<string> {
   try {
     const r = await $.model.complete({
       model: SUMMARY_MODEL,
-      system: SUMMARY_SYSTEM,
+      system,
       prompt,
       maxTokens: SUMMARY_TOKENS,
       effort: 'low',
       timeoutMs: SUMMARY_TIMEOUT_MS,
     })
-    return r.isAnswered ? cleanSummary(r.text, max) : ''
+    return r.isAnswered ? r.text : ''
   } catch {
     return ''
   }
+}
+
+// One summary from the small model, '' when there is none.
+async function summarize($: Pick<EngineInterface, 'model'>, prompt: string, max: number): Promise<string> {
+  return cleanSummary(await askSmall($, SUMMARY_SYSTEM, prompt), max)
 }
 
 // how many recorded prompts are kept for their results' summaries
