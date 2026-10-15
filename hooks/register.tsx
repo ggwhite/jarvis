@@ -1504,13 +1504,13 @@ export const register: Register = on => {
         // the small model sums the request up and places it under a topic while the turn runs;
         // nothing waits on it
         const before = lastAsk === undefined ? undefined : { title: lastAsk.title, ...(lastAsk.topic === undefined ? {} : { topic: lastAsk.topic }) }
+        lastAsk = { rid, title: requestTitle(sent) }
         let candidates: TopicCandidate[] = []
         try {
           candidates = topicCandidates(await read($, tasks))
         } catch {
           // none offered
         }
-        lastAsk = { rid, title: requestTitle(sent) }
         void classifyLater($, rid, sent, candidates, before, (title, topic) => {
           if (lastAsk?.rid === rid) lastAsk = { rid, title, topic }
         })
