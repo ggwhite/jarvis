@@ -2,6 +2,7 @@ import type { ElementConstructor, MarkdownProps, RenderElement } from 'claude-co
 
 import { HEALTH_TEXT, TABS } from './cockpit'
 import type { Ctx, Ui } from './cockpit'
+import { B_PAGES, drawPageB, tabOfB } from './desktopPagesB'
 import { DT, GLASS, backdropSvg } from './desktopTheme'
 import { BIG_ROWS, bigWidth } from './fleetChart'
 import { ROLE_ICON, forDesktop } from './icons'
@@ -15,7 +16,7 @@ import type { JarvisAgent, JarvisPage } from '../types'
 export type DesktopUi = Ui & { Markdown?: ElementConstructor<MarkdownProps> }
 
 // The pages the native Desktop layout draws; every other page keeps drawCockpit.
-export const DESKTOP_PAGES: readonly JarvisPage[] = ['now', 'stats']
+export const DESKTOP_PAGES: readonly JarvisPage[] = ['now', 'stats', ...B_PAGES]
 
 // Whether the native layout draws this page: not while the boot screen plays.
 export const desktopPage = (page: JarvisPage, ctx: Pick<Ctx, 'boot'>): boolean => ctx.boot === undefined && DESKTOP_PAGES.includes(page)
@@ -82,7 +83,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
 
   const tabBar = (
     <Box flexDirection="row" gap={1} flexWrap="wrap">
-      {TABS.map(tab => pill(`tab-${tab.page}`, `${forDesktop(tab.icon)} ${tab.label}`, tab.page === ctx.page, () => ctx.go(tab.page)))}
+      {TABS.map(tab => pill(`tab-${tab.page}`, `${forDesktop(tab.icon)} ${tab.label}`, tab.page === ctx.page || tab.page === tabOfB(ctx.page), () => ctx.go(tab.page)))}
     </Box>
   )
 
@@ -456,7 +457,12 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     )
   }
 
-  const page: RenderElement = ctx.page === 'now' ? nowPage() : statsPage()
+  const page: RenderElement =
+    ctx.page === 'now'
+      ? nowPage()
+      : B_PAGES.includes(ctx.page)
+        ? drawPageB({ ui, cardInner, wide, picture, pill, card, head, tile }, view, ctx)
+        : statsPage()
   if (ctx.page !== 'now') ctx.onStandby?.(false)
 
   return (

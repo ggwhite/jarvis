@@ -118,11 +118,8 @@ describe('desktop native: frame', () => {
     expect(badProps(await drawOn($, 'desktop'))).toEqual([])
   })
 
-  test('other pages, the terminal, mobile and JARVIS_DESKTOP_LAYOUT=cells keep the old drawing', async ($, on) => {
+  test('the terminal and mobile keep the old drawing', async ($, on) => {
     native(on)
-    await pressOn($, 'desktop', 'tab-fleet')
-    expect((await drawOn($, 'desktop')).props?.['backgroundColor']).not.toBe(DT.bg)
-    await pressOn($, 'desktop', 'tab-now')
     expect((await drawOn($, 'terminal')).props?.['backgroundColor']).not.toBe(DT.bg)
     expect((await drawOn($, 'mobile')).props?.['backgroundColor']).not.toBe(DT.bg)
   })

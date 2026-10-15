@@ -219,7 +219,7 @@ export type RingLabel = { row: number; text: string; color: string; bold?: boole
 // A ring lit clockwise from twelve o'clock as far as `pct` (red when depleted), the rest a
 // muted track; `labels` centered on their rows. `box`: a larger canvas, the ring at its top
 // center (a big gauge with its foot under it).
-export function ringSvg(spec: RingSpec, pct: number, depleted: boolean, labels: readonly RingLabel[], box?: { cols: number; rows: number }): string {
+export function ringSvg(spec: RingSpec, pct: number, depleted: boolean, labels: readonly RingLabel[], box?: { cols: number; rows: number }, pal: Palette = DARK): string {
   const ringCols = whole(spec.w)
   const ringRows = Math.ceil(whole(spec.h) / 2)
   const cols = box ? Math.max(whole(box.cols), ringCols) : ringCols
@@ -234,7 +234,7 @@ export function ringSvg(spec: RingSpec, pct: number, depleted: boolean, labels: 
   const len = 2 * Math.PI * r
   const color = depleted ? THEME.error : pick(GAUGE_RAMP, p)
   const at = `cx="${num(cx)}" cy="${num(cy)}" r="${num(r)}" fill="none" stroke-width="${num(sw)}"`
-  const trackRing = `<circle ${at} stroke="${THEME.muted}"/>`
+  const trackRing = `<circle ${at} stroke="${pal.muted}"/>`
   const arc = p > 0 ? `<circle class="arc" ${at} stroke="${color}" stroke-dasharray="${num(len * p)} ${num(len)}" transform="rotate(-90 ${num(cx)} ${num(cy)})"/>` : ''
   const words = labels
     .map(
@@ -248,7 +248,7 @@ export function ringSvg(spec: RingSpec, pct: number, depleted: boolean, labels: 
 // Today's tokens by hour as bars `rows` rows tall and `width` cells wide, heat by height, the
 // hour now bright, an hour of nothing a muted floor; then the axis with its ticks and the hour
 // now marked, then the tick hours: `rows + 2` rows in all.
-export function burnSvg(hours: readonly number[], width: number, rows: number, nowHour: number, ticks: readonly number[]): string {
+export function burnSvg(hours: readonly number[], width: number, rows: number, nowHour: number, ticks: readonly number[], pal: Palette = DARK): string {
   const n = whole(width)
   const R = whole(rows)
   const w = cellPx(n)
@@ -267,22 +267,22 @@ export function burnSvg(hours: readonly number[], width: number, rows: number, n
     const lit = i === nowHour
     if (v > 0 && max > 0) {
       const bh = Math.max(2, (v / max) * h)
-      body += `<rect class="bar" x="${x}" y="${num(h - bh)}" width="${num(bw)}" height="${num(bh)}" fill="${lit ? THEME.bright : pick(BURN_RAMP, v / max)}"/>`
+      body += `<rect class="bar" x="${x}" y="${num(h - bh)}" width="${num(bw)}" height="${num(bh)}" fill="${lit ? pal.bright : pick(BURN_RAMP, v / max)}"/>`
     } else {
-      body += `<rect class="floor" x="${x}" y="${num(h - 2)}" width="${num(bw)}" height="2" fill="${lit ? THEME.bright : THEME.muted}"/>`
+      body += `<rect class="floor" x="${x}" y="${num(h - 2)}" width="${num(bw)}" height="2" fill="${lit ? pal.bright : pal.muted}"/>`
     }
   })
   const axisY = h + CELL_PX_H / 2
-  body += `<line x1="0" y1="${num(axisY)}" x2="${w}" y2="${num(axisY)}" stroke="${THEME.muted}" stroke-width="1"/>`
+  body += `<line x1="0" y1="${num(axisY)}" x2="${w}" y2="${num(axisY)}" stroke="${pal.muted}" stroke-width="1"/>`
   for (const t of ticks) {
     const x = t * per
     if (!Number.isFinite(x) || x >= w) continue
-    body += `<line x1="${num(x)}" y1="${num(axisY - 3)}" x2="${num(x)}" y2="${num(axisY + 3)}" stroke="${THEME.muted}" stroke-width="1"/>`
-    body += `<text x="${num(x)}" y="${num(h + CELL_PX_H + CELL_PX_H * 0.72)}" font-family="${MONO}" font-size="11" fill="${THEME.frame}">${String(t).padStart(2, '0')}</text>`
+    body += `<line x1="${num(x)}" y1="${num(axisY - 3)}" x2="${num(x)}" y2="${num(axisY + 3)}" stroke="${pal.muted}" stroke-width="1"/>`
+    body += `<text x="${num(x)}" y="${num(h + CELL_PX_H + CELL_PX_H * 0.72)}" font-family="${MONO}" font-size="11" fill="${pal.frame}">${String(t).padStart(2, '0')}</text>`
   }
   if (Number.isInteger(nowHour) && nowHour >= 0 && nowHour < 24 && w > 0) {
     const nx = nowHour * per + bw / 2
-    body += `<path class="now" d="M${num(nx - 4)} ${num(axisY + 6)}L${num(nx)} ${num(axisY)}L${num(nx + 4)} ${num(axisY + 6)}Z" fill="${THEME.bright}"/>`
+    body += `<path class="now" d="M${num(nx - 4)} ${num(axisY + 6)}L${num(nx)} ${num(axisY)}L${num(nx + 4)} ${num(axisY + 6)}Z" fill="${pal.bright}"/>`
   }
   return svgDoc(n, R + 2, body)
 }
