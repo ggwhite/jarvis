@@ -23,7 +23,7 @@ import type { FleetQuota, FleetSession, FleetStatus, JarvisPage, QuotaWindow } f
 
 // The native Desktop pages of the fleet and the changes: the fleet, one session, the changes,
 // one file's diff, a repo's tree, a commit's and a stash's diff.
-export const B_PAGES: readonly JarvisPage[] = ['fleet', 'fleetDetail', 'changes', 'changeDiff', 'commitTree', 'commitDiff']
+export const B_PAGES: readonly JarvisPage[] = ['fleet', 'fleetDetail', 'changes', 'changeDiff', 'commitTree', 'commitDiff', 'stashDiff']
 
 // the tab a sub-page lights: the session page the fleet's, the diff and tree pages the changes'
 export const tabOfB = (page: JarvisPage): JarvisPage | undefined =>
@@ -839,11 +839,15 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
   if (ctx.page === 'fleetDetail') return fleetSelected ? fleetDetailPage(fleetSelected) : fleetPage()
   if (ctx.page === 'fleet') return fleetPage()
   if (ctx.page === 'changeDiff') return changeDiffPage()
-  if (ctx.page === 'commitTree' || ctx.page === 'commitDiff') {
+  if (ctx.page === 'commitTree' || ctx.page === 'commitDiff' || ctx.page === 'stashDiff') {
     if (!cm?.repo) return changesPage()
     if (ctx.page === 'commitDiff' && cm.diff) {
       const d = cm.diff
       return fileDiffPage(diffTitle(d.commit.sha.slice(0, 7), d.commit.subject, cm.repo.name), d.files, d.file, d.rows, cm.openFile, { prev: 'cdiff-prev', next: 'cdiff-next' }, '這個 commit 沒有改檔案')
+    }
+    if (ctx.page === 'stashDiff' && cm.stashDiff) {
+      const d = cm.stashDiff
+      return fileDiffPage(diffTitle(d.stash.name, d.stash.message, cm.repo.name), d.files, d.file, d.rows, cm.openStashFile, { prev: 'sdiff-prev', next: 'sdiff-next' }, '這個 stash 沒有檔案')
     }
     return commitTreePage(cm, cm.repo)
   }

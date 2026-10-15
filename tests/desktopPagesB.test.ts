@@ -470,6 +470,28 @@ describe('desktop native B: diff pages', () => {
     for (const cols of WIDTHS) expect(fixedRowsFit(draw(baseCtx([], { page: 'commitDiff', cols, commits: cm })), cols)).toBeGreaterThan(0)
   })
 
+  test("a stash's diff: back to the tree, its name and message, ‹ › over its files", () => {
+    const calls: Calls = []
+    const cm = commits(calls, {
+      repo: repoPage({ view: 'stash' }),
+      stashDiff: {
+        stash: { sha: 's1', name: 'stash@{0}', time: T0, branch: 'main', message: 'WIP on main' },
+        files: [{ path: 'n.go', add: 1, del: 0, binary: false, untracked: true }],
+        file: { path: 'n.go', add: 1, del: 0, binary: false, untracked: true },
+        rows: DIFF,
+      },
+    })
+    const tree = draw(baseCtx(calls, { page: 'stashDiff', commits: cm }))
+    expect(textOf(tree)).toContain('stash@{0}')
+    expect(textOf(tree)).toContain('WIP on main')
+    press(tree, 'sdiff-prev')
+    press(tree, 'back')
+    expect(calls).toEqual(['go:commitTree'])
+    expect(badProps(tree)).toEqual([])
+    // a stash that left: the tree page
+    const gone = draw(baseCtx([], { page: 'stashDiff', commits: commits([], { repo: repoPage({ view: 'stash' }) }) }))
+    expect(button(gone, 'cm-stash-s1')).toBeDefined()
+  })
 })
 
 describe('desktop native B: through the engine', () => {
