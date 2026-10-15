@@ -39,11 +39,19 @@ const WIDE: [RegExp, string][] = [
   [/[“”]/g, '"'],
 ]
 
-// A reply as one line: its first non-blank line, unwrapped, cut to `max` characters.
+// phrases of the asks and their system prompts, which a summary never carries but a reply
+// repeating the instructions back does
+const ECHOES = [/請求的結果或結論/, /個字寫出/, /只回(?:那)?[一兩]行/, /第[一二]行[:：]/, /一行摘要/, /不加(?:引號|句號)/]
+
+// Whether a reply repeats the instructions back instead of following them.
+const echoesAsk = (text: string): boolean => ECHOES.some(p => p.test(text))
+
+// A reply as one line: its first non-blank line, unwrapped, cut to `max` characters; '' when
+// it repeats the instructions back.
 export function cleanSummary(text: string, max: number): string {
   const plain = WIDE.reduce((t, [from, to]) => t.replace(from, to), text)
   const line = lineOf(plain, Number.MAX_SAFE_INTEGER).replace(STOP, '').replace(WRAPS, '').replace(STOP, '').trim()
-  return lineOf(line, max)
+  return echoesAsk(line) ? '' : lineOf(line, max)
 }
 
 // a new topic's title is kept to this many characters

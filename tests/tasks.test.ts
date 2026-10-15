@@ -1574,6 +1574,16 @@ describe('request summaries', () => {
     expect(cleanSummary('它的 ‘x’ 與 “y” 值', RESULT_MAX)).toBe("它的 'x' 與 \"y\" 值")
   })
 
+  test('a reply that repeats the instructions back is no summary', () => {
+    expect(cleanSummary('需要寫的是「請求的結果或結論」，不超過 40 字，只回一行', RESULT_MAX)).toBe('')
+    expect(cleanSummary(`用不超過 ${RESULT_MAX} 個字寫出這個請求的結果`, RESULT_MAX)).toBe('')
+    expect(cleanSummary('好的，只回一行', RESULT_MAX)).toBe('')
+    expect(cleanSummary('第一行：請求標題', SUMMARY_TITLE_MAX)).toBe('')
+    expect(cleanSummary('已加一行：已送出', RESULT_MAX)).toBe('已加一行：已送出')
+    expect(cleanSummary('金額不超過 100 元', RESULT_MAX)).toBe('金額不超過 100 元')
+    expect(parseClassify('需要寫的是請求的結果或結論\n新 Jamie 簽到', [])).toEqual({ title: '', choice: { kind: 'new', title: 'Jamie 簽到' } })
+  })
+
   test('the result ask carries the request and the answer, each cut to SUMMARY_INPUT_MAX', () => {
     const long = 'x'.repeat(SUMMARY_INPUT_MAX + 500)
     const r = resultAsk('算 7*6', '答案是 42')
@@ -1692,6 +1702,22 @@ describe('request summaries wired', () => {
     expect(text).toContain('[x] 1 算 1+1')
     expect(text).not.toContain('→')
     expect(n).toBe(2)
+  })
+
+  test('a result that repeats the instructions back is not written', async ($, on) => {
+    const { clock } = world(on, {}, async e =>
+      said(e.prompt.includes('回答：') ? '需要寫的是「請求的結果或結論」，不超過 40 字，只回一行' : '補 jamie.md'),
+    )
+    await send($, '確認送出，jamie.md 最後再加一行：已送出')
+    await clock.settle()
+    await turnStarts($, 't1', '確認送出，jamie.md 最後再加一行：已送出')
+    await work($)
+    await $.turn.complete({ answer: '已加。', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as never)
+    await clock.settle()
+    const text = await boardOf($)
+    expect(text).toContain('[x] 1 補 jamie.md')
+    expect(text).not.toContain('→')
+    expect(text).not.toContain('請求的結果或結論')
   })
 
   test('a title the model set is not replaced by a summary that comes back later', async ($, on) => {
