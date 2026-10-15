@@ -23,7 +23,7 @@ import type { FleetQuota, FleetSession, FleetStatus, JarvisPage, QuotaWindow } f
 
 // The native Desktop pages of the fleet and the changes: the fleet, one session, the changes,
 // one file's diff, a repo's tree, a commit's and a stash's diff.
-export const B_PAGES: readonly JarvisPage[] = ['fleet', 'fleetDetail', 'changes', 'changeDiff', 'commitTree']
+export const B_PAGES: readonly JarvisPage[] = ['fleet', 'fleetDetail', 'changes', 'changeDiff', 'commitTree', 'commitDiff']
 
 // the tab a sub-page lights: the session page the fleet's, the diff and tree pages the changes'
 export const tabOfB = (page: JarvisPage): JarvisPage | undefined =>
@@ -776,6 +776,62 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
     )
   }
 
+  // one file of a set at a time: its path and counts, ‹ › to the set's others, then its diff
+  const fileDiffPage = (
+    title: RenderElement,
+    files: readonly NumstatRow[] | Failed | undefined,
+    file: NumstatRow | undefined,
+    rows: DiffRow[] | Failed | undefined,
+    open: (path: string) => void,
+    keys: { prev: string; next: string },
+    empty: string,
+  ): RenderElement => {
+    const at = files && !isFailed(files) && file ? Math.max(0, files.findIndex(x => x.path === file.path)) : 0
+    const nav =
+      files && !isFailed(files) && files.length > 0 && file
+        ? stepper(keys, at, files.length, i => {
+            const next = files[i]
+            if (next) open(next.path)
+          })
+        : []
+    const body: RenderElement[] =
+      files === undefined
+        ? [say('讀取中…')]
+        : isFailed(files)
+          ? [say(files.error)]
+          : files.length === 0 || !file
+            ? [say(empty)]
+            : [
+                <Box flexDirection="row" gap={1}>
+                  <Box flexGrow={1} flexShrink={1} overflow="hidden">
+                    {sayStart(file.path, DT.orangeBright, true)}
+                  </Box>
+                  {file.binary ? <Text color={DT.textSub}>二進位</Text> : counts(file.add, file.del)}
+                </Box>,
+                diffOf(rows),
+              ]
+    return (
+      <Box flexDirection="column" gap={1}>
+        {actions([pill('back', '返回', false, () => ctx.go('commitTree')), ...nav])}
+        {card(title, body)}
+      </Box>
+    )
+  }
+
+  const diffTitle = (mark: string, words: string, repo: string): RenderElement => (
+    <Box flexDirection="row" justifyContent="space-between" gap={1}>
+      <Box flexDirection="row" gap={1} flexShrink={1} overflow="hidden">
+        <Text color={DT.data} bold>
+          {mark}
+        </Text>
+        <Text color={DT.orange} bold wrap="truncate">
+          {oneLine(words)}
+        </Text>
+      </Box>
+      <Text color={DT.textSub}>{repo}</Text>
+    </Box>
+  )
+
   // ---- 分流 -------------------------------------------------------------
 
   const cm = ctx.commits
@@ -783,8 +839,12 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
   if (ctx.page === 'fleetDetail') return fleetSelected ? fleetDetailPage(fleetSelected) : fleetPage()
   if (ctx.page === 'fleet') return fleetPage()
   if (ctx.page === 'changeDiff') return changeDiffPage()
-  if (ctx.page === 'commitTree') {
+  if (ctx.page === 'commitTree' || ctx.page === 'commitDiff') {
     if (!cm?.repo) return changesPage()
+    if (ctx.page === 'commitDiff' && cm.diff) {
+      const d = cm.diff
+      return fileDiffPage(diffTitle(d.commit.sha.slice(0, 7), d.commit.subject, cm.repo.name), d.files, d.file, d.rows, cm.openFile, { prev: 'cdiff-prev', next: 'cdiff-next' }, '這個 commit 沒有改檔案')
+    }
     return commitTreePage(cm, cm.repo)
   }
   return changesPage()

@@ -444,6 +444,32 @@ describe('desktop native B: diff pages', () => {
     expect(button(gone, 'chg-s:/w/r/a.go')).toBeDefined()
   })
 
+  test("a commit's diff: back to the tree, its sha and subject, ‹ › over its files", () => {
+    const calls: Calls = []
+    const cm = commits(calls, {
+      repo: repoPage(),
+      diff: {
+        commit: { sha: 'c2aaaaaaaaaa', parents: [], author: 'a', time: T0, refs: [], subject: 'merge the feature' },
+        files: [
+          { path: 'a.go', add: 3, del: 1, binary: false },
+          { path: 'b.go', add: 0, del: 4, binary: false },
+        ],
+        file: { path: 'a.go', add: 3, del: 1, binary: false },
+        rows: DIFF,
+      },
+    })
+    const tree = draw(baseCtx(calls, { page: 'commitDiff', commits: cm }))
+    const t = textOf(tree)
+    for (const word of ['c2aaaaa', 'merge the feature', 'a.go', '1 / 2', '+3']) expect(t).toContain(word)
+    press(tree, 'cdiff-next')
+    press(tree, 'back')
+    expect(calls).toEqual(['openFile:b.go', 'go:commitTree'])
+    expect(badProps(tree)).toEqual([])
+    const empty = draw(baseCtx([], { page: 'commitDiff', commits: commits([], { repo: repoPage(), diff: { ...cm.diff!, files: [], file: undefined } }) }))
+    expect(textOf(empty)).toContain('這個 commit 沒有改檔案')
+    for (const cols of WIDTHS) expect(fixedRowsFit(draw(baseCtx([], { page: 'commitDiff', cols, commits: cm })), cols)).toBeGreaterThan(0)
+  })
+
 })
 
 describe('desktop native B: through the engine', () => {
