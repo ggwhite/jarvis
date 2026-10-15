@@ -138,7 +138,7 @@ export function pixelRects(px: Pixels, x0 = 0, y0 = 0, keep?: (color: string) =>
       }
       let end = x + 1
       while (end < row.length && row[end] === c) end += 1
-      out += `<rect x="${num(x0 + x * pw)}" y="${num(y0 + y * ph)}" width="${num((end - x) * pw)}" height="${num(ph)}" fill="${c}"/>`
+      out += `<rect x="${num(x0 + x * pw)}" y="${num(y0 + y * ph)}" width="${num((end - x) * pw)}" height="${num(ph)}" fill="${c}" shape-rendering="crispEdges"/>`
       x = end
     }
   })
