@@ -71,3 +71,43 @@ export const COMMIT_ICON = {
 } as const
 
 export const withIcon = (icon: string, text: string): string => `${icon} ${text}`
+
+// Claude Desktop's font has no Nerd Font glyphs: its pane draws these in their place
+export const EMOJI_OF: Record<string, string> = {
+  [TAB_ICON.now]: '📊',
+  [TAB_ICON.log]: '📜',
+  [TAB_ICON.stats]: '📈',
+  [TAB_ICON.fleet]: '🚀',
+  [TAB_ICON.changes]: '✏️',
+  [TAB_ICON.tasks]: '✅',
+  [TITLE_ICON.main]: '💻',
+  [TITLE_ICON.dispatch]: '📨',
+  [TITLE_ICON.models]: '🧠',
+  [TITLE_ICON.agents]: '👥',
+  [TITLE_ICON.inflight]: '⚙️',
+  [TITLE_ICON.recent]: '🕘',
+  [SECTION_ICON.reactor]: '⚡',
+  [SECTION_ICON.burn]: '🔥',
+  [SECTION_ICON.legion]: '🚩',
+  [PHASE_ICON.waiting]: '⏳',
+  [PHASE_ICON.complete]: '✅',
+  [PHASE_ICON.failed]: '❌',
+  [ROLE_ICON.Explore]: '🔍',
+  [ROLE_ICON.clerk]: '🧰',
+  [ROLE_ICON.worker]: '🔧',
+  [ROLE_ICON.fork]: '🔱',
+  [ROLE_ICON.workflow]: '🔄',
+  [ROLE_ICON.other]: '👤',
+  [CHANGE_ICON.repo]: '📁',
+  [TASK_ICON.pending]: '○',
+  [TASK_ICON.in_progress]: '◉',
+  [RESULT_ICON]: '→',
+  [COMMIT_ICON.merge]: '⑂',
+  [COMMIT_ICON.branch]: '⎇',
+  [COMMIT_ICON.tag]: '🏷️',
+  [COMMIT_ICON.remote]: '☁️',
+}
+
+const PUA = /[-]/g
+
+export const forDesktop = (s: string): string => s.replace(PUA, ch => EMOJI_OF[ch] ?? '•')
