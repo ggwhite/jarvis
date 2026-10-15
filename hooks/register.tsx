@@ -748,8 +748,12 @@ async function diffNow(
   return hit && !isFailed(hit.rows) ? hit.rows : undefined
 }
 
+// What an open says: whether a surface draws the pane, and why not; an engine whose open
+// answers nothing counts as placed.
+type PaneOpened = { isPlaced: boolean; reason?: string }
+
 // opens the pane, its boot screen from the time handed to boot (undefined: none); false when it could not open
-async function openPane($: Pick<EngineInterface, 'clock' | 'ui'>, boot: (at: number | undefined) => void): Promise<boolean> {
+async function openPane($: Pick<EngineInterface, 'clock' | 'ui'>, boot: (at: number | undefined) => void): Promise<PaneOpened | false> {
   try {
     boot(await $.clock.now())
   } catch {
@@ -757,12 +761,26 @@ async function openPane($: Pick<EngineInterface, 'clock' | 'ui'>, boot: (at: num
     boot(undefined)
   }
   try {
-    await $.ui.open({ id: PANE, title: 'Jarvis' })
-    return true
+    const out = (await $.ui.open({ id: PANE, title: 'Jarvis' })) as Partial<PaneOpened> | undefined
+    return out?.isPlaced === false ? { isPlaced: false, ...(typeof out.reason === 'string' ? { reason: out.reason } : {}) } : { isPlaced: true }
   } catch {
     boot(undefined)
     return false
   }
+}
+
+const RC_NOTE = 'Remote Control 的 Desktop／手機檢視目前不顯示 mod 面板，請在終端機或 Desktop 本機 session 查看'
+
+// /jarvis's answer. Typed at this machine (or where the origin is not said) it is as ever; sent
+// over the Remote Control bridge it says where the pane went: on a remote surface that attached,
+// on the terminal alone (which the remote view does not show), or not placed and why.
+export function jarvisOpenText(opened: PaneOpened | false, origin: string | undefined, surfaces: readonly string[]): string {
+  if (opened === false) return 'Jarvis 面板開啟失敗'
+  if (origin !== 'bridge') return 'Jarvis 面板已開啟'
+  const remote = surfaces.some(s => s !== 'terminal')
+  if (opened.isPlaced) return remote ? 'Jarvis 面板已開啟' : `Jarvis 面板已在終端機開啟（${RC_NOTE}）`
+  const why = opened.reason === undefined || opened.reason === '' ? '沒有可放面板的畫面' : opened.reason
+  return remote ? `Jarvis 面板已開啟，但還沒放上畫面：${why}` : `Jarvis 面板已開啟，但還沒放上畫面：${why}（${RC_NOTE}）`
 }
 
 // What the engine says of its agents, as reconcileAgents reads it; undefined when it
@@ -961,6 +979,8 @@ export const register: Register = on => {
   const setBoot = (at: number | undefined) => {
     bootAt = at
   }
+  // the person closed the pane by hand since it last opened
+  let paneClosed = false
 
   on('session.start', async ($, e, next) => {
     unknown.clear()
@@ -1192,10 +1212,38 @@ export const register: Register = on => {
     }
 
     // the pane is optional: one that cannot open waits for /jarvis
+    paneClosed = false
     await openPane($, setBoot)
 
     return next(e)
   })
+
+  // the person's own close: a remote client attaching later does not open it again
+  on('ui.close', async ($, e, next) => {
+    const out = await next(e)
+    if (e.id === PANE && (e as { origin?: { kind?: string } }).origin?.kind === 'person') paneClosed = true
+    return out
+  })
+
+  // A phone or the desktop app joining the session gets the pane as session.start opens it,
+  // unless the person closed it; no boot screen replays on the terminal. An engine without
+  // the event leaves remote clients to /jarvis.
+  try {
+    on('session.attach', async ($, e, next) => {
+      const out = await next(e)
+      const surface = (e as { surface?: string }).surface
+      if ((surface === 'desktop' || surface === 'mobile') && !paneClosed) {
+        try {
+          await $.ui.open({ id: PANE, title: 'Jarvis' })
+        } catch {
+          // the pane waits for /jarvis
+        }
+      }
+      return out
+    })
+  } catch {
+    // no session.attach on this engine
+  }
 
   // the board's instructions, where the request offers the board's tool
   on('prompt.compose', async ($, e, next) => {
@@ -1204,9 +1252,20 @@ export const register: Register = on => {
     return { sections: [...out.sections, { id: TASK_SECTION_ID, text: TASK_PROMPT, scope: 'session' as const }] }
   })
 
-  on('command.run', { command: 'jarvis' }, async $ =>
-    (await openPane($, setBoot)) ? { text: 'Jarvis 面板已開啟' } : { text: 'Jarvis 面板開啟失敗' },
-  )
+  on('command.run', { command: 'jarvis' }, async ($, e) => {
+    paneClosed = false
+    const opened = await openPane($, setBoot)
+    const origin = (e as { origin?: { kind?: unknown } }).origin?.kind
+    let surfaces: readonly string[] = []
+    if (origin === 'bridge') {
+      try {
+        surfaces = await $.session.surfaces()
+      } catch {
+        // no roster: the terminal alone
+      }
+    }
+    return { text: jarvisOpenText(opened, typeof origin === 'string' ? origin : undefined, surfaces) }
+  })
 
   on('agent.spawn', async ($, e, next) => {
     const out = await next(e)

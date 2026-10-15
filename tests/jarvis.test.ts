@@ -81,7 +81,7 @@ import {
   inHerdr,
   reportArgv,
 } from '../hooks/herdr'
-import { register } from '../hooks/register'
+import { jarvisOpenText, register } from '../hooks/register'
 import { BIG_ROWS, BURN_RAMP, GAUGE_RAMP, mix } from '../hooks/fleetChart'
 import {
   CREW_SHOW_MS,
@@ -5623,6 +5623,142 @@ describe('opened at session start', () => {
     fails = true
     expect(await run($)).toMatchObject({ text: 'Jarvis 面板開啟失敗' })
     expect(seen.opens.slice(1)).toEqual([{ id: 'jarvis', title: 'Jarvis' }, { id: 'jarvis', title: 'Jarvis' }])
+  })
+
+  // /jarvis sent over the Remote Control bridge; the roster as `surfaces` says it
+  const runBridge = ($: Engine) =>
+    $.command.run({
+      command: 'jarvis',
+      args: '',
+      origin: { kind: 'bridge' },
+      presentation: { isFullscreen: true, columns: 100 },
+    })
+  const roster = (on: On, surfaces: readonly ('terminal' | 'desktop' | 'mobile')[]) => on('session.surfaces', async () => ({ value: surfaces }))
+
+  test('/jarvis over the bridge with only the terminal attached says the pane is on the terminal', async ($, on) => {
+    engineAll(on)
+    on('command.run', async () => ({}))
+    surface(on, placed)
+    roster(on, ['terminal'])
+    await start($)
+    const out = await runBridge($)
+    expect(out.text).toContain('Jarvis 面板已在終端機開啟')
+    expect(out.text).toContain('Remote Control 的 Desktop／手機檢視目前不顯示 mod 面板')
+  })
+
+  test('/jarvis over the bridge with the pane not placed says why', async ($, on) => {
+    engineAll(on)
+    on('command.run', async () => ({}))
+    let placedNow = true
+    surface(on, async () => (placedNow ? { value: { isPlaced: true as const } } : { value: { isPlaced: false as const, reason: 'no-surface' } }))
+    roster(on, ['terminal'])
+    await start($)
+    placedNow = false
+    const out = await runBridge($)
+    expect(out.text).toContain('還沒放上畫面：no-surface')
+    expect(out.text).toContain('Remote Control')
+  })
+
+  test('/jarvis over the bridge with a remote surface attached is the plain answer', async ($, on) => {
+    engineAll(on)
+    on('command.run', async () => ({}))
+    surface(on, placed)
+    roster(on, ['terminal', 'mobile'])
+    await start($)
+    expect(await runBridge($)).toMatchObject({ text: 'Jarvis 面板已開啟' })
+  })
+
+  test('/jarvis typed at the terminal keeps its answer and never asks the roster', async ($, on) => {
+    engineAll(on)
+    on('command.run', async () => ({}))
+    surface(on, async () => ({ value: { isPlaced: false as const, reason: 'narrow' } }))
+    let asked = 0
+    on('session.surfaces', async () => {
+      asked += 1
+      return { value: ['terminal' as const] }
+    })
+    await start($)
+    expect(await run($)).toMatchObject({ text: 'Jarvis 面板已開啟' })
+    expect(asked).toBe(0)
+  })
+
+  test('jarvisOpenText: the bridge answer by what the open said and who is attached', () => {
+    expect(jarvisOpenText(false, 'bridge', ['terminal'])).toBe('Jarvis 面板開啟失敗')
+    expect(jarvisOpenText({ isPlaced: true }, undefined, [])).toBe('Jarvis 面板已開啟')
+    expect(jarvisOpenText({ isPlaced: false, reason: 'x' }, 'composer', ['terminal'])).toBe('Jarvis 面板已開啟')
+    expect(jarvisOpenText({ isPlaced: true }, 'bridge', [])).toContain('已在終端機開啟')
+    expect(jarvisOpenText({ isPlaced: false }, 'bridge', ['terminal', 'desktop'])).toBe('Jarvis 面板已開啟，但還沒放上畫面：沒有可放面板的畫面')
+  })
+
+  test('a phone or the desktop app attaching opens the pane, after the engine took it in; no boot replays', async ($, on) => {
+    const clock = engineAll(on)
+    const order: string[] = []
+    on('session.attach', async (_$, e) => {
+      order.push(`attach:${e.surface}`)
+      return { clientId: e.clientId }
+    })
+    const seen = surface(on, async () => {
+      order.push('open')
+      return { value: { isPlaced: true as const } }
+    })
+    await start($)
+    order.length = 0
+    await clock.advance(BOOT_MS)
+    await $.session.attach({ surface: 'mobile', clientId: 'mobile:default' })
+    await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+    expect(order).toEqual(['attach:mobile', 'open', 'attach:desktop', 'open'])
+    expect(seen.opens.slice(1)).toEqual([{ id: 'jarvis', title: 'Jarvis' }, { id: 'jarvis', title: 'Jarvis' }])
+    expect(linesOf(await draw($)).join('\n')).not.toContain('J.A.R.V.I.S. ONLINE')
+  })
+
+  test('a terminal attaching opens nothing more', async ($, on) => {
+    engineAll(on)
+    on('session.attach', async (_$, e) => ({ clientId: e.clientId }))
+    const seen = surface(on, placed)
+    await start($)
+    await $.session.attach({ surface: 'terminal', clientId: 'terminal:default' })
+    expect(seen.opens).toHaveLength(1)
+  })
+
+  // the hooks register() hands `on`, by event name; `refuse` names events whose `on` throws
+  type AnyHook = (...args: unknown[]) => Promise<unknown>
+  const hooksOf = (refuse: string[] = []) => {
+    const hooks = new Map<string, AnyHook>()
+    const take = (name: string, ...rest: unknown[]) => {
+      if (refuse.includes(name)) throw new Error(`no ${name}`)
+      hooks.set(name, rest[rest.length - 1] as AnyHook)
+    }
+    register(take as unknown as On, {})
+    return hooks
+  }
+
+  test('a pane the person closed stays closed when a phone attaches, until /jarvis opens it again', async () => {
+    const hooks = hooksOf()
+    const opens: string[] = []
+    const fake = {
+      clock: { now: async () => 0 },
+      ui: { open: async (e: { id: string }) => (opens.push(e.id), { isPlaced: true }) },
+      session: { surfaces: async () => ['terminal'] },
+    }
+    const pass = async (e: unknown) => e
+    const attach = (clientId: string) => hooks.get('session.attach')?.(fake, { surface: 'mobile', clientId }, pass)
+    await hooks.get('ui.close')?.(fake, { id: 'jarvis', origin: { kind: 'plugin' } }, pass)
+    await attach('mobile:1')
+    expect(opens).toEqual(['jarvis'])
+    await hooks.get('ui.close')?.(fake, { id: 'jarvis', origin: { kind: 'person' } }, pass)
+    await attach('mobile:2')
+    expect(opens).toEqual(['jarvis'])
+    await hooks.get('command.run')?.(fake, { command: 'jarvis', args: '', origin: { kind: 'composer' } }, pass)
+    await attach('mobile:3')
+    expect(opens).toEqual(['jarvis', 'jarvis', 'jarvis'])
+  })
+
+  test('an engine without session.attach still registers the rest; /jarvis without an origin keeps its answer', async () => {
+    const hooks = hooksOf(['session.attach'])
+    expect(hooks.has('session.attach')).toBe(false)
+    expect(hooks.has('session.start')).toBe(true)
+    const fake = { clock: { now: async () => 0 }, ui: { open: async () => undefined }, session: {} }
+    expect(await hooks.get('command.run')?.(fake, { command: 'jarvis', args: '' }, async (e: unknown) => e)).toEqual({ text: 'Jarvis 面板已開啟' })
   })
 })
 
