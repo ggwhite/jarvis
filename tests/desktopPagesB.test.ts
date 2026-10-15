@@ -211,6 +211,156 @@ describe('desktop native B: fleet detail page', () => {
   })
 })
 
+const CHANGES: ChangesView = {
+  mode: 'session',
+  pending: false,
+  total: 3,
+  groups: [
+    {
+      key: '/w/r',
+      name: 'r',
+      ahead: 2,
+      add: 12,
+      del: 3,
+      pending: false,
+      entries: [
+        { key: 's:/w/r/a.go', path: '/w/r/a.go', label: 'a.go', actors: ['main'], add: 10, del: 2, binary: false, pending: false },
+        { key: 's:/w/r/deep/nested/very/long/path/to/some/file/that/goes/on.go', path: '/w/r/x', label: 'deep/nested/very/long/path/to/some/file/that/goes/on.go', actors: ['agent-1', 'main'], add: 2, del: 1, binary: false, pending: false },
+        { key: 's:/w/r/img.png', path: '/w/r/img.png', label: 'img.png', actors: [], add: 0, del: 0, binary: true, note: '二進位', pending: false },
+      ],
+    },
+    { key: '/w/old', name: 'worktree old', removed: 4, entries: [], add: 0, del: 0, pending: false },
+  ],
+}
+
+describe('desktop native B: changes page', () => {
+  test('mode pills, then a card per repo: who, the path (the press) and the counts', () => {
+    const calls: Calls = []
+    const tree = draw(baseCtx(calls, { page: 'changes', changes: CHANGES }))
+    const t = textOf(tree)
+    for (const word of ['異動', '3 檔', '主線', 'MK-1 +1', '其他', '二進位', '↑2', 'worktree old', '已移除（4 檔）']) expect(t).toContain(word)
+    expect(texts(tree, DT.ok)).toContain('+10')
+    expect(texts(tree, DT.fail)).toContain('−2')
+    press(tree, 'chg-s:/w/r/a.go')
+    press(tree, 'chg-mode-unpushed')
+    expect(calls).toEqual(['openDiff:s:/w/r/a.go', 'mode:unpushed'])
+    // the session's own changes need no refresh
+    expect(button(tree, 'chg-refresh')).toBeUndefined()
+    expect(badProps(tree)).toEqual([])
+  })
+
+  test('the long path is cut from its start; rows stay within their card at every width', () => {
+    for (const cols of WIDTHS) {
+      const tree = draw(baseCtx([], { page: 'changes', changes: CHANGES, cols }))
+      expect(fixedRowsFit(tree, cols)).toBeGreaterThan(0)
+      const path = all(tree, x => x.type === 'Text' && textOf(x).startsWith('deep/nested'))[0]
+      expect(path?.props?.['wrap']).toBe('truncate-start')
+    }
+  })
+
+  test('empty: no file changed this session, no repo touched', () => {
+    const empty: ChangesView = { mode: 'session', groups: [], pending: false, total: 0 }
+    expect(textOf(draw(baseCtx([], { page: 'changes', changes: empty })))).toContain('這個 session 還沒改過檔案')
+    const calls: Calls = []
+    const tree = draw(baseCtx(calls, { page: 'changes', changes: { ...empty, mode: 'unpushed' } }))
+    expect(textOf(tree)).toContain('這個 session 還沒碰過任何 git repo')
+    press(tree, 'chg-refresh')
+    expect(calls).toEqual(['refreshChanges'])
+    expect(textOf(draw(baseCtx([], { page: 'changes' })))).toContain('這個 session 還沒改過檔案')
+  })
+
+  test('past the listed files, a count of the rest', () => {
+    const tree = draw(baseCtx([], { page: 'changes', changes: { ...CHANGES, total: 250 } }))
+    expect(textOf(tree)).toContain('… 還有 50 檔')
+  })
+})
+
+const repoPage = (over: Partial<RepoPage> = {}): RepoPage => ({
+  path: '/w/r',
+  name: 'r',
+  tree: {
+    branch: 'main',
+    ahead: 1,
+    unpushed: ['c2'],
+    commits: [
+      { sha: 'c2aaaaaaaaaa', parents: ['c1aaaaaaaaaa', 'b1aaaaaaaaaa'], author: 'a', time: T0 - MIN, refs: ['HEAD -> refs/heads/main', 'tag: refs/tags/v1'], subject: 'merge the feature branch with a long subject line that keeps going' },
+      { sha: 'b1aaaaaaaaaa', parents: ['c1aaaaaaaaaa'], author: 'a', time: T0 - 2 * MIN, refs: ['refs/heads/feat'], subject: 'feature work' },
+      { sha: 'c1aaaaaaaaaa', parents: [], author: 'a', time: T0 - 3 * MIN, refs: ['refs/remotes/origin/main'], subject: 'root' },
+    ],
+  },
+  view: 'log',
+  ref: undefined,
+  remotes: { remotes: [{ name: 'origin', url: 'git@example.com:some/very/long/path/to/the/repo.git' }], fetchedAt: T0 - 10 * MIN },
+  fetching: false,
+  fetchError: 'fetch failed: denied',
+  branches: {
+    current: { ref: 'refs/heads/main', name: 'main', kind: 'current', upstream: true, ahead: 1, behind: 0, gone: false, merged: false, time: T0 - MIN, subject: 'merge' },
+    active: { rows: [{ ref: 'refs/heads/feat', name: 'feat-with-a-quite-long-branch-name', kind: 'local', upstream: false, ahead: 0, behind: 2, gone: false, merged: true, time: T0 - 5 * MIN, subject: 'feature work' }], more: 0 },
+    remote: { rows: [{ ref: 'refs/remotes/origin/x', name: 'origin/x', kind: 'remote', upstream: false, ahead: 0, behind: 0, gone: false, merged: false, time: T0 - 9 * MIN, subject: 'x' }], more: 0 },
+    gone: { rows: [], more: 0 },
+    total: 3,
+    mergeKnown: true,
+  },
+  stashes: [{ sha: 's1', name: 'stash@{0}', time: T0 - MIN, branch: 'main', message: 'WIP on main: half done' }],
+  worktrees: [
+    { path: '/w/r', head: 'c2aaaaaaaaaa', branch: 'main', detached: false, locked: false, prunable: false, bare: false, name: '/w/r', main: true, agent: false, dirty: 0 },
+    { path: '/w/r/.claude/worktrees/agent-x', head: 'b1aaaaaaaaaa', detached: true, locked: true, prunable: false, bare: false, name: '.claude/worktrees/agent-x', main: false, agent: true, dirty: 3 },
+    { path: '/w/gone', head: 'b1aaaaaaaaaa', detached: true, locked: false, prunable: true, bare: false, name: 'gone', main: false, agent: false },
+  ],
+  counts: { branches: 3, stash: 1, worktrees: 3 },
+  goneOpen: false,
+  remoteOpen: false,
+  ...over,
+})
+
+const commits = (calls: Calls, over: Partial<CommitsCtx> = {}): CommitsCtx => ({
+  cwdName: 'w',
+  now: T0,
+  startedAt: T0 - 90 * MIN,
+  list: {
+    rows: [
+      { repo: '/w/r', name: 'r', touched: true, pending: false, branch: 'main', ahead: 2, time: T0 - MIN },
+      { repo: '/w/s', name: 's', touched: false, pending: true },
+    ],
+    more: 3,
+    total: 5,
+    scanning: false,
+  },
+  openRepo: r => calls.push(`openRepo:${r}`),
+  openCommit: s => calls.push(`openCommit:${s}`),
+  openFile: p => calls.push(`openFile:${p}`),
+  refreshList: () => calls.push('refreshList'),
+  refreshTree: () => calls.push('refreshTree'),
+  setView: v => calls.push(`setView:${v}`),
+  openBranch: r => calls.push(`openBranch:${r}`),
+  toggleGone: () => calls.push('toggleGone'),
+  toggleRemote: () => calls.push('toggleRemote'),
+  openStash: s => calls.push(`openStash:${s}`),
+  openStashFile: p => calls.push(`openStashFile:${p}`),
+  openWorktree: p => calls.push(`openWorktree:${p}`),
+  back: () => calls.push('back'),
+  fetch: () => calls.push('fetch'),
+  ...over,
+})
+
+describe('desktop native B: commits mode', () => {
+  test('the repo list: ★ touched, its name the press, branch, ↑ and age; the rest counted', () => {
+    const calls: Calls = []
+    const tree = draw(baseCtx(calls, { page: 'changes', changes: { mode: 'commits', groups: [], pending: false, total: 0 }, commits: commits(calls) }))
+    const t = textOf(tree)
+    for (const word of ['★', '5 repos', '↑2', '1 分鐘前', '讀取中…', '… 還有 3 個 repo']) expect(t).toContain(word)
+    press(tree, 'cm-repo-/w/r')
+    press(tree, 'chg-refresh')
+    expect(calls).toEqual(['openRepo:/w/r', 'refreshList'])
+    for (const cols of WIDTHS) expect(fixedRowsFit(draw(baseCtx([], { page: 'changes', changes: { mode: 'commits', groups: [], pending: false, total: 0 }, commits: commits([]), cols })), cols)).toBeGreaterThan(0)
+  })
+
+  test('scanning, before the list', () => {
+    const tree = draw(baseCtx([], { page: 'changes', changes: { mode: 'commits', groups: [], pending: false, total: 0 } }))
+    expect(textOf(tree)).toContain('掃描 repo 中…')
+  })
+})
+
 describe('desktop native B: through the engine', () => {
   const native = (on: Parameters<typeof engine>[0]) => engine(on, 'agent-1', 'native')
 
@@ -226,4 +376,16 @@ describe('desktop native B: through the engine', () => {
     }
   })
 
+  test('the changes tab draws natively: nothing changed yet; a mode pill switches the mode', async ($, on) => {
+    native(on)
+    await pressOn($, 'desktop', 'tab-changes')
+    const tree = await drawOn($, 'desktop')
+    expect(tree.props?.['backgroundColor']).toBe(DT.bg)
+    expect(textOf(tree)).toContain('這個 session 還沒改過檔案')
+    expect(badProps(tree)).toEqual([])
+    await pressOn($, 'desktop', 'chg-mode-unpushed')
+    const unpushed = await drawOn($, 'desktop')
+    expect(all(unpushed, x => x.type === 'Button' && x.props?.['key'] === 'chg-refresh')).toHaveLength(1)
+    expect(badProps(unpushed)).toEqual([])
+  })
 })

@@ -23,7 +23,7 @@ import type { FleetQuota, FleetSession, FleetStatus, JarvisPage, QuotaWindow } f
 
 // The native Desktop pages of the fleet and the changes: the fleet, one session, the changes,
 // one file's diff, a repo's tree, a commit's and a stash's diff.
-export const B_PAGES: readonly JarvisPage[] = ['fleet', 'fleetDetail']
+export const B_PAGES: readonly JarvisPage[] = ['fleet', 'fleetDetail', 'changes']
 
 // the tab a sub-page lights: the session page the fleet's, the diff and tree pages the changes'
 export const tabOfB = (page: JarvisPage): JarvisPage | undefined =>
@@ -63,6 +63,12 @@ const FLEET_STATUS: Record<FleetStatus, { icon: string; label: string; color: st
   working: { icon: '▶', label: 'IN FLIGHT', color: DT.data, accent: DT.orangeEdge },
   idle: { icon: '◇', label: 'STANDBY', color: DT.textSub },
 }
+
+const CHANGE_MODES: { mode: ChangeMode; label: string }[] = [
+  { mode: 'session', label: '本 session' },
+  { mode: 'unpushed', label: '未推送' },
+  { mode: 'commits', label: '提交' },
+]
 
 export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
   const { Box, Text, Button } = kit.ui
@@ -344,9 +350,137 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
     )
   }
 
+  // ---- 異動 -------------------------------------------------------------
+
+  const cv = ctx.changes ?? { mode: 'session' as const, groups: [], pending: false, total: 0 }
+  const diffOrder = cv.groups.flatMap(g => g.entries.map(e => ({ g, e })))
+  const diffAt = ctx.page === 'changeDiff' && ctx.diff ? diffOrder.findIndex(x => x.e.key === ctx.diff?.key) : -1
+
+  // who changed a file: the main loop by name, a squad member by its mark, more than one as
+  // the first and +N; 其他 for an unpushed file this session did not touch
+  const actorOf = (actors: readonly string[]): { t: string; color: string; bold?: boolean } => {
+    const [first] = actors
+    const more = actors.length > 1 ? ` +${actors.length - 1}` : ''
+    if (first === undefined) return { t: '其他', color: DT.textFaint }
+    if (first === MAIN_ACTOR) return { t: `主線${more}`, color: DT.data, bold: true }
+    const member = view.roster.get(first)
+    return member ? { t: `MK-${member.n}${more}`, color: member.color } : { t: `MK${more}`, color: DT.textSub }
+  }
+
+  // a file's counts: … while git works, a word when they cannot say, else +add −del
+  const entryCounts = (e: ChangeEntry): { w: number; node: RenderElement } => {
+    if (e.pending) return { w: 1, node: say('…') }
+    if (e.note !== undefined) return { w: cellWidth(e.note), node: say(e.note) }
+    const mark = e.mark !== undefined ? `${e.mark} ` : ''
+    return {
+      w: cellWidth(mark) + countsW(e.add, e.del, e.deleted),
+      node: (
+        <Box flexDirection="row" gap={1}>
+          {mark !== '' ? <Text color={DT.textSub}>{e.mark}</Text> : null}
+          {counts(e.add, e.del, e.deleted)}
+        </Box>
+      ),
+    }
+  }
+
+  const COUNT_MAX = 16
+  const ACTOR_W = 8
+
+  const groupCard = (g: ChangeGroup): RenderElement => {
+    if (g.removed !== undefined) return card(head(forDesktop(CHANGE_ICON.repo), g.name), [say(`已移除（${g.removed} 檔）`)])
+    const cw = Math.min(COUNT_MAX, Math.max(1, ...g.entries.map(e => entryCounts(e).w)))
+    const fit = fitColumns({ actor: ACTOR_W, count: cw }, ['actor'], cardInner)
+    const fileRow = (e: ChangeEntry): RenderElement => {
+      const a = actorOf(e.actors)
+      const c = entryCounts(e)
+      const key = e.key
+      return row([
+        fit.on('actor') ? { w: ACTOR_W, node: say(a.t, a.color, a.bold === true) } : null,
+        { w: fit.rest, node: press(`chg-${key}`, () => ctx.openDiff?.(key), sayStart(e.label)) },
+        { w: cw, node: c.node, end: true },
+      ])
+    }
+    const lines: RenderElement[] = [
+      ...(g.note !== undefined ? [say(g.note)] : []),
+      ...(g.error !== undefined ? [say(g.error)] : g.entries.length === 0 ? [say(g.pending ? '計算中…' : '沒有未推送的改動')] : []),
+    ]
+    return card(
+      headWith(
+        forDesktop(CHANGE_ICON.repo),
+        g.name,
+        <Box flexDirection="row" gap={1}>
+          {g.ahead ? <Text color={DT.data} bold>{`↑${g.ahead}`}</Text> : null}
+          <Text color={DT.textSub}>{`${g.entries.length} 檔`}</Text>
+          {counts(g.add, g.del)}
+        </Box>,
+      ),
+      [...lines, ...(g.entries.length > 0 ? [list(g.entries.map(fileRow))] : [])],
+    )
+  }
+
+  const RCOL = { star: 1, branch: 14, ahead: 5, time: 10 }
+
+  // the commits mode's repos: ★ those the session touched, the branch, ↑ unpushed and when
+  // the last commit was made; each name opens its tree
+  const repoListCard = (): RenderElement => {
+    const cm = ctx.commits
+    const rl = cm?.list
+    const top = head(forDesktop(CHANGE_ICON.repo), cm?.cwdName ?? '提交', rl && rl.rows.length > 0 ? `${rl.total} repos` : undefined)
+    if (!cm || !rl || (rl.rows.length === 0 && rl.scanning)) return card(top, [say('掃描 repo 中…')])
+    if (rl.error !== undefined) return card(top, [say(rl.error)])
+    if (rl.rows.length === 0) return card(top, [say('找不到 repo')])
+    const fit = fitColumns(RCOL, ['branch', 'time'], cardInner)
+    const rows = rl.rows.map(r => {
+      const repo = r.repo
+      return row([
+        { w: RCOL.star, node: say(r.touched ? '★' : '', DT.data, true) },
+        { w: fit.rest, node: press(`cm-repo-${repo}`, () => cm.openRepo(repo), say(r.name, r.touched ? DT.orange : DT.text, r.touched)) },
+        fit.on('branch') ? { w: RCOL.branch, node: say(r.branch ?? '') } : null,
+        { w: RCOL.ahead, node: say(r.ahead ? `↑${r.ahead}` : '', DT.data, true), end: true },
+        fit.on('time')
+          ? { w: RCOL.time, node: r.pending ? say('讀取中…', DT.textFaint) : say(r.error ?? relTime(cm.now - (r.time ?? 0)), DT.textFaint), end: true }
+          : null,
+      ])
+    })
+    return card(top, [list(rows), ...(rl.more > 0 ? [say(`… 還有 ${rl.more} 個 repo`)] : [])])
+  }
+
+  const changesPage = (): RenderElement => {
+    const files = cv.groups.reduce((sum, g) => sum + g.entries.length, 0)
+    const header = card(head(forDesktop(TAB_ICON.changes), '異動', cv.mode === 'commits' ? undefined : `${files} 檔`), [
+      actions([
+        ...CHANGE_MODES.map(m => pill(`chg-mode-${m.mode}`, m.label, m.mode === cv.mode, () => ctx.setChangesMode?.(m.mode))),
+        ...(cv.mode !== 'session'
+          ? [pill('chg-refresh', '重新整理', false, () => (cv.mode === 'commits' ? ctx.commits?.refreshList() : ctx.refreshChanges?.()))]
+          : []),
+      ]),
+    ])
+    if (cv.mode === 'commits') {
+      return (
+        <Box flexDirection="column" gap={1}>
+          {header}
+          {repoListCard()}
+        </Box>
+      )
+    }
+    const beyond = cv.mode === 'session' ? Math.max(0, cv.total - MAX_LISTED) : 0
+    const body =
+      cv.groups.length === 0
+        ? [card(head('📭', '沒有異動'), [say(cv.mode === 'session' ? '這個 session 還沒改過檔案' : '這個 session 還沒碰過任何 git repo')])]
+        : cv.groups.map(groupCard)
+    return (
+      <Box flexDirection="column" gap={1}>
+        {header}
+        {body}
+        {beyond > 0 ? say(`… 還有 ${beyond} 檔`) : null}
+      </Box>
+    )
+  }
+
   // ---- 分流 -------------------------------------------------------------
 
   // a sub-page whose session, file, repo, commit or stash left is the page above it
   if (ctx.page === 'fleetDetail') return fleetSelected ? fleetDetailPage(fleetSelected) : fleetPage()
-  return fleetPage()
+  if (ctx.page === 'fleet') return fleetPage()
+  return changesPage()
 }
