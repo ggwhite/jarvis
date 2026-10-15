@@ -40,10 +40,11 @@ import {
   startTurn,
 } from '../hooks/tasks'
 import type { Seg } from '../hooks/cockpit'
-import { TASK_ICON } from '../hooks/icons'
-import { THEME, cellWidth, padCells } from '../hooks/jarvis'
+import { TASK_ICON, withIcon } from '../hooks/icons'
+import { ANIM_MS, IDLE_MS, SPINNER, THEME, cellWidth, fitCells, padCells } from '../hooks/jarvis'
 import type { TaskReply } from '../hooks/tasks'
-import { EMPTY_TEXT, SUB_INDENT, taskRows } from '../hooks/tasksView'
+import { EMPTY_TEXT, SUB_INDENT, TITLE_MIN, TOOL_MAX, spinnerAt, taskRows } from '../hooks/tasksView'
+import type { AgentBadge, OwnerMark } from '../hooks/tasksView'
 
 const ok = (r: TaskReply): JarvisTaskBoard => {
   if ('error' in r) throw new Error(r.error)
@@ -545,9 +546,9 @@ describe('task board rows', () => {
     const rows = taskRows(board(), 60, 20, owner).map(text)
     expect(rows).toHaveLength(8)
     expect(rows[0]?.trimEnd()).toBe('進行中 1')
-    expect(rows[1]?.startsWith(`${TASK_ICON.in_progress} A`)).toBe(true)
+    expect(rows[1]?.startsWith(`${spinnerAt(0)}A`)).toBe(true)
     expect(rows[1]?.endsWith(' 0/2')).toBe(true)
-    expect(rows[2]?.startsWith(`${' '.repeat(SUB_INDENT)}${TASK_ICON.in_progress} a1`)).toBe(true)
+    expect(rows[2]?.startsWith(`${' '.repeat(SUB_INDENT)}${spinnerAt(0)}a1`)).toBe(true)
     expect(rows[3]?.startsWith(`${' '.repeat(SUB_INDENT)}${TASK_ICON.pending} a2`)).toBe(true)
     expect(rows[3]?.endsWith(' MK-1')).toBe(true)
     expect(rows[4]?.trimEnd()).toBe('預計 1')
@@ -565,7 +566,7 @@ describe('task board rows', () => {
   test('colors by status, headings in bold frame; the owner mark in its color, an unknown owner a bare MK in frame', () => {
     const rows = taskRows(board(), 60, 20, owner)
     expect(rows[0]).toEqual([{ t: padCells('進行中 1', 60), color: THEME.frame, bold: true }])
-    expect(rows[1]?.[0]).toEqual({ t: `${TASK_ICON.in_progress} `, color: THEME.accent })
+    expect(rows[1]?.[0]).toEqual({ t: spinnerAt(0), color: THEME.accent })
     expect(rows[1]?.[1]).toMatchObject({ color: THEME.bright, bold: true })
     expect(rows[3]?.[1]).toEqual({ t: `${TASK_ICON.pending} `, color: THEME.frame })
     expect(rows[3]?.[2]).toMatchObject({ color: THEME.primary })
@@ -596,11 +597,110 @@ describe('task board rows', () => {
   })
 })
 
+describe('task board motion', () => {
+  const text = (row: readonly Seg[]) => row.map(s => s.t).join('')
+  const mk = (agent?: AgentBadge): OwnerMark => ({ t: 'MK-1', color: '#E879F9', ...(agent ? { agent } : {}) })
+  const running = (now: number) =>
+    ok(applyTask(build({ op: 'add', item: 'A', subtasks: ['a1'] }), { op: 'update', id: '1.1', status: 'in_progress' }, undefined, now))
+
+  test('a running row spins with the clock; pending and done rows stand still', () => {
+    expect(spinnerAt(0)).toBe(`${SPINNER[0]} `)
+    expect(spinnerAt(ANIM_MS)).toBe(`${SPINNER[1]} `)
+    expect(spinnerAt(ANIM_MS * SPINNER.length)).toBe(`${SPINNER[0]} `)
+    expect(cellWidth(spinnerAt(0))).toBe(cellWidth(withIcon(TASK_ICON.pending, '')))
+    const b = running(0)
+    expect(taskRows(b, 40, 10, () => mk(), 0)[1]?.[0]).toEqual({ t: spinnerAt(0), color: THEME.accent })
+    const rowsAt = (now: number) => taskRows(b, 40, 10, () => mk(), now).map(text)
+    expect(rowsAt(0)[2]).not.toBe(rowsAt(ANIM_MS)[2])
+    const still = build({ op: 'add', item: 'P' }, { op: 'add', item: 'D' }, { op: 'update', id: '2', status: 'completed' })
+    expect(taskRows(still, 40, 10, () => mk(), 0).map(text)).toEqual(taskRows(still, 40, 10, () => mk(), ANIM_MS).map(text))
+  })
+
+  test('running work shows its time: an item from its start, a subtask without a member from its own', () => {
+    let b = openRequest(EMPTY_BOARD, '修 bug', undefined, 0).board
+    b = ok(applyTask(b, { op: 'add', subtasks: ['查'] }, undefined, 0))
+    b = ok(applyTask(b, { op: 'update', id: '1.1', status: 'in_progress' }, undefined, 5_000))
+    const rows = taskRows(b, 60, 10, () => mk(), 65_000).map(text)
+    expect(rows[1]?.endsWith(' 0/1 1:05')).toBe(true)
+    expect(rows[2]?.endsWith(' 1:00')).toBe(true)
+    // a narrow item row keeps its count and gives up its time
+    const narrow = taskRows(b, 18, 10, () => mk(), 65_000).map(text)
+    expect(narrow[1]?.endsWith(' 0/1')).toBe(true)
+  })
+
+  test('a just completed subtask is lit bright for FRESH_MS, then done colors', () => {
+    const b = ok(
+      applyTask(
+        ok(applyTask(build({ op: 'add', item: 'A', subtasks: ['a1', 'a2'] }), { op: 'update', id: '1.2', status: 'in_progress' }, undefined, 0)),
+        { op: 'update', id: '1.1', status: 'completed' },
+        undefined,
+        1000,
+      ),
+    )
+    const lit = taskRows(b, 40, 10, () => mk(), 1000 + FRESH_MS - 1)[2]
+    expect(lit?.[1]).toEqual({ t: withIcon(TASK_ICON.completed, ''), color: THEME.bright })
+    expect(lit?.[2]).toMatchObject({ color: THEME.bright })
+    const after = taskRows(b, 40, 10, () => mk(), 1000 + FRESH_MS)[2]
+    expect(after?.[1]).toEqual({ t: withIcon(TASK_ICON.completed, ''), color: THEME.success })
+    expect(after?.[2]).toMatchObject({ color: THEME.frame })
+  })
+
+  test('a request item done by its subtasks, still running by its own status, is lit from its last subtask for FRESH_MS', () => {
+    let b = openRequest(EMPTY_BOARD, '修 bug', undefined, 0).board
+    b = ok(applyTask(b, { op: 'add', subtasks: ['查'] }, undefined, 0))
+    b = ok(applyTask(b, { op: 'update', id: '1.1', status: 'completed' }, undefined, 1000))
+    expect(b.items[0]?.status).toBe('in_progress')
+    const lit = taskRows(b, 40, 10, () => mk(), 1000 + FRESH_MS - 1)
+    expect(text(lit[0] ?? [])).toContain('已完成 1')
+    expect(lit[1]?.[0]).toEqual({ t: withIcon(TASK_ICON.completed, ''), color: THEME.bright })
+    expect(lit[1]?.[1]).toMatchObject({ color: THEME.bright })
+    expect(text(lit[1] ?? []).trimEnd().endsWith(' 1/1')).toBe(true)
+    const after = taskRows(b, 40, 10, () => mk(), 1000 + FRESH_MS)[1]
+    expect(after?.[0]).toEqual({ t: withIcon(TASK_ICON.completed, ''), color: THEME.success })
+    expect(after?.[1]).toMatchObject({ color: THEME.frame })
+  })
+
+  test("a member's run beside its subtask: tool and time running, waiting, done or failed with the time taken, lost", () => {
+    const b = ok(applyTask(running(0), { op: 'update', id: '1.1', agent: 'agent-7' }))
+    const right = (agent: AgentBadge) => {
+      const row = taskRows(b, 60, 10, () => mk(agent), 0)[2] ?? []
+      return { text: text(row).trimEnd(), segs: row }
+    }
+    const bash = right({ status: 'running', ms: 65_000, tool: 'Bash' })
+    expect(bash.text.endsWith(' Bash 1:05 MK-1')).toBe(true)
+    expect(bash.segs.find(s => s.t === 'Bash')?.color).toBe(THEME.accent)
+    expect(right({ status: 'running', ms: 5_000, tool: '' }).text.endsWith(' 0:05 MK-1')).toBe(true)
+    expect(right({ status: 'running', waiting: true, ms: 5_000, tool: 'Bash' }).text.endsWith(' 等待 0:05 MK-1')).toBe(true)
+    const done = right({ status: 'done', ms: 120_000, tool: 'Read' })
+    expect(done.text.endsWith(' 完成 2:00 MK-1')).toBe(true)
+    expect(done.segs.find(s => s.t === '完成')?.color).toBe(THEME.success)
+    const failed = right({ status: 'failed', ms: 3_000, tool: 'Read' })
+    expect(failed.text.endsWith(' 失敗 0:03 MK-1')).toBe(true)
+    expect(failed.segs.find(s => s.t === '失敗')?.color).toBe(THEME.error)
+    expect(right({ status: 'stale', ms: 3_000, tool: 'Read' }).text.endsWith(' 失聯 MK-1')).toBe(true)
+    expect(right({ status: 'running', ms: 0, tool: 'mcp__jarvis__task_long' }).text).toContain(fitCells('mcp__jarvis__task_long', TOOL_MAX))
+  })
+
+  test('a narrow row cuts the title to TITLE_MIN first, then gives up the tool, then the time; MK-N stays', () => {
+    expect(TITLE_MIN).toBe(8)
+    const b = ok(applyTask(running(0), { op: 'update', id: '1.1', agent: 'agent-7', title: '很長的細項標題很長' }))
+    const at = (width: number) => text(taskRows(b, width, 10, () => mk({ status: 'running', ms: 65_000, tool: 'Bash' }), 0)[2] ?? [])
+    expect(at(30).endsWith(' Bash 1:05 MK-1')).toBe(true)
+    expect(at(28).endsWith(' 1:05 MK-1')).toBe(true)
+    expect(at(28)).not.toContain('Bash')
+    expect(at(18).endsWith(' MK-1')).toBe(true)
+    expect(at(18)).not.toContain('1:05')
+    for (const w of [30, 28, 18]) expect(cellWidth(at(w))).toBe(w)
+    const failed = text(taskRows(b, 24, 10, () => mk({ status: 'failed', ms: 65_000, tool: 'Bash' }), 0)[2] ?? [])
+    expect(failed.endsWith(' 失敗 MK-1')).toBe(true)
+  })
+})
+
 // the test-side bottom of the chain, standing for the engine
 const TASK_CREATE_ID = '7'
 const world = (on: On, outcome: Record<string, unknown> = {}) => {
   const registered: { name: string; isDeferred?: boolean }[] = []
-  mock.clock(on, { now: 0 })
+  const clock = mock.clock(on, { now: 0 })
   mock.env(on, {})
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
   on('classic.SessionStart', async () => ({}))
@@ -624,7 +724,7 @@ const world = (on: On, outcome: Record<string, unknown> = {}) => {
           ...outcome,
         },
   )
-  return { registered }
+  return { registered, clock }
 }
 
 const startSession = ($: Engine) => $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
@@ -786,7 +886,7 @@ const draw = async ($: Engine, rows = 30, cols = 80): Promise<Node> =>
     props: paneProps(rows, cols),
   })) as RenderElement as Node
 
-const openTasks = async ($: Engine, rows = 30, cols = 80) => {
+const pressKey = async ($: Engine, key: string, rows = 30, cols = 80) => {
   const ui = await $.ui.mount({
     plugin: 'jarvis',
     surface: 'terminal',
@@ -795,8 +895,20 @@ const openTasks = async ($: Engine, rows = 30, cols = 80) => {
     props: paneProps(rows, cols),
     viewport: { columns: cols + 20, rows: rows + 10 },
   })
-  await ui.press({ key: 'tab-tasks' })
+  await ui.press({ key })
   await ui.unmount()
+}
+
+const openTasks = ($: Engine, rows = 30, cols = 80) => pressKey($, 'tab-tasks', rows, cols)
+
+// how many times the mod has written its tick: counted beneath the mod, at the state bottom
+const tickWrites = (on: On) => {
+  const count = { n: 0 }
+  on('state.set', { plugin: 'jarvis', key: 'tick' }, async (_$, e, next) => {
+    count.n += 1
+    return next(e)
+  })
+  return count
 }
 
 const spawnWorker = ($: Engine) =>
@@ -905,7 +1017,7 @@ describe('task board page', () => {
     await openTasks($)
     const lines = linesOf(await draw($))
     expect(lines.some(l => l.includes('0/1 項目 · 細項 1/2'))).toBe(true)
-    expect(lines.find(l => l.includes('加看板'))?.trimEnd().endsWith('1/2')).toBe(true)
+    expect(lines.find(l => l.includes('加看板'))?.trimEnd()).toMatch(/1\/2 0:00$/)
     expect(lines.find(l => l.includes('實作') && !l.includes('加看板'))?.trimEnd().endsWith('MK-1')).toBe(true)
   })
 
@@ -916,6 +1028,44 @@ describe('task board page', () => {
     const lines = linesOf(await draw($, 30, 40))
     for (const l of lines) expect(cellWidth(l)).toBeLessThanOrEqual(40)
     expect(lines.some(l => l.includes('很長的工作項目標題') && l.includes('…'))).toBe(true)
+  })
+
+  test("a member's run beside its subtask, and running times that move with the clock", async ($, on) => {
+    const { clock } = world(on)
+    await spawnWorker($)
+    await task($, { op: 'add', item: '加看板', subtasks: ['實作'] })
+    await task($, { op: 'update', id: '1.1', status: 'in_progress', agent: 'agent-7' })
+    await openTasks($)
+    await clock.advance(65_000)
+    const lines = linesOf(await draw($))
+    expect(lines.find(l => l.includes('實作') && !l.includes('加看板'))?.trimEnd()).toMatch(/1:05 MK-1$/)
+    expect(lines.find(l => l.includes('加看板'))?.trimEnd()).toMatch(/0\/1 1:05$/)
+  })
+
+  test('the tasks page ticks every ANIM_MS while it has running work and is drawn; not on another page; not once the work is done', async ($, on) => {
+    const { clock } = world(on)
+    const count = tickWrites(on)
+    await startSession($)
+    await task($, { op: 'add', item: '工作', subtasks: ['a'] })
+    await task($, { op: 'update', id: '1.1', status: 'in_progress' })
+    await openTasks($)
+    await draw($)
+    let base = count.n
+    await clock.advance(ANIM_MS * 10)
+    expect(count.n - base).toBe(10)
+    await pressKey($, 'tab-now')
+    await draw($)
+    await clock.advance(IDLE_MS)
+    base = count.n
+    await clock.advance(ANIM_MS * 10)
+    expect(count.n).toBe(base)
+    await openTasks($)
+    await task($, { op: 'update', id: '1.1', status: 'completed' })
+    await draw($)
+    await clock.advance(FRESH_MS + IDLE_MS)
+    base = count.n
+    await clock.advance(IDLE_MS * 3)
+    expect(count.n).toBe(base)
   })
 
   test('a /clear empties the page', async ($, on) => {

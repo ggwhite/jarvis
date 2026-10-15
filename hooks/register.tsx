@@ -45,7 +45,7 @@ import { commitFileDiff, commitFiles, commitTreeOf, findRepos, repoSummary } fro
 import type { CommitFile, CommitTree, RepoSummary } from './gitCommits'
 import { commitRepoName, repoRows } from './commitsView'
 import type { CommitsCtx, RepoList } from './commitsView'
-import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, endTurn, fromTaskCreate, fromTaskUpdate, fromTodos, openRequest, recordsRequest, requestContext, startTurn } from './tasks'
+import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, boardLive, endTurn, fromTaskCreate, fromTaskUpdate, fromTodos, openRequest, recordsRequest, requestContext, startTurn } from './tasks'
 import type { TaskReply } from './tasks'
 import { FETCH_TIMEOUT_MS, branchesOf, fetchRepo, remotesOf, sameRepoPaths, stashFileDiff, stashFiles, stashesOf, worktreesOf } from './gitRepo'
 import type { StashFile } from './gitRepo'
@@ -702,17 +702,29 @@ async function reconcile(
   })
 }
 
+// The tasks page, shown and drawn within SEEN_MS of `now` (drawn at `drawnAt`), with work
+// that moves: running, or just done.
+async function tasksMoving($: Pick<EngineInterface, 'state'>, now: number, drawnAt: number): Promise<boolean> {
+  if (now - drawnAt > SEEN_MS) return false
+  try {
+    return (await read($, ui)).page === 'tasks' && boardLive(await read($, tasks), now)
+  } catch {
+    return false
+  }
+}
+
 // The session's one tick, started at session.start: it counts the clock of running
 // rows and turns the spinners; at most once per IDLE_MS it also marks lost subagents
 // and feeds the Herdr row (`slow.at` is when it last did). It runs every ANIM_MS while
-// a subagent runs (not waiting) or the boot plays and the pane is in view, every IDLE_MS otherwise
-// (`pace` picks); with nothing running and no boot it only reads state, so nothing redraws.
+// a subagent runs (not waiting) or the boot plays or the tasks page has work that moves,
+// and the pane is in view, every IDLE_MS otherwise (`pace` picks); with nothing running
+// and nothing animating it only reads state, so nothing redraws.
 async function tickOnce(
   $: Pick<EngineInterface, 'clock' | 'state' | 'agent'>,
   reporter: Reporter | undefined,
-  pace: (list: readonly JarvisAgent[], now: number) => void,
+  pace: (list: readonly JarvisAgent[], now: number, live: boolean) => void,
   slow: { at: number },
-  booting: (now: number) => boolean,
+  animating: (now: number) => Promise<boolean>,
   listing: { fails: number },
 ): Promise<void> {
   try {
@@ -728,8 +740,9 @@ async function tickOnce(
       await update($, agents, l => [...markStale(l, now, exempt)])
       list = await read($, agents)
     }
-    if (runningOf(list).length > 0 || booting(now)) await update($, tick, t => ({ n: t.n + 1, now }))
-    pace(list, now)
+    const live = await animating(now)
+    if (runningOf(list).length > 0 || live) await update($, tick, t => ({ n: t.n + 1, now }))
+    pace(list, now, live)
     if (!due) return
     slow.at = now
     const health = healthOfState(
@@ -907,7 +920,14 @@ export const register: Register = on => {
         timer?.cancel()
         period = ms
         timer = $.clock.every(ms, () =>
-          tickOnce($, reporter, (list, now) => setPace(tickMs(list, now, drawnAt, booting(now))), slow, booting, listing),
+          tickOnce(
+            $,
+            reporter,
+            (list, now, live) => setPace(tickMs(list, now, drawnAt, live)),
+            slow,
+            async now => booting(now) || (await tasksMoving($, now, drawnAt)),
+            listing,
+          ),
         )
       } catch {
         // no live clock; the pane still shows what happened
@@ -1109,7 +1129,7 @@ export const register: Register = on => {
         await update($, tick, t => ({ n: t.n + 1, now }))
         // a suit held still plays no deployment
         if ((await read($, suit)).paused !== true) await update($, suit, s => ({ ...s, deployedAt: now }))
-        pace?.(tickMs(await read($, agents), now, drawnAt))
+        pace?.(tickMs(await read($, agents), now, drawnAt, booting(now) || (await tasksMoving($, now, drawnAt))))
       }
     } catch {
       // recording failed; the spawn itself already happened
@@ -1200,7 +1220,7 @@ export const register: Register = on => {
         await update($, agents, list => noteTool(list, id, tool, now))
         await update($, tick, t => ({ n: t.n + 1, now }))
         const list = await read($, agents)
-        pace?.(tickMs(list, now, drawnAt))
+        pace?.(tickMs(list, now, drawnAt, booting(now) || (await tasksMoving($, now, drawnAt))))
         source = list.find(a => a.id === id)?.type ?? 'subagent'
       }
     } catch {
@@ -1412,11 +1432,12 @@ export const register: Register = on => {
     // played once: the first drawing that finds the boot over ends it
     const boot = bootAt === undefined ? undefined : bootStage(now - bootAt)
     if (boot === undefined) bootAt = undefined
-    // a pane in view with a squad member running (not waiting), or booting, animates at
-    // once, not at the next idle tick
-    drawnAt = now
-    if (view.running.some(a => a.waiting !== true) || boot !== undefined) pace?.(ANIM_MS)
     const shown = await read($, ui)
+    const board = shown.page === 'tasks' ? await read($, tasks) : undefined
+    // a pane in view with a squad member running (not waiting), booting, or a tasks page whose
+    // work moves animates at once, not at the next idle tick
+    drawnAt = now
+    if (view.running.some(a => a.waiting !== true) || boot !== undefined || (board !== undefined && boardLive(board, now))) pace?.(ANIM_MS)
     const changesMode: ChangeMode = shown.changesMode ?? 'session'
     const onChanges = shown.page === 'changes' || shown.page === 'changeDiff'
     // the commits mode lists repos, not files: git is not asked of the session's files
@@ -1680,7 +1701,7 @@ export const register: Register = on => {
         }
       },
       openDiff: (key: string) => setUi(u => ({ ...u, page: 'changeDiff', diffKey: key })),
-      ...(shown.page === 'tasks' ? { tasks: await read($, tasks) } : {}),
+      ...(board === undefined ? {} : { tasks: board }),
       commits,
     })
   })

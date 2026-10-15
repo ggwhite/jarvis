@@ -852,9 +852,10 @@ export function lockOf(events: readonly JarvisEvent[], actor: string, now: numbe
 }
 
 // The tick period: ANIM_MS while any squad member runs (initializing ones included, waiting
-// ones not) or the boot plays, and the pane was drawn within SEEN_MS of `now`, else IDLE_MS.
-export function tickMs(agents: readonly JarvisAgent[], now: number, drawnAt: number, booting = false): number {
-  return (runningOf(agents).some(a => a.waiting !== true) || booting) && now - drawnAt <= SEEN_MS ? ANIM_MS : IDLE_MS
+// ones not) or something animates (`animate`: the boot, the tasks page's work), and the
+// pane was drawn within SEEN_MS of `now`, else IDLE_MS.
+export function tickMs(agents: readonly JarvisAgent[], now: number, drawnAt: number, animate = false): number {
+  return (runningOf(agents).some(a => a.waiting !== true) || animate) && now - drawnAt <= SEEN_MS ? ANIM_MS : IDLE_MS
 }
 
 export type JarvisState = {

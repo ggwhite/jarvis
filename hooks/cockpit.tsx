@@ -2271,10 +2271,19 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   // ---- 任務 ---------------------------------------------------------------
 
-  // a subtask's owner: a listed squad member as MK-N in its color, else a bare MK
+  // every listed squad member by id: a subtask's owner shows how its run stands
+  const agentById = new Map([...view.running, ...view.stale, ...view.finished].map(a => [a.id, a] as const))
+
+  // a subtask's owner: a listed squad member as MK-N in its color with its run, else a bare MK
   const taskOwner = (agentId: string): OwnerMark => {
     const m = view.roster.get(agentId)
-    return m ? { t: `MK-${m.n}`, color: m.color } : { t: 'MK', color: FRAME }
+    const a = agentById.get(agentId)
+    return {
+      ...(m ? { t: `MK-${m.n}`, color: m.color } : { t: 'MK', color: FRAME }),
+      ...(a
+        ? { agent: { status: a.status, ...(a.waiting === true ? { waiting: true } : {}), ms: elapsedMs(a, view.now), tool: a.tool } }
+        : {}),
+    }
   }
 
   const tasksBlock = (room: number): Block => {
@@ -2282,7 +2291,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const board = ctx.tasks ?? EMPTY_BOARD
     const head = leftRight([title(TAB_ICON.tasks, '任務', PRIMARY)], [{ t: countsText(boardCounts(board)), color: FRAME }], inner)
     const h = Math.max(6, room)
-    return card({ w: cols, color: FRAME, lines: [head, ...taskRows(board, inner, h - 3, taskOwner)] }, h)
+    return card({ w: cols, color: FRAME, lines: [head, ...taskRows(board, inner, h - 3, taskOwner, view.now)] }, h)
   }
 
   // ---- 組版 ---------------------------------------------------------------
