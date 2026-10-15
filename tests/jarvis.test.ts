@@ -5964,12 +5964,19 @@ describe('role detail page', () => {
     }
     walk(tree)
     expect(rows).toHaveLength(4)
-    const cells = (k: Node): number => (k.type === 'Svg' ? Number(k.props?.['width']) / 8 : Number(k.props?.['width'] ?? k.props?.['minWidth']))
+    const boxCells = (k: Node): number => (k.type === 'Svg' ? Number(k.props?.['width']) / 8 : Number(k.props?.['width'] ?? k.props?.['minWidth']))
+    // the description's padding a spacer: it takes the cells its row (as wide as its cells) leaves over
+    const isSpacer = (k: Node): boolean => k.type === 'Box' && k.props?.['flexGrow'] === 1
+    const spareOf = (r: Node): number => {
+      const fixed = kids(r).filter(k => !isSpacer(k)).reduce((n, k) => n + boxCells(k), 0)
+      return Number(r.props?.['width'] ?? fixed) - fixed
+    }
+    const cellsIn = (r: Node) => (k: Node): number => (isSpacer(k) ? spareOf(r) : boxCells(k))
     const starts = rows.map(r => {
       let n = 0
       return kids(r).map(k => {
         const at = n
-        n += cells(k)
+        n += cellsIn(r)(k)
         return at
       })
     })
@@ -5977,9 +5984,12 @@ describe('role detail page', () => {
       const button = kids(kids(r)[0] as Node).find(b => b.type === 'Button') as Node
       expect(textOf(button)).toMatch(/^[⌜⌞]MK-\d+[⌝⌟]\s*$/)
       expect(kids(r).slice(1).some(k => /Opus|Sonnet/.test(textOf(k)))).toBe(true)
-      expect(kids(r).reduce((n, k) => n + cells(k), 0)).toBe(96)
+      expect(kids(r).some(isSpacer)).toBe(true)
+      expect(kids(r).reduce((n, k) => n + cellsIn(r)(k), 0)).toBe(96)
     }
-    for (const s of starts) expect(s).toEqual(starts[0])
+    // the spacer starts where its description ends; every other box at the same cell
+    const fixedStarts = rows.map((r, i) => (starts[i] ?? []).filter((_, j) => !isSpacer(kids(r)[j] as Node)))
+    for (const s of fixedStarts) expect(s).toEqual(fixedStarts[0])
     await deskPress('role-run-3')
     expect(linesOf((await $.ui.render(desk)) as RenderElement as Node).join('\n')).toContain('MK-3')
   })

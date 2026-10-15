@@ -420,3 +420,109 @@ describe('desktop svg: card padding', () => {
     })
   }
 })
+
+describe('desktop layout: card gaps and right-anchored columns', () => {
+  const kids = (n: Node): Node[] => (n.children ?? []).filter((k): k is Node => typeof k !== 'string')
+  const isCard = (x: Node) => x.type === 'Box' && x.props?.['borderStyle'] === 'round'
+  const isGap = (x: Node) => x.type === 'Box' && x.props?.['height'] === 1 && kids(x).length === 0
+  const isSpacer = (x: Node) => x.type === 'Box' && x.props?.['flexGrow'] === 1
+  const hasCard = (k: Node) => all(k, isCard).length > 0
+  // the page's column: the deepest column Box holding two blocks with a card in them
+  const pageOf = (tree: Node): Node[] => {
+    const page = all(tree, x => x.type === 'Box' && x.props?.['flexDirection'] === 'column' && kids(x).filter(hasCard).length >= 2).at(-1)
+    expect(page).toBeDefined()
+    return kids(page as Node)
+  }
+  // a block's rows: a card row as tall as its card, a gap or a line one
+  const rowsOf = (k: Node): number => {
+    const card = all(k, isCard)[0]
+    return card ? Number(card.props?.['height']) : 1
+  }
+  const pageRows = (blocks: Node[]) => blocks.reduce((n, k) => n + rowsOf(k), 0)
+  // what lies between each two cards of the page
+  const between = (blocks: Node[]): Node[][] => {
+    const at = blocks.flatMap((k, i) => (hasCard(k) ? [i] : []))
+    return at.slice(1).map((j, n) => blocks.slice((at[n] as number) + 1, j))
+  }
+
+  test('now page: one blank row between the stacked cards, and the page no taller than the terminal one', async ($, on) => {
+    engine(on)
+    for (let i = 0; i < 30; i += 1) await $.tool.call({ tool: 'Read', file_path: `/x${i}` })
+    const desk = pageOf(await drawOn($, 'desktop', 20))
+    const term = pageOf(await drawOn($, 'terminal', 20))
+    const gaps = between(desk)
+    expect(gaps).toHaveLength(2)
+    for (const g of gaps) {
+      expect(g).toHaveLength(1)
+      expect(isGap(g[0] as Node)).toBe(true)
+    }
+    for (const g of between(term)) expect(g).toHaveLength(0)
+    expect(pageRows(term)).toBe(20)
+    expect(pageRows(desk)).toBeLessThanOrEqual(pageRows(term))
+  })
+
+  test('now page: too few rows for the gaps leaves them out, never a card', async ($, on) => {
+    engine(on)
+    for (let i = 0; i < 30; i += 1) await $.tool.call({ tool: 'Read', file_path: `/x${i}` })
+    // the title, the tabs, the list (4), in flight (4) and the least events (6): no row spare
+    const desk = pageOf(await drawOn($, 'desktop', 16))
+    const term = pageOf(await drawOn($, 'terminal', 16))
+    expect(term.filter(hasCard)).toHaveLength(3)
+    expect(desk.filter(hasCard)).toHaveLength(3)
+    expect(desk.some(isGap)).toBe(false)
+    expect(pageRows(desk)).toBe(pageRows(term))
+  })
+
+  test('stats page: one blank row between the stacked cards; short of rows the dispatch roles give way, the page no taller', async ($, on) => {
+    engine(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    await pressOn($, 'desktop', 'tab-stats')
+    const roomy = pageOf(await drawOn($, 'desktop'))
+    expect(between(roomy).map(g => g.length)).toEqual([1, 1])
+    expect(pageRows(roomy)).toBeLessThanOrEqual(45)
+    // the terminal page just fits: Desktop cuts the dispatch card for its gaps
+    const fit = pageRows(pageOf(await drawOn($, 'terminal')))
+    const desk = pageOf(await drawOn($, 'desktop', fit))
+    const term = pageOf(await drawOn($, 'terminal', fit))
+    expect(pageRows(term)).toBe(fit)
+    expect(between(desk).map(g => g.length)).toEqual([1, 1])
+    expect(between(desk).flat().every(isGap)).toBe(true)
+    expect(pageRows(desk)).toBeLessThanOrEqual(fit)
+    expect(textOf(desk.find(k => textOf(k).includes('DISPATCH')) as Node)).toContain('… 還有')
+  })
+
+  test('a leftRight line on Desktop: a spacer between its groups, the right group last, the row its full width', async ($, on) => {
+    engine(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    const tree = await drawOn($, 'desktop')
+    const rowWith = (pred: (k: Node) => boolean) =>
+      all(tree, x => x.type === 'Box' && x.props?.['flexDirection'] === 'row' && kids(x).some(isSpacer) && kids(x).some(pred))[0]
+    const titleRow = rowWith(k => textOf(k).includes('J.A.R.V.I.S.'))
+    expect(titleRow?.props?.['width']).toBe(80)
+    expect(textOf(kids(titleRow as Node).at(-1) as Node)).toBe('ALL SYSTEMS NOMINAL')
+    const head = rowWith(k => textOf(k).includes('子代理'))
+    expect(head?.props?.['width']).toBe(76)
+    const hk = kids(head as Node)
+    expect(hk.findIndex(isSpacer)).toBeLessThan(hk.length - 1)
+    expect(textOf(hk.at(-1) as Node)).toContain('執行中')
+    const spacer = hk.find(isSpacer)
+    expect(spacer?.props?.['flexShrink']).toBe(1)
+    expect(spacer?.props?.['minWidth']).toBe(1)
+    // a subagent row: its description's padding the spacer, its last column at the card's end
+    const row = all(tree, x => x.type === 'Box' && kids(x).some(k => kids(k).some(b => b.type === 'Button' && b.props?.['key'] === 'agent-1')))[0]
+    expect(row?.props?.['width']).toBe(76)
+    expect(kids(row as Node).some(isSpacer)).toBe(true)
+  })
+
+  test('terminal: no spacer, no gap box', async ($, on) => {
+    engine(on)
+    for (let i = 0; i < 30; i += 1) await $.tool.call({ tool: 'Read', file_path: `/x${i}` })
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    for (const key of ['tab-now', 'tab-stats']) {
+      await pressOn($, 'terminal', key)
+      const tree = await drawOn($, 'terminal', 20)
+      expect(all(tree, isSpacer)).toHaveLength(0)
+      expect(all(tree, isGap)).toHaveLength(0)
+    }
+  })
+})

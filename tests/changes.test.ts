@@ -582,16 +582,20 @@ const allOf = (n: Node, pred: (x: Node) => boolean, out: Node[] = []): Node[] =>
 const keyOf = (n: Node): string => String(n.props?.['key'] ?? '')
 // a Desktop cell box's cells: an Svg by its pixels, a Box by its width or least width
 const boxCells = (k: Node): number => (k.type === 'Svg' ? Number(k.props?.['width']) / 8 : Number(k.props?.['width'] ?? k.props?.['minWidth']))
+// a Desktop spacer: it takes the cells its row (as wide as its cells) leaves over
+const isSpacer = (k: Node): boolean => k.type === 'Box' && k.props?.['flexGrow'] === 1
 // Desktop rows pressed by a Button keyed `prefix…`: each row's Button and where each of its boxes starts
 const pressedRows = (tree: Node, prefix: string) =>
   allOf(tree, x => x.type === 'Box' && kidsOf(x).some(k => kidsOf(k).some(b => b.type === 'Button' && keyOf(b).startsWith(prefix)))).map(row => {
     const ks = kidsOf(row)
     const at = ks.indexOf(ks.find(k => kidsOf(k).some(b => b.type === 'Button')) as Node)
+    const fixed = ks.filter(k => !isSpacer(k)).reduce((n, k) => n + boxCells(k), 0)
+    const spare = Number(row.props?.['width'] ?? fixed) - fixed
     const starts: number[] = []
     let n = 0
     for (const k of ks) {
       starts.push(n)
-      n += boxCells(k)
+      n += isSpacer(k) ? spare : boxCells(k)
     }
     const button = kidsOf(ks[at] as Node).find(b => b.type === 'Button') as Node
     return { row, kids: ks, at, starts, total: n, button, label: textOf(button) }
@@ -1754,19 +1758,25 @@ describe('commits mode: tree and diff pages', () => {
     expect(buttons.every(b => b.props['hotkey'] === undefined)).toBe(true)
   })
 
-  test("Desktop: a commit row's Button is its node alone; lanes before it, sha, subject and age outside, the sha at the same cell; a press opens it", async ($, on) => {
+  test("Desktop: a commit row's Button is its node through its sha; lanes before it, subject and age outside, the age at the row's end; a press opens it", async ($, on) => {
     setup(on)
     await toTree($)
     const rows = pressedRows(await deskTree($), 'cm-commit-')
     expect(rows).toHaveLength(4)
-    const shaAt = (r: (typeof rows)[number]) => r.starts[r.kids.findIndex(k => /^\d{7}$/.test(textOf(k)))]
     for (const r of rows) {
-      expect([COMMIT_ICON.head, '●']).toContain(r.label)
+      const node = [COMMIT_ICON.head, '●'].find(g => r.label.startsWith(g))
+      expect(node).toBeDefined()
+      expect(r.label).toMatch(/ \d{7}$/)
+      expect(r.button.children?.every(k => typeof k === 'string' || k.type === 'Text')).toBe(true)
       expect(r.total).toBe(76)
-      expect(r.kids.findIndex(k => /^\d{7}$/.test(textOf(k)))).toBeGreaterThan(r.at)
+      expect(r.kids.slice(r.at + 1).some(k => /^\d{7}$/.test(textOf(k)))).toBe(false)
+      // the age is the row's last box, a spacer before it
+      expect(r.kids.slice(r.at + 1).some(isSpacer)).toBe(true)
+      expect(textOf(r.kids.at(-1) as Node)).toMatch(/^\d+[smhd]$/)
     }
     expect(rows.map(r => r.at)).toEqual([0, 1, 0, 0])
-    expect(new Set(rows.map(shaAt)).size).toBe(1)
+    // what follows the sha starts at the same cell in every row
+    expect(new Set(rows.map(r => r.starts[r.at + 1])).size).toBe(1)
     await deskPress($, `cm-commit-${M}`)
     for (let i = 0; i < 3; i += 1) {
       await deskTree($)

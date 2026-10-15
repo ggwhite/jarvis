@@ -148,8 +148,19 @@ const REF_MAX = 16
 type Ui = Pick<ReturnType<EngineInterface['ui']['resolve']>, 'Box' | 'Text' | 'Button'> & { Svg?: ElementConstructor<SvgProps> }
 
 // `svg`: on Desktop the cells `t` takes are drawn as this picture instead, `alt` its words,
-// `animated` when it moves by itself (an interactive frame)
-export type Seg = { t: string; color?: string; bg?: string; bold?: boolean; inverse?: boolean; svg?: string; alt?: string; animated?: boolean }
+// `animated` when it moves by itself (an interactive frame); `fill`: padding that pushes what
+// follows to the line's end, on Desktop a spacer taking whatever room is left
+export type Seg = {
+  t: string
+  color?: string
+  bg?: string
+  bold?: boolean
+  inverse?: boolean
+  svg?: string
+  alt?: string
+  animated?: boolean
+  fill?: boolean
+}
 
 type Block = { node: RenderElement; h: number }
 
@@ -399,7 +410,7 @@ function centered(segs: readonly Seg[], width: number): Seg[] {
 function leftRight(left: readonly Seg[], right: readonly Seg[], width: number): Seg[] {
   const r = clip(right, width)
   const l = clip(left, Math.max(0, width - segsWidth(r) - 1))
-  return [...l, sp(width - segsWidth(l) - segsWidth(r)), ...r]
+  return [...l, { ...sp(width - segsWidth(l) - segsWidth(r)), fill: true }, ...r]
 }
 
 // `n` cells split into `count` columns `gap` apart: the first columns take the remainder.
@@ -436,7 +447,9 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // Desktop's glyphs are not a cell wide: each segment takes at least its cells there, so it
   // starts where it does on the terminal; rules and padding are clipped to them, words never
   const segNode = (s: Seg): RenderElement =>
-    SvgEl && s.svg !== undefined && svgSafe(s.svg) ? (
+    svgOn && s.fill ? (
+      <Box flexGrow={1} flexShrink={1} minWidth={cellWidth(s.t) > 0 ? 1 : 0} />
+    ) : SvgEl && s.svg !== undefined && svgSafe(s.svg) ? (
       <SvgEl
         source={s.svg}
         alt={s.alt ?? s.t}
@@ -459,14 +472,15 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     )
 
   // a rule or padding Desktop may draw as lines: no picture, background or inversion of its own
-  const ruleable = (s: Seg): boolean => s.svg === undefined && !s.bg && !s.inverse && isRule(s.t)
+  const ruleable = (s: Seg): boolean => s.svg === undefined && !s.bg && !s.inverse && !s.fill && isRule(s.t)
   const blank = (t: string): boolean => t.trim() === ''
 
   // Desktop: rules and padding side by side in one ink drawn as one picture of lines, so they
   // meet and take exactly their cells; padding alone stays an empty cell box
   const texts = (segs: readonly Seg[]): RenderElement[] => {
-    const live = segs.filter(s => s.t !== '')
-    if (!svgOn) return live.map(segNode)
+    if (!svgOn) return segs.filter(s => s.t !== '').map(segNode)
+    // a spacer stays even with no cells: what follows it keeps to the line's end
+    const live = segs.filter(s => s.t !== '' || s.fill)
     const out: RenderElement[] = []
     let i = 0
     while (i < live.length) {
@@ -500,6 +514,9 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // a Button holds only text: its segments drawn as glyphs whatever the surface
   const plainTexts = (segs: readonly Seg[]) => segs.filter(s => s.t !== '').map(textNode)
 
+  // Desktop: a line with a spacer spans its cells, so the spacer has room to take up
+  const spanOf = (segs: readonly Seg[]) => (svgOn && segs.some(s => s.fill) ? { width: segsWidth(segs) } : {})
+
   // a Button drawn from `segs`: on Desktop at least their cells wide, so what follows lines up
   const pressBox = (segs: readonly Seg[], button: RenderElement): RenderElement =>
     svgOn ? (
@@ -512,8 +529,9 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   // A whole line one press. Desktop: its label alone the Button, the rules before it and the
   // columns after it outside, drawn in their cells so they line up across rows; elsewhere the
-  // whole line the Button's text (`boxed`: in a row Box, else in one Text).
-  const pressRow = (segs: readonly Seg[], key: string, onPress: () => void, boxed = false): RenderElement => {
+  // whole line the Button's text (`boxed`: in a row Box, else in one Text). `through`: on
+  // Desktop the label runs on to this segment, so the Button takes it too.
+  const pressRow = (segs: readonly Seg[], key: string, onPress: () => void, boxed = false, through?: Seg): RenderElement => {
     if (!svgOn)
       return boxed ? (
         <Box flexDirection="row">
@@ -526,9 +544,12 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
           <Text>{plainTexts(segs)}</Text>
         </Button>
       )
-    const { lead, label, rest } = splitPress(segs)
+    const split = splitPress(segs)
+    const at = through === undefined ? -1 : split.rest.indexOf(through)
+    const { lead, label, rest } =
+      at < 0 ? split : { ...split, label: [...split.label, ...split.rest.slice(0, at + 1)], rest: split.rest.slice(at + 1) }
     return (
-      <Box flexDirection="row">
+      <Box flexDirection="row" {...spanOf(segs)}>
         {texts(lead)}
         {pressBox(
           label,
@@ -553,7 +574,24 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       ? [{ t: '▰'.repeat(lit) + '▱'.repeat(total - lit), color, svg: meterSvg(lit, total, color), alt }]
       : [{ t: '▰'.repeat(lit), color }, { t: '▱'.repeat(total - lit), color: MUTED }]
 
-  const lineNode = (segs: readonly Seg[]) => <Box flexDirection="row">{texts(segs)}</Box>
+  // `seg` padded to `width` cells, pushing the columns after it to the line's end: on Desktop
+  // its padding a spacer, so they keep to the end however wide its glyphs draw
+  const padFill = (seg: Seg, width: number): Seg[] => {
+    if (!svgOn) return [{ ...seg, t: padCells(seg.t, width) }]
+    const t = fitCells(seg.t, width)
+    return [{ ...seg, t }, { t: ' '.repeat(Math.max(0, width - cellWidth(t))), fill: true }]
+  }
+
+  const lineNode = (segs: readonly Seg[]) => (
+    <Box flexDirection="row" {...spanOf(segs)}>
+      {texts(segs)}
+    </Box>
+  )
+
+  // Desktop: the blank row between two cards stacked one over the other
+  const cardGap = svgOn ? 1 : 0
+  const gapBlock = (): Block => ({ h: 1, node: <Box height={1} flexShrink={0} /> })
+  const gaps = (n: number): Block[] => (n > 0 ? [gapBlock()] : [])
 
   const card = (spec: CardSpec, height: number): Block => {
     const inner = Math.max(1, spec.w - 4)
@@ -790,7 +828,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       ...(withActor ? [actorSeg(ev.actor), sp(1)] : []),
       { t: padCells(ev.tool, toolW), color: TOOL_COLOR, bold: true },
       sp(1),
-      { t: padCells(ev.desc, descW), color: tone },
+      ...padFill({ t: ev.desc, color: tone }, descW),
       sp(1),
       { ...dur, t: padCells(dur.t, durW, 'right') },
       sp(1),
@@ -1250,7 +1288,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         sp(1),
         ...(rowFit.name ? [name, sp(1)] : []),
         ...(rowFit.badge ? [{ ...b, t: padCells(b.t, badgeW), ...tone }, sp(1)] : []),
-        { t: padCells(a.description, descW), color: live ? PRIMARY : FRAME },
+        ...padFill({ t: a.description, color: live ? PRIMARY : FRAME }, descW),
       ]
       const rightCol: Seg[] = [
         sp(1),
@@ -1269,7 +1307,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       return {
         h: 1,
         node: (
-          <Box flexDirection="row">
+          <Box flexDirection="row" {...spanOf(segs)}>
             {pressBox(
               chip,
               <Button key={`agent-${n}`} plain onPress={() => ctx.open(a.id)}>
@@ -1346,7 +1384,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         sp(1),
         { t: padCells(f.tool, toolW), color: TOOL_COLOR, bold: true },
         sp(1),
-        { t: padCells(f.desc ?? '', descW), color: PRIMARY },
+        ...padFill({ t: f.desc ?? '', color: PRIMARY }, descW),
         sp(1),
         { ...dur, t: padCells(dur.t, durW, 'right') },
       ]
@@ -1505,7 +1543,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
           sp(1),
           { t: padCells(model.t, modelW), color: model.color },
           sp(1),
-          { t: padCells(a.description, descW), color: live ? PRIMARY : FRAME },
+          ...padFill({ t: a.description, color: live ? PRIMARY : FRAME }, descW),
           sp(1),
           { t: padCells(durOf(a), durW, 'right'), ...(live ? { color: BRIGHT, bold: true } : { color: FRAME }) },
           sp(2),
@@ -1591,7 +1629,9 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   // The legion: the busy suits first (cards or lines), then the idle (cards, lines or the
   // summary), numbered in that order; cut by rows with a count when even lines do not fit.
-  const legionBlocks = (plan: FleetPlan, active: FleetSession[], idle: FleetSession[]): Block[] => {
+  // Desktop: a blank row between two cards (a row of idle cards one), when the page has the
+  // rows for them all.
+  const legionBlocks = (plan: FleetPlan, active: FleetSession[], idle: FleetSession[], room: number): Block[] => {
     if (active.length + idle.length === 0) {
       return [{ h: 1, node: lineNode([{ t: fleetView.at === 0 ? '掃描艦隊中…' : '艦隊目前沒有 Claude session', color: FRAME }]) }]
     }
@@ -1601,12 +1641,12 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const opts = (s: FleetSession) => ({ now, self: ctx.sessionId !== '' && s.sessionId === ctx.sessionId, idleMax, ...(svgOn ? { svg: true } : {}) })
     const w = cols
     const spark = plan.mode === 'narrow' ? 6 : 10
-    const units: { b: Block; suits: number }[] = []
+    const units: { b: Block; suits: number; card?: boolean }[] = []
     let n = 0
     for (const s of active) {
       n += 1
       const c = plan.active === 'cards' ? wideCard(s, w, opts(s)) : suitLine(s, w, { ...opts(s), spark })
-      units.push({ b: suitBlock(s, n, c), suits: 1 })
+      units.push({ b: suitBlock(s, n, c), suits: 1, card: plan.active === 'cards' })
     }
     if (idle.length > 0 && plan.idle === 'summary') {
       units.push({ b: { h: 1, node: lineNode(clip(idleSummary(idle, now), cols)) }, suits: idle.length })
@@ -1623,11 +1663,16 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
           n += 1
           return { s, n, c: smallCard(s, cw, opts(s)) }
         })
-        units.push({ b: suitGrid(group), suits: group.length })
+        units.push({ b: suitGrid(group), suits: group.length, card: true })
       }
     }
     const height = units.reduce((h, u) => h + u.b.h, 0)
-    if (plan.cut === undefined || height <= plan.cut) return units.map(u => u.b)
+    if (plan.cut === undefined) {
+      const between = units.map((u, i) => i > 0 && u.card === true && units[i - 1]?.card === true)
+      const gap = svgOn && plan.height + between.filter(Boolean).length <= room
+      return units.flatMap((u, i) => (gap && between[i] ? [gapBlock(), u.b] : [u.b]))
+    }
+    if (height <= plan.cut) return units.map(u => u.b)
     // the units whose rows fit above the count line
     const kept: typeof units = []
     let used = 0
@@ -1701,7 +1746,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         : burnChart(hourly, w, plan.burnRows, nowHour, ticks).map(r => line([sp(2), ...cellsToSegs(r)]))
       sections.push([line(sectionHeader(withIcon(SECTION_ICON.burn, 'TODAY BURN'), cols, sigma)), ...body])
     }
-    sections.push([line(sectionHeader(withIcon(SECTION_ICON.legion, 'IRON LEGION'), cols, plan.burnRows === 0 ? sigma : undefined)), ...legionBlocks(plan, active, sec.idle)])
+    sections.push([line(sectionHeader(withIcon(SECTION_ICON.legion, 'IRON LEGION'), cols, plan.burnRows === 0 ? sigma : undefined)), ...legionBlocks(plan, active, sec.idle, room)])
     return sections.flatMap((s, i) => (i > 0 && plan.blanks ? [line(BLANK), ...s] : s))
   }
 
@@ -2450,10 +2495,11 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
           ...r.graph.cells.map(c => ({ t: c.ch, color: laneColor(c.lane) })),
           ...(r.graph.overflow ? [{ t: '…', color: MUTED }] : []),
         ]
+        const shaSeg: Seg = { t: r.commit.sha.slice(0, 7), color: r.session ? ACCENT : FRAME, ...(r.session ? { bold: true } : {}) }
         const fixed: Seg[] = [
           ...graph,
           sp(gw - segsWidth(graph) + 1),
-          { t: r.commit.sha.slice(0, 7), color: r.session ? ACCENT : FRAME, ...(r.session ? { bold: true } : {}) },
+          shaSeg,
           { t: r.unpushed ? '↑' : ' ', color: ACCENT, bold: true },
           sp(1),
         ]
@@ -2467,7 +2513,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         lines.push({
           h: 1,
           node: (
-            pressRow(leftRight(left, right, inner), `cm-commit-${sha}`, () => cm.openCommit(sha))
+            pressRow(leftRight(left, right, inner), `cm-commit-${sha}`, () => cm.openCommit(sha), false, shaSeg)
           ),
         })
       }
@@ -2646,15 +2692,22 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     standby = suit !== undefined
     const least = suit ? suitLeast : Math.min(finishedUnits.length, MIN_FINISHED)
     const flight = suit ? capped : inflightBlock()
-    const room = left() - flight.h - (suit?.h ?? 0)
+    const base = left() - flight.h - (suit?.h ?? 0)
     let recent = Math.min(total, MIN_RECENT)
-    const withRecent = room - listHeight(least) >= recentH(recent)
+    const withRecent = base - listHeight(least) >= recentH(recent)
+    // Desktop: a blank row under the list card, then over the events card, each only while
+    // every card still keeps its least
+    const spare = base - listHeight(least) - (withRecent ? recentH(recent) : 0)
+    const listGap = spare >= cardGap ? cardGap : 0
+    const recentGap = withRecent && spare >= listGap + cardGap ? cardGap : 0
+    const room = base - listGap - recentGap
     const recentRoom = () => (withRecent ? recentH(recent) : 0)
     let shown = least
     while (shown < finishedUnits.length && listHeight(shown + 1) + recentRoom() <= room) shown += 1
     if (withRecent) recent = Math.max(recent, Math.min(total, room - listHeight(shown) - 3))
-    blocks.push(...(suit ? [suit] : []), agentBlock(shown, listHeight(shown)), flight)
-    if (withRecent) blocks.push(eventCard([title(TITLE_ICON.recent, '最近事件', PRIMARY)], view.events, recentH(recent), '還沒有工具呼叫', false))
+    blocks.push(...(suit ? [suit] : []), agentBlock(shown, listHeight(shown)), ...gaps(listGap), flight)
+    if (withRecent)
+      blocks.push(...gaps(recentGap), eventCard([title(TITLE_ICON.recent, '最近事件', PRIMARY)], view.events, recentH(recent), '還沒有工具呼叫', false))
   } else if (page === 'log') {
     const total = view.events.length
     const list = ctx.paused ? view.events.slice(0, Math.max(0, total - ctx.fresh)) : view.events
@@ -2675,6 +2728,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       [{ t: `${own.length} 則`, color: FRAME }],
       cols - 4,
     )
+    const gap = left() - cardGap >= MIN_EVENT_ROWS + 3 ? cardGap : 0
+    blocks.push(...gaps(gap))
     blocks.push(eventCard(head, own, Math.max(MIN_EVENT_ROWS + 3, left()), '這個 subagent 還沒有工具呼叫', true, false))
   } else if (page === 'roleDetail' && roleShown) {
     blocks.push(roleBlock(roleShown, left()))
@@ -2696,15 +2751,24 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     blocks.push(tasksBlock(left()))
   } else {
     const hint = view.summary.groups.length === 0
-    const plan = planStats({ cols, room: left() - (hint ? 1 : 0), roles: statsRoles.length, models: view.models.length })
+    const shape = { cols, room: left() - (hint ? 1 : 0), roles: statsRoles.length, models: view.models.length }
+    const full = planStats(shape)
+    // Desktop: a blank row between the stacked cards, the dispatch roles cut to make room;
+    // left out when even the cut cards would not fit with them
+    const want = cardGap * (full.mode === 'wide' ? 1 : 2)
+    const gapped = want > 0 ? planStats({ ...shape, room: shape.room - want }) : full
+    const gap = want > 0 && gapped.height <= shape.room - want ? cardGap : 0
+    const plan = gap > 0 ? gapped : full
     const dispatchCard = dispatchStatsSpec(cols, plan.roleCut)
     if (plan.mode === 'wide') {
       const [lw = cols, rw = cols] = splitCols(cols, 2)
-      blocks.push(cardRow([mainStatsSpec(lw, plan.mode), modelsStatsSpec(rw)]), cardRow([dispatchCard]))
+      blocks.push(cardRow([mainStatsSpec(lw, plan.mode), modelsStatsSpec(rw)]), ...gaps(gap), cardRow([dispatchCard]))
     } else {
       blocks.push(
         cardRow([mainStatsSpec(cols, plan.mode)]),
+        ...gaps(gap),
         cardRow([dispatchCard]),
+        ...gaps(gap),
         cardRow([modelsStatsSpec(cols)]),
       )
     }
