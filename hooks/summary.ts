@@ -14,7 +14,7 @@ export const RESULT_MAX = 40
 export const SUMMARY_TOKENS = 100
 
 export const SUMMARY_SYSTEM =
-  '你替一個工作看板寫一行摘要。只回那一行繁體中文：不加引號、不加句號、不加「標題：」之類的前綴，也不解釋。'
+  '你替一個工作看板寫一行摘要。只回那一行繁體中文：不加引號、不加句號、不加「標題：」之類的前綴，也不解釋，也不用 → × — – 這類符號或彎引號。'
 
 // a text cut to SUMMARY_INPUT_MAX characters
 export const clipInput = (text: string): string => [...text].slice(0, SUMMARY_INPUT_MAX).join('')
@@ -31,9 +31,19 @@ export const resultAsk = (prompt: string, answer: string): string =>
 const WRAPS = /^["'「『“‘]+|["'」』”’]+$/g
 const STOP = /[。.]+$/
 
+// symbols that take two cells in an East Asian terminal, and the plain ones that stand in for them
+const WIDE: [RegExp, string][] = [
+  [/→/g, '->'],
+  [/×/g, 'x'],
+  [/[—–]/g, '-'],
+  [/[‘’]/g, "'"],
+  [/[“”]/g, '"'],
+]
+
 // A reply as one line: its first non-blank line, unwrapped, cut to `max` characters.
 export function cleanSummary(text: string, max: number): string {
-  const line = lineOf(text, Number.MAX_SAFE_INTEGER).replace(STOP, '').replace(WRAPS, '').replace(STOP, '').trim()
+  const plain = WIDE.reduce((t, [from, to]) => t.replace(from, to), text)
+  const line = lineOf(plain, Number.MAX_SAFE_INTEGER).replace(STOP, '').replace(WRAPS, '').replace(STOP, '').trim()
   return lineOf(line, max)
 }
 

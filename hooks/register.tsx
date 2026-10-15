@@ -1421,17 +1421,20 @@ export const register: Register = on => {
     const id = box.id
     if (id === undefined) return next(e)
     const rid = box.rid
-    if (rid !== undefined) {
-      asks.set(rid, clipInput(e.text))
-      if (asks.size > MAX_ASKS) {
-        const oldest = asks.keys().next().value
-        if (oldest !== undefined) asks.delete(oldest)
-      }
-      // the small model sums the request up while the turn runs; nothing waits on it
-      void titleLater($, rid, e.text)
-    }
     const out = await next({ ...e, context: [...(e.context ?? []), requestContext(id)] })
-    if (out.drop !== undefined) {
+    if (out.drop === undefined) {
+      if (rid !== undefined) {
+        // what entered, as another hook may have rewritten it, is all the small model sees
+        const sent = out.text ?? e.text
+        asks.set(rid, clipInput(sent))
+        if (asks.size > MAX_ASKS) {
+          const oldest = asks.keys().next().value
+          if (oldest !== undefined) asks.delete(oldest)
+        }
+        // the small model sums the request up while the turn runs; nothing waits on it
+        void titleLater($, rid, sent)
+      }
+    } else {
       try {
         await update($, tasks, b => ({ ...b, items: b.items.filter(i => i.id !== id) }))
       } catch {

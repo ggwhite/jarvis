@@ -817,7 +817,7 @@ const world = (on: On, outcome: Record<string, unknown> = {}, reply: (e: Asked) 
   })
   on('prompt.compose', async () => ({ sections: [{ id: 'intro', text: 'intro', scope: 'shared' as const }] }))
   on('prompt.submit', async (_$, e) =>
-    e.text === '丟掉' ? { drop: 'no' } : { text: e.text, ...(e.context === undefined ? {} : { context: e.context }) },
+    e.text === '丟掉' ? { drop: 'no' } : { text: e.text.replace('hunter2', '***'), ...(e.context === undefined ? {} : { context: e.context }) },
   )
   on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', async (_$, e) => ({ text: e.answer }))
@@ -1349,6 +1349,11 @@ describe('request summaries', () => {
     expect([...cleanSummary('字'.repeat(80), RESULT_MAX)]).toHaveLength(RESULT_MAX)
   })
 
+  test('a reply loses the symbols that render two cells wide', () => {
+    expect(cleanSummary('A → B × C — D – E', RESULT_MAX)).toBe('A -> B x C - D - E')
+    expect(cleanSummary('它的 ‘x’ 與 “y” 值', RESULT_MAX)).toBe("它的 'x' 與 \"y\" 值")
+  })
+
   test('the asks carry the request and the answer, each cut to SUMMARY_INPUT_MAX', () => {
     const long = 'x'.repeat(SUMMARY_INPUT_MAX + 500)
     expect(titleAsk('算 7*6')).toContain('算 7*6')
@@ -1433,6 +1438,22 @@ describe('request summaries wired', () => {
     expect(asked[0]?.prompt).toContain('幫我算一下 7*6')
     expect(asked[1]?.prompt).toContain('幫我算一下 7*6')
     expect(asked[1]?.prompt).toContain('回答：\n42')
+  })
+
+  test('a dropped prompt is never sent to the small model; a rewritten one is sent as rewritten', async ($, on) => {
+    const asked: Asked[] = []
+    const { clock } = world(on, {}, async e => {
+      asked.push(e)
+      return said('計算')
+    })
+    await send($, '丟掉')
+    await clock.settle()
+    expect(asked).toHaveLength(0)
+    await send($, '密碼是 hunter2')
+    await clock.settle()
+    expect(asked).toHaveLength(1)
+    expect(asked[0]?.prompt).toContain('密碼是 ***')
+    expect(asked[0]?.prompt).not.toContain('hunter2')
   })
 
   test('no summary leaves the prompt line and no result: a refused call, an API error', async ($, on) => {
