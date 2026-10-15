@@ -1,6 +1,6 @@
 import type { JarvisStatus, JarvisTaskBoard, JarvisTaskItem, JarvisTaskStatus } from '../types'
 import type { Seg } from './cockpit'
-import { TASK_ICON, withIcon } from './icons'
+import { RESULT_ICON, TASK_ICON, withIcon } from './icons'
 import { ANIM_MS, SPINNER, THEME, cellWidth, fitCells, fmtReadout, padCells } from './jarvis'
 import { boardSections, isFresh, itemFresh, itemStartedAt, itemStatus } from './tasks'
 
@@ -12,6 +12,8 @@ export const SUB_INDENT = 4
 export const TITLE_MIN = 8
 // a running member's tool name is cut to this many cells
 export const TOOL_MAX = 12
+// the fewest cells a result is drawn in: its arrow, a space and two cells of text
+export const RESULT_MIN = 4
 
 // the page's three parts in order, each under its heading
 const SECTIONS = [
@@ -73,16 +75,31 @@ const time = (ms: number): Seg => ({ t: fmtReadout(ms), color: THEME.frame })
 
 // One row `width` cells wide: the indent, the icon, the title cut and padded, then the
 // roomiest right side of `rights` that leaves the title TITLE_MIN cells (or its whole
-// width when shorter), else the last.
-function taskRow(indent: number, icon: Seg, title: string, style: TitleStyle, rights: readonly (readonly Seg[])[], width: number): Seg[] {
+// width when shorter), else the last. A `tail` (an item's result) follows the whole title
+// where RESULT_MIN cells are left for it, cut first; with less it is not drawn.
+function taskRow(
+  indent: number,
+  icon: Seg,
+  title: string,
+  style: TitleStyle,
+  rights: readonly (readonly Seg[])[],
+  width: number,
+  tail = '',
+): Seg[] {
   const head = indent + cellWidth(icon.t)
   const room = (r: readonly Seg[]) => width - head - (r.length > 0 ? widthOf(r) + 1 : 0)
   const least = Math.min(TITLE_MIN, cellWidth(title))
   const right = rights.find(r => room(r) >= least) ?? rights.at(-1) ?? []
+  const avail = Math.max(1, room(right))
+  const tailRoom = avail - cellWidth(title) - 1
+  const shown: Seg[] =
+    tail !== '' && tailRoom >= RESULT_MIN
+      ? [{ t: title, ...style }, { t: ' ' }, { t: padCells(withIcon(RESULT_ICON, tail), tailRoom), color: THEME.primary }]
+      : [{ t: padCells(title, avail), ...style }]
   return [
     ...(indent > 0 ? [{ t: ' '.repeat(indent) }] : []),
     icon,
-    { t: padCells(title, Math.max(1, room(right))), ...style },
+    ...shown,
     ...(right.length > 0 ? [{ t: ' ' }, ...right] : []),
   ]
 }
@@ -125,7 +142,7 @@ function itemLines(item: JarvisTaskItem, width: number, owner: (agentId: string)
   const status = itemStatus(item)
   const head = look(status, itemFresh(item, now), now)
   const folded = isFolded(item, folds)
-  const segs = taskRow(0, head.icon, item.title, head.style, itemRights(item, status, now), width)
+  const segs = taskRow(0, head.icon, item.title, head.style, itemRights(item, status, now), width, item.result ?? '')
   const lines: TaskLine[] = [item.subtasks.length > 0 ? { segs, item: { id: item.id, folded } } : { segs }]
   if (folded) return lines
   for (const s of item.subtasks) {

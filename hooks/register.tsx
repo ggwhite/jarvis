@@ -45,9 +45,10 @@ import { commitFileDiff, commitFiles, commitTreeOf, findRepos, repoSummary } fro
 import type { CommitFile, CommitTree, RepoSummary } from './gitCommits'
 import { commitRepoName, repoRows } from './commitsView'
 import type { CommitsCtx, RepoList } from './commitsView'
-import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, boardLive, endTurn, fromTaskCreate, fromTaskUpdate, fromTodos, openRequest, recordsRequest, requestContext, startTurn } from './tasks'
+import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, boardLive, endTurn, fromTaskCreate, fromTaskUpdate, fromTodos, openRequest, recordsRequest, requestContext, requestsEnding, startTurn, withResult, withSummaryTitle } from './tasks'
 import type { TaskReply } from './tasks'
 import { keptFolds } from './tasksView'
+import { RESULT_MAX, SUMMARY_TITLE_MAX, clipInput, resultAsk, summarize, titleAsk } from './summary'
 import { FETCH_TIMEOUT_MS, branchesOf, fetchRepo, remotesOf, sameRepoPaths, stashFileDiff, stashFiles, stashesOf, worktreesOf } from './gitRepo'
 import type { StashFile } from './gitRepo'
 import type { BranchList, Remotes, RepoView, StashInfo, WorktreeRow } from './repoViews'
@@ -102,6 +103,32 @@ async function stampNow($: Pick<EngineInterface, 'clock'>): Promise<number | und
     return await $.clock.now()
   } catch {
     return undefined
+  }
+}
+
+// how many recorded prompts are kept for their results' summaries
+const MAX_ASKS = 50
+
+// A request item's title, summed up by the small model; the prompt's own line stays when
+// there is no summary, and a title the model set is never replaced.
+async function titleLater($: Pick<EngineInterface, 'model' | 'state'>, rid: string, prompt: string): Promise<void> {
+  const title = await summarize($, titleAsk(prompt), SUMMARY_TITLE_MAX)
+  if (title === '') return
+  try {
+    await update($, tasks, b => withSummaryTitle(b, rid, title))
+  } catch {
+    // bookkeeping only
+  }
+}
+
+// What a request item's turn came to, summed up by the small model beside its title.
+async function resultLater($: Pick<EngineInterface, 'model' | 'state'>, rid: string, prompt: string, answer: string): Promise<void> {
+  const result = await summarize($, resultAsk(prompt, answer), RESULT_MAX)
+  if (result === '') return
+  try {
+    await update($, tasks, b => withResult(b, rid, result))
+  } catch {
+    // bookkeeping only
   }
 }
 
@@ -766,6 +793,8 @@ async function tickOnce(
 export const register: Register = on => {
   // A subagent can finish before its spawn has been recorded; park its turns here.
   const early = new Map<string, Completion[]>()
+  // each recorded request's prompt by its rid, cut, for its result's summary; the oldest go past MAX_ASKS
+  const asks = new Map<string, string>()
   // ids the engine was asked about on a tool call and did not list: not asked again
   const unknown = new Set<string>()
   const listing = { fails: 0 }
@@ -1341,13 +1370,24 @@ export const register: Register = on => {
       // bookkeeping only
     }
 
-    // a main-loop turn's end closes its requests
+    // a main-loop turn's end closes its requests; an answered one gets what it came to summed up
     if (e.agentId === undefined) {
       const now = await stampNow($)
+      const ending: { rid: string; title: string }[] = []
       try {
-        await update($, tasks, b => endTurn(b, e.turnId, e.reason, now))
+        await update($, tasks, b => {
+          ending.length = 0
+          ending.push(...requestsEnding(b, e.turnId))
+          return endTurn(b, e.turnId, e.reason, now)
+        })
       } catch {
         // bookkeeping only
+      }
+      if (e.reason === 'answer' && e.answer.trim() !== '') {
+        for (const r of ending) {
+          void resultLater($, r.rid, asks.get(r.rid) ?? r.title, e.answer)
+          asks.delete(r.rid)
+        }
       }
     }
 
@@ -1363,13 +1403,15 @@ export const register: Register = on => {
 
     // Each request the person sends becomes a running item of the task board; the model reads
     // the item's id beside the prompt. A prompt another hook drops takes its item with it.
-    const box: { id?: string } = {}
+    const box: { id?: string; rid?: string } = {}
     const now = await stampNow($)
     try {
       if (recordsRequest(e)) {
+        const rid = crypto.randomUUID()
         await update($, tasks, b => {
-          const made = openRequest(b, e.text, e.turnId, now)
+          const made = openRequest(b, e.text, e.turnId, now, rid)
           box.id = made.id
+          if (made.id !== undefined) box.rid = rid
           return made.board
         })
       }
@@ -1378,6 +1420,16 @@ export const register: Register = on => {
     }
     const id = box.id
     if (id === undefined) return next(e)
+    const rid = box.rid
+    if (rid !== undefined) {
+      asks.set(rid, clipInput(e.text))
+      if (asks.size > MAX_ASKS) {
+        const oldest = asks.keys().next().value
+        if (oldest !== undefined) asks.delete(oldest)
+      }
+      // the small model sums the request up while the turn runs; nothing waits on it
+      void titleLater($, rid, e.text)
+    }
     const out = await next({ ...e, context: [...(e.context ?? []), requestContext(id)] })
     if (out.drop !== undefined) {
       try {
@@ -1393,6 +1445,7 @@ export const register: Register = on => {
   on('classic.SessionStart', async ($, e, next) => {
     if (e.source === 'startup' || e.source === 'clear' || e.source === 'resume') {
       resetChanges()
+      asks.clear()
       try {
         await update($, tasks, () => EMPTY_BOARD)
       } catch {

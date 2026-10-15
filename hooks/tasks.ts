@@ -25,7 +25,7 @@ export const TASK_PROMPT = [
   '使用者在 jarvis 面板的「任務」分頁看這個 session 正在做、預計要做、做完的事。jarvis 會把使用者送出的每個請求自動記成一個進行中的項目，回覆結束時自動標完成；你用 mcp__jarvis__task 補上計畫。',
   '- 多步工作（三步以上，或會派 subagent）開始前，用 add 列出細項：只帶 subtasks 會掛到本輪請求；帶 item 時，本輪請求還沒有細項就直接併入它（標題換成 item），不會多一個項目。',
   '- 開始做一個細項時標 in_progress，做完立刻標 completed，不要留到最後一起標。',
-  '- 請求項目的標題取自使用者原文；原文看不出在做什麼（例如「1」「好」）時，用 update 帶 title 改成一句精簡標題。',
+  '- 請求項目的標題由 jarvis 自動摘成一句，回覆結束時記下結果；摘得不對時，用 update 帶 title 改。',
   '- 之後要做、這輪不做的事：用 add 只帶 item（不帶 subtasks），記成預計項目。',
   '- 計畫變了就 add 新細項，或 remove 用不到的。',
   '- 派 subagent 做某個細項後，用 update 帶 agent（Agent 工具回傳的 agentId）。',
@@ -86,7 +86,7 @@ export function putItem(
   title: string,
   subtasks: readonly string[],
   actor: string | undefined,
-  extra: Partial<Pick<JarvisTaskItem, 'status' | 'origin' | 'key' | 'turnId' | 'queued' | 'startedAt'>> = {},
+  extra: Partial<Pick<JarvisTaskItem, 'status' | 'origin' | 'key' | 'turnId' | 'queued' | 'startedAt' | 'rid'>> = {},
 ): JarvisTaskBoard {
   const item = withSubtasks({ id: String(board.nextItem), title, status: 'pending', subtasks: [], nextSub: 1, ...extra }, subtasks, actor)
   return { items: [...board.items, item], nextItem: board.nextItem + 1 }
@@ -149,7 +149,7 @@ function add(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>, a
   if (titles.length > MAX_SUBTASKS) return `一個項目最多 ${MAX_SUBTASKS} 個細項`
   // a plan for the request being worked on folds into its item rather than standing beside it
   if (current && current.subtasks.length === 0 && titles.length > 0) {
-    return replaceItem(board, withSubtasks({ ...current, title }, titles, actor))
+    return replaceItem(board, withSubtasks({ ...current, title, titleBy: 'model' }, titles, actor))
   }
   const roomy = makeRoom(board)
   if (roomy.items.length >= MAX_ITEMS) return `看板最多 ${MAX_ITEMS} 個項目，先 remove 用不到的項目`
@@ -169,7 +169,7 @@ function update(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>
     if (status === undefined && title === undefined) return 'update 項目要帶 status 或 title'
     const hasSubs = item.subtasks.length > 0
     if (status !== undefined && hasSubs && status !== 'completed') return `項目 ${id} 有細項，狀態由細項決定；請 update 細項`
-    const titled = title === undefined ? item : { ...item, title }
+    const titled: JarvisTaskItem = title === undefined ? item : { ...item, title, titleBy: 'model' }
     if (status === undefined) return replaceItem(board, titled)
     return replaceItem(
       board,
@@ -259,7 +259,8 @@ export function boardText(board: JarvisTaskBoard): string {
   const current = currentRequest(board)
   const lines = [`任務看板（${countsText(boardCounts(board))}）`]
   for (const item of board.items) {
-    lines.push(`${MARK[itemStatus(item)]} ${item.id} ${item.title}${item === current ? '（本輪請求）' : ''}`)
+    const result = item.result === undefined ? '' : ` → ${item.result}`
+    lines.push(`${MARK[itemStatus(item)]} ${item.id} ${item.title}${result}${item === current ? '（本輪請求）' : ''}`)
     for (const s of item.subtasks) {
       lines.push(`  ${MARK[s.status]} ${s.id} ${s.title}${s.agentId === undefined ? '' : ` (agent ${s.agentId})`}`)
     }
@@ -274,15 +275,20 @@ export const REQUEST_ORIGIN = 'request'
 // a request item's title, taken from its prompt, is kept to this many characters
 export const REQUEST_TITLE_MAX = 40
 
-// A prompt's first non-blank line as one line, cut to REQUEST_TITLE_MAX with an ellipsis.
-export function requestTitle(text: string): string {
+// A text's first non-blank line as one line, cut to `max` characters with an ellipsis.
+export function lineOf(text: string, max: number): string {
   const line =
     text
       .split('\n')
       .map(l => l.replace(/\s+/g, ' ').trim())
       .find(l => l !== '') ?? ''
   const chars = [...line]
-  return chars.length > REQUEST_TITLE_MAX ? `${chars.slice(0, REQUEST_TITLE_MAX - 1).join('')}…` : line
+  return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : line
+}
+
+// A prompt's first non-blank line as one line, cut to REQUEST_TITLE_MAX with an ellipsis.
+export function requestTitle(text: string): string {
+  return lineOf(text, REQUEST_TITLE_MAX)
 }
 
 // what of a prompt.submit decides whether it is recorded
@@ -309,10 +315,17 @@ export function makeRoom(board: JarvisTaskBoard): JarvisTaskBoard {
   return oldest ? { ...board, items: board.items.filter(i => i !== oldest) } : board
 }
 
-// A request item for a prompt just sent, running from the start. One typed while a turn ran
-// (`runningTurn`) is tied to that turn and marked queued; any other waits for the next
-// main-loop turn. Nothing is made for a blank prompt or a board full of unfinished items.
-export function openRequest(board: JarvisTaskBoard, text: string, runningTurn?: string, now?: number): { board: JarvisTaskBoard; id?: string } {
+// A request item for a prompt just sent, running from the start; `rid` is its own id, for
+// the summaries that come back later. One typed while a turn ran (`runningTurn`) is tied to
+// that turn and marked queued; any other waits for the next main-loop turn. Nothing is made
+// for a blank prompt or a board full of unfinished items.
+export function openRequest(
+  board: JarvisTaskBoard,
+  text: string,
+  runningTurn?: string,
+  now?: number,
+  rid?: string,
+): { board: JarvisTaskBoard; id?: string } {
   const key = requestTitle(text)
   const roomy = makeRoom(board)
   if (key === '' || roomy.items.length >= MAX_ITEMS) return { board }
@@ -322,6 +335,7 @@ export function openRequest(board: JarvisTaskBoard, text: string, runningTurn?: 
       origin: REQUEST_ORIGIN,
       key,
       ...(now === undefined ? {} : { startedAt: now }),
+      ...(rid === undefined ? {} : { rid }),
       ...(runningTurn === undefined ? {} : { turnId: runningTurn, queued: true as const }),
     }),
     id: String(roomy.nextItem),
@@ -389,7 +403,35 @@ export function boardLive(board: JarvisTaskBoard, now: number): boolean {
 
 // The note beside each recorded prompt: which item it is, and what the model may do with it.
 export const requestContext = (id: string): string =>
-  `jarvis 任務看板：這個請求已記成項目 ${id}，回覆結束時自動標完成。多步工作用 mcp__jarvis__task add 只帶 subtasks，把細項掛到這個項目；原文看不出在做什麼時，用 update id=${id} 帶 title 改成一句精簡標題。`
+  `jarvis 任務看板：這個請求已記成項目 ${id}，標題會自動摘成一句，回覆結束時自動標完成並記下結果。多步工作用 mcp__jarvis__task add 只帶 subtasks，把細項掛到這個項目；摘要不對時，用 update id=${id} 帶 title 改。`
+
+// ---- what a small model makes of a request, after the fact ----
+
+// The board with a request item's summary title, found by `rid`; unchanged when the item is
+// gone, the summary is blank, or the model has set the title itself.
+export function withSummaryTitle(board: JarvisTaskBoard, rid: string, title: string): JarvisTaskBoard {
+  const item = board.items.find(i => i.rid === rid)
+  if (!item || item.titleBy === 'model' || title === '') return board
+  return replaceItem(board, { ...item, title, titleBy: 'haiku' })
+}
+
+// The board with what a request item's turn came to, found by `rid`; unchanged when the item
+// is gone or the result blank.
+export function withResult(board: JarvisTaskBoard, rid: string, result: string): JarvisTaskBoard {
+  const item = board.items.find(i => i.rid === rid)
+  if (!item || result === '') return board
+  return replaceItem(board, { ...item, result })
+}
+
+// The request items a main-loop turn's end answers: tied to the turn, running by their own
+// status, not typed over it; each with its title, asked about when its prompt is gone.
+export function requestsEnding(board: JarvisTaskBoard, turnId: string): { rid: string; title: string }[] {
+  return board.items.flatMap(i =>
+    isRequest(i) && i.turnId === turnId && i.status === 'in_progress' && i.queued !== true && i.rid !== undefined
+      ? [{ rid: i.rid, title: i.title }]
+      : [],
+  )
+}
 
 // ---- the built-in task tools, mirrored when the session has them ----
 

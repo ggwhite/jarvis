@@ -56,6 +56,9 @@ export const TASK_ICON = {
   completed: PHASE_ICON.complete,
 } as const
 
+// what a request came to, after its title
+export const RESULT_ICON = '\uf061'
+
 // a commit tree's nodes (the plain and HEAD ones are not PUA glyphs: no space after them),
 // and the branch and tag marks before a ref's name
 export const COMMIT_ICON = {

@@ -508,6 +508,9 @@ const engine = (on: On, agentId?: string) => {
   on('turn.complete', async (_$, e) => ({ text: e.answer }))
   on('tool.call', async () => ({ result: {} as never }))
   on('prompt.submit', async (_$, e) => ({ text: e.text }))
+  on('model.complete', async () => ({
+    value: { isAnswered: false, reason: 'empty-reply', usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+  }))
   return clock
 }
 

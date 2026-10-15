@@ -30,18 +30,33 @@ import {
   itemFresh,
   itemStartedAt,
   itemStatus,
+  lineOf,
   makeRoom,
   openRequest,
   putItem,
   recordsRequest,
   requestContext,
   requestTitle,
+  requestsEnding,
   boardSections,
   startTurn,
+  withResult,
+  withSummaryTitle,
 } from '../hooks/tasks'
 import type { Seg } from '../hooks/cockpit'
-import { TASK_ICON, withIcon } from '../hooks/icons'
+import { RESULT_ICON, TASK_ICON, withIcon } from '../hooks/icons'
 import { ANIM_MS, IDLE_MS, SPINNER, THEME, cellWidth, fitCells, fmtReadout, padCells } from '../hooks/jarvis'
+import {
+  RESULT_MAX,
+  SUMMARY_INPUT_MAX,
+  SUMMARY_MODEL,
+  SUMMARY_SYSTEM,
+  SUMMARY_TIMEOUT_MS,
+  SUMMARY_TITLE_MAX,
+  cleanSummary,
+  resultAsk,
+  titleAsk,
+} from '../hooks/summary'
 import type { TaskReply } from '../hooks/tasks'
 import { EMPTY_TEXT, SUB_INDENT, TITLE_MIN, TOOL_MAX, isFolded, keptFolds, spinnerAt, taskLines, taskRows } from '../hooks/tasksView'
 import type { AgentBadge, OwnerMark } from '../hooks/tasksView'
@@ -777,9 +792,18 @@ describe('task board motion', () => {
   })
 })
 
-// the test-side bottom of the chain, standing for the engine
+// what the small model is asked, as a test's Haiku reads it
+type Asked = { model: string; prompt: string; system?: string; maxTokens?: number; timeoutMs?: number }
+
+const USAGE = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+// the small model with nothing to say
+const NO_REPLY = { isAnswered: false, reason: 'empty-reply', usage: USAGE } as const
+// the small model's answer
+const said = (text: string) => ({ isAnswered: true, text, usage: USAGE }) as const
+
+// the test-side bottom of the chain, standing for the engine; `reply` stands for Haiku
 const TASK_CREATE_ID = '7'
-const world = (on: On, outcome: Record<string, unknown> = {}) => {
+const world = (on: On, outcome: Record<string, unknown> = {}, reply: (e: Asked) => Promise<unknown> = async () => NO_REPLY) => {
   const registered: { name: string; isDeferred?: boolean }[] = []
   const clock = mock.clock(on, { now: 0 })
   mock.env(on, {})
@@ -797,6 +821,7 @@ const world = (on: On, outcome: Record<string, unknown> = {}) => {
   )
   on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', async (_$, e) => ({ text: e.answer }))
+  on('model.complete', async (_$, e) => ({ value: (await reply(e)) as never }))
   on('tool.call', async (_$, e) =>
     'deny' in outcome
       ? (outcome as never)
@@ -1303,5 +1328,212 @@ describe('task board page', () => {
     await openTasks($)
     await pressKey($, 'task-1')
     expect(await boardOf($)).toBe(before)
+  })
+})
+
+describe('request summaries', () => {
+  // a request sent and answered, its rid r1, at 0 and 5
+  const sent = (text = '算一下 7*6', rid = 'r1') => openRequest(EMPTY_BOARD, text, undefined, 0, rid).board
+  const answered = (text = '算一下 7*6', rid = 'r1') => endTurn(startTurn(sent(text, rid), 't1', text), 't1', 'answer', 5)
+
+  test('lineOf keeps the first non-blank line as one line, cut with an ellipsis', () => {
+    expect(lineOf('\n  a  b\tc \nnext', 10)).toBe('a b c')
+    expect(lineOf('一二三四五六', 4)).toBe('一二三…')
+    expect(requestTitle('長'.repeat(100))).toBe(lineOf('長'.repeat(100), REQUEST_TITLE_MAX))
+  })
+
+  test('a reply is cleaned to one line: no quotes, no full stop, cut to its cap', () => {
+    expect(cleanSummary('「計算 7*6」。\n多的', SUMMARY_TITLE_MAX)).toBe('計算 7*6')
+    expect(cleanSummary('"42"', RESULT_MAX)).toBe('42')
+    expect(cleanSummary('   \n', RESULT_MAX)).toBe('')
+    expect([...cleanSummary('字'.repeat(80), RESULT_MAX)]).toHaveLength(RESULT_MAX)
+  })
+
+  test('the asks carry the request and the answer, each cut to SUMMARY_INPUT_MAX', () => {
+    const long = 'x'.repeat(SUMMARY_INPUT_MAX + 500)
+    expect(titleAsk('算 7*6')).toContain('算 7*6')
+    expect(titleAsk(long)).toContain('x'.repeat(SUMMARY_INPUT_MAX))
+    expect(titleAsk(long)).not.toContain('x'.repeat(SUMMARY_INPUT_MAX + 1))
+    const r = resultAsk('算 7*6', '答案是 42')
+    expect(r).toContain('算 7*6')
+    expect(r).toContain('回答：\n答案是 42')
+    expect(resultAsk('q', long)).not.toContain('x'.repeat(SUMMARY_INPUT_MAX + 1))
+  })
+
+  test('a request item keeps its rid', () => {
+    expect(sent().items[0]).toMatchObject({ id: '1', rid: 'r1', title: '算一下 7*6' })
+    expect(openRequest(EMPTY_BOARD, '算').board.items[0]?.rid).toBeUndefined()
+  })
+
+  test('a summary title replaces the prompt line by rid; a gone item, a blank summary or the model title stay', () => {
+    const b = sent()
+    expect(withSummaryTitle(b, 'r1', '計算 7*6').items[0]).toMatchObject({ title: '計算 7*6', titleBy: 'haiku', key: '算一下 7*6' })
+    expect(withSummaryTitle(b, 'nope', '計算')).toBe(b)
+    expect(withSummaryTitle(b, 'r1', '')).toBe(b)
+    const renamed = ok(applyTask(b, { op: 'update', id: '1', title: '模型的標題' }))
+    expect(renamed.items[0]?.titleBy).toBe('model')
+    expect(withSummaryTitle(renamed, 'r1', '計算 7*6')).toBe(renamed)
+  })
+
+  test('a plan folded into the request keeps its title from a later summary', () => {
+    const b = startTurn(sent(), 't1', '算一下 7*6')
+    const folded = ok(applyTask(b, { op: 'add', item: '計畫', subtasks: ['s1'] }))
+    expect(folded.items[0]).toMatchObject({ title: '計畫', titleBy: 'model' })
+    expect(withSummaryTitle(folded, 'r1', '計算')).toBe(folded)
+  })
+
+  test('a result lands on its item by rid and shows in the text the model reads', () => {
+    const b = answered()
+    const done = withResult(b, 'r1', '42')
+    expect(done.items[0]?.result).toBe('42')
+    expect(boardText(done)).toContain('[x] 1 算一下 7*6 → 42')
+    expect(withResult(b, 'nope', '42')).toBe(b)
+    expect(withResult(b, 'r1', '')).toBe(b)
+  })
+
+  test("the requests a turn's end answers: tied to it, running, not typed over it", () => {
+    let b = openRequest(EMPTY_BOARD, 'A', undefined, 0, 'ra').board
+    b = startTurn(b, 't1', 'A')
+    b = openRequest(b, 'B', 't1', 0, 'rb').board
+    b = ok(applyTask(b, { op: 'add', item: '模型自己的' }))
+    expect(requestsEnding(b, 't1')).toEqual([{ rid: 'ra', title: 'A' }])
+    expect(requestsEnding(b, 't9')).toEqual([])
+  })
+
+  test('an item row shows its result after the title; a narrow row cuts the result first, then drops it', () => {
+    const b = withResult(answered('計算 7*6'), 'r1', '比較後交換的無鎖原子更新')
+    const owner = (): OwnerMark => ({ t: 'MK', color: THEME.frame })
+    const row = (w: number) => (taskRows(b, w, 10, owner, 10_000)[1] ?? []).map(s => s.t).join('')
+    for (const w of [60, 30, 20, 16, 12]) expect(cellWidth(row(w))).toBe(w)
+    expect(row(60)).toContain(`計算 7*6 ${withIcon(RESULT_ICON, '比較後交換的無鎖原子更新')}`)
+    expect(row(30)).toContain('計算 7*6')
+    expect(row(30)).toContain(RESULT_ICON)
+    expect(row(30)).toContain('…')
+    expect(row(12)).not.toContain(RESULT_ICON)
+    expect(row(12)).toContain('計算 7*6')
+  })
+})
+
+describe('request summaries wired', () => {
+  test('a sent request is titled by the small model; its answered turn gets a result', async ($, on) => {
+    const asked: Asked[] = []
+    const { clock } = world(on, {}, async e => {
+      asked.push(e)
+      return said(e.prompt.includes('回答：') ? '42' : '計算 7*6')
+    })
+    await send($, '幫我算一下 7*6 等於多少，只回數字')
+    await clock.settle()
+    expect(await boardOf($)).toContain('[>] 1 計算 7*6（本輪請求）')
+    await turnStarts($, 't1', '幫我算一下 7*6 等於多少，只回數字')
+    await $.turn.complete({ answer: '42', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as never)
+    await clock.settle()
+    expect(await boardOf($)).toContain('[x] 1 計算 7*6 → 42')
+    expect(asked).toHaveLength(2)
+    expect(asked[0]).toMatchObject({ model: SUMMARY_MODEL, system: SUMMARY_SYSTEM, timeoutMs: SUMMARY_TIMEOUT_MS })
+    expect(asked[0]?.prompt).toContain('幫我算一下 7*6')
+    expect(asked[1]?.prompt).toContain('幫我算一下 7*6')
+    expect(asked[1]?.prompt).toContain('回答：\n42')
+  })
+
+  test('no summary leaves the prompt line and no result: a refused call, an API error', async ($, on) => {
+    let n = 0
+    const { clock } = world(on, {}, async () => {
+      n += 1
+      if (n === 1) throw new Error('blocked model')
+      return { isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded_error', usage: USAGE }
+    })
+    await send($, '算 1+1')
+    await clock.settle()
+    await turnStarts($, 't1', '算 1+1')
+    await turnEnds($, 't1')
+    await clock.settle()
+    const text = await boardOf($)
+    expect(text).toContain('[x] 1 算 1+1')
+    expect(text).not.toContain('→')
+    expect(n).toBe(2)
+  })
+
+  test('a title the model set is not replaced by a summary that comes back later', async ($, on) => {
+    const { clock } = world(on, {}, async () => {
+      await clock.sleep(1000)
+      return said('計算')
+    })
+    await send($, '算一下')
+    await clock.settle()
+    await task($, { op: 'update', id: '1', title: '模型的標題' })
+    await clock.advance(1000)
+    expect(await boardOf($)).toContain('[>] 1 模型的標題（本輪請求）')
+  })
+
+  test('a summary that comes back after /clear is dropped, even onto a new item 1', async ($, on) => {
+    let n = 0
+    const { clock } = world(on, {}, async () => {
+      n += 1
+      if (n > 1) return NO_REPLY
+      await clock.sleep(5000)
+      return said('舊的標題')
+    })
+    await send($, '同一句話')
+    await clock.settle()
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    await send($, '同一句話')
+    await clock.settle()
+    await clock.advance(5000)
+    const text = await boardOf($)
+    expect(text).toContain('[>] 1 同一句話（本輪請求）')
+    expect(text).not.toContain('舊的標題')
+  })
+
+  test('a slash command, a subagent turn and an interrupted turn ask nothing; a queued request takes no answer of another turn', async ($, on) => {
+    const asked: string[] = []
+    const { clock } = world(on, {}, async e => {
+      asked.push(e.prompt)
+      return NO_REPLY
+    })
+    await send($, '/jarvis', { command: { name: 'jarvis', args: '' } })
+    await send($, '做一件事')
+    await clock.settle()
+    expect(asked).toHaveLength(1)
+    await turnStarts($, 'ta', 'sub', 'agent-7')
+    await turnEnds($, 'ta', 'answer', 'agent-7')
+    await turnStarts($, 't1', '做一件事')
+    await turnEnds($, 't1', 'aborted')
+    await clock.settle()
+    expect(asked).toHaveLength(1)
+    await send($, 'C')
+    await turnStarts($, 't2', 'C')
+    await send($, 'D', { turnId: 't2' })
+    await clock.settle()
+    await turnEnds($, 't2')
+    await clock.settle()
+    // titles of C and D, then the result of C alone
+    expect(asked).toHaveLength(4)
+    expect(asked[3]).toContain('C')
+    expect(asked[3]).not.toContain('\nD')
+  })
+
+  test('the page shows a result after the title, outside the Button', async ($, on) => {
+    const { clock } = world(on, {}, async e => said(e.prompt.includes('回答：') ? '42' : '計算 7*6'))
+    await send($, '算 7*6')
+    await turnStarts($, 't1', '算 7*6')
+    await task($, { op: 'add', subtasks: ['算'] })
+    await task($, { op: 'update', id: '1.1', status: 'completed' })
+    await $.turn.complete({ answer: '42', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as never)
+    await clock.settle()
+    await openTasks($)
+    const root = await draw($)
+    expect(linesOf(root).find(l => l.includes('計算 7*6')) ?? '').toContain(withIcon(RESULT_ICON, '42'))
+    const b = taskButton(root, '1')
+    expect(b).toBeDefined()
+    expect(textOf(b!)).toContain('計算 7*6')
+    expect(textOf(b!)).not.toContain('42')
+  })
+
+  test('the prompt and the note tell the model titles and results are summed up for it', () => {
+    expect(TASK_PROMPT).toContain('自動摘成一句')
+    const note = requestContext('7')
+    expect(note).toContain('項目 7')
+    expect(note).toContain('id=7')
+    expect(note).toContain('記下結果')
   })
 })

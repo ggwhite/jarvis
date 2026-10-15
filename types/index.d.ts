@@ -107,6 +107,13 @@ export type JarvisTaskItem = {
   // when its own status last started running, and when it completed (ms)
   startedAt?: number
   endedAt?: number
+  // a request item's own id, made when it is sent, so a summary that comes back late finds it
+  // and nothing else
+  rid?: string
+  // who set `title` when not the prompt: `haiku`, the summary; `model`, the model's update or plan
+  titleBy?: 'haiku' | 'model'
+  // the summary of what its turn's answer came to
+  result?: string
 }
 
 // The session's task board; `nextItem` numbers the next item, ids are never reused.
