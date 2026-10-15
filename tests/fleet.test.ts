@@ -1665,7 +1665,7 @@ describe('fleet page on Desktop', () => {
     expect(after).toEqual(before)
   })
 
-  test('each section header is a row of cell boxes summing to the pane width, its words truncated not wrapped', async ($, on) => {
+  test('each section header is a row of cell boxes summing to the pane width, its rules clipped and its words whole', async ($, on) => {
     const clock = fleetEngine(on, sampleWorld())
     const tree = await openFleetDesk($, clock, 60, 80)
     const kids = (n: Node): Node[] => (n.children ?? []).filter((k): k is Node => typeof k !== 'string')
@@ -1678,11 +1678,39 @@ describe('fleet page on Desktop', () => {
     for (const title of ['ARC REACTOR', 'TODAY BURN', 'IRON LEGION']) {
       const line = rows.find(r => textOf(r).startsWith('── ') && textOf(r).includes(title))
       expect(line).toBeDefined()
-      expect(kids(line as Node).reduce((n, k) => n + Number(k.props?.['width']), 0)).toBe(80)
+      expect(kids(line as Node).reduce((n, k) => n + Number(k.props?.['width'] ?? k.props?.['minWidth']), 0)).toBe(80)
       for (const k of kids(line as Node)) {
         expect(k.props?.['flexShrink']).toBe(0)
-        expect(kids(k)[0]?.props?.['wrap']).toBe('truncate')
+        expect(kids(k)[0]?.props?.['wrap']).toBe(/^[─ ]+$/.test(textOf(k)) ? 'truncate' : undefined)
       }
+    }
+  })
+
+  test('a rule is clipped to its cells; a title takes at least its cells, never truncated', async ($, on) => {
+    const clock = fleetEngine(on, sampleWorld())
+    const tree = await openFleetDesk($, clock, 60, 80)
+    const kids = (n: Node): Node[] => (n.children ?? []).filter((k): k is Node => typeof k !== 'string')
+    const cells = (pred: (t: string) => boolean): Node[] => {
+      const out: Node[] = []
+      const walk = (n: Node) => {
+        if (n.type === 'Box' && n.props?.['flexShrink'] === 0 && kids(n).length === 1 && kids(n)[0]?.type === 'Text' && pred(textOf(n))) out.push(n)
+        kids(n).forEach(walk)
+      }
+      walk(tree)
+      return out
+    }
+    const rules = cells(t => /^─+$/.test(t))
+    expect(rules.length).toBeGreaterThan(0)
+    for (const b of rules) {
+      expect(b.props?.['width']).toBe(cellWidth(textOf(b)))
+      expect(kids(b)[0]?.props?.['wrap']).toBe('truncate')
+    }
+    const titles = cells(t => t.startsWith('IRON LEGION'))
+    expect(titles.length).toBeGreaterThan(0)
+    for (const b of titles) {
+      expect(b.props?.['minWidth']).toBe(cellWidth(textOf(b)))
+      expect(b.props?.['width']).toBeUndefined()
+      expect(kids(b)[0]?.props?.['wrap']).toBeUndefined()
     }
   })
 

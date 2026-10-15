@@ -330,7 +330,7 @@ describe('desktop svg: segments in cell boxes', () => {
     let n = 0
     for (const k of kids(row)) {
       if (stop(k)) return n
-      n += Number(k.props?.['width'] ?? NaN)
+      n += Number(k.props?.['width'] ?? k.props?.['minWidth'] ?? NaN)
     }
     return NaN
   }
@@ -353,6 +353,20 @@ describe('desktop svg: segments in cell boxes', () => {
     }
     await pressOn($, 'desktop', 'role-Explore')
     expect(all(await drawOn($, 'desktop'), x => x.type === 'Button' && x.props?.['key'] === 'back')).toHaveLength(1)
+  })
+
+  test('a word takes at least its cells and is never truncated', async ($, on) => {
+    engine(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    await pressOn($, 'desktop', 'tab-now')
+    const tree = await drawOn($, 'desktop')
+    const words = all(tree, x => x.type === 'Box' && x.props?.['flexShrink'] === 0 && kids(x)[0]?.type === 'Text' && textOf(x) === 'UPTIME')
+    expect(words.length).toBeGreaterThan(0)
+    for (const b of words) {
+      expect(b.props?.['minWidth']).toBe(cellWidth(textOf(b)))
+      expect(b.props?.['width']).toBeUndefined()
+      expect(kids(b)[0]?.props?.['wrap']).toBeUndefined()
+    }
   })
 
   for (const key of ['tab-now', 'tab-stats', 'tab-fleet']) {

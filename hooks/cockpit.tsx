@@ -345,6 +345,9 @@ const sp = (n: number): Seg => ({ t: ' '.repeat(Math.max(0, n)) })
 
 const segsWidth = (segs: readonly Seg[]): number => segs.reduce((n, s) => n + cellWidth(s.t), 0)
 
+// rules and padding only: may be clipped to their cells on Desktop
+const isRule = (t: string): boolean => /^[\u2500-\u257f ]+$/.test(t)
+
 // Cuts a line to `width` cells; the segment that overruns ends in an ellipsis, unless
 // only its trailing padding was cut.
 function clip(segs: readonly Seg[], width: number): Seg[] {
@@ -412,8 +415,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   const textNode = (s: Seg) => <Text {...style(s)}>{s.t}</Text>
 
-  // Desktop's glyphs are narrower than a cell (its ─ wider): each segment takes a box of its
-  // cells there, so it starts where it does on the terminal
+  // Desktop's glyphs are not a cell wide: each segment takes at least its cells there, so it
+  // starts where it does on the terminal; rules and padding are clipped to them, words never
   const segNode = (s: Seg): RenderElement =>
     SvgEl && s.svg !== undefined && svgSafe(s.svg) ? (
       <SvgEl
@@ -423,11 +426,15 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         height={CELL_PX_H}
         {...(s.animated ? { isInteractive: true } : {})}
       />
-    ) : svgOn ? (
+    ) : svgOn && isRule(s.t) ? (
       <Box width={cellWidth(s.t)} flexShrink={0}>
         <Text wrap="truncate" {...style(s)}>
           {s.t}
         </Text>
+      </Box>
+    ) : svgOn ? (
+      <Box minWidth={cellWidth(s.t)} flexShrink={0}>
+        {textNode(s)}
       </Box>
     ) : (
       textNode(s)
@@ -438,10 +445,10 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // a Button holds only text: its segments drawn as glyphs whatever the surface
   const plainTexts = (segs: readonly Seg[]) => segs.filter(s => s.t !== '').map(textNode)
 
-  // a Button drawn from `segs`: on Desktop boxed to their cells, so what follows lines up
+  // a Button drawn from `segs`: on Desktop at least their cells wide, so what follows lines up
   const pressBox = (segs: readonly Seg[], button: RenderElement): RenderElement =>
     svgOn ? (
-      <Box width={segsWidth(segs)} flexShrink={0}>
+      <Box minWidth={segsWidth(segs)} flexShrink={0}>
         {button}
       </Box>
     ) : (
