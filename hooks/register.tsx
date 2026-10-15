@@ -48,7 +48,18 @@ import type { CommitsCtx, RepoList } from './commitsView'
 import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, boardLive, closeResults, dropIdle, endTurn, fromTaskCreate, fromTaskUpdate, fromTodos, markWorked, openRequest, recordsRequest, requestContext, requestsEnding, startTurn, withResult, withSummaryTitle } from './tasks'
 import type { TaskReply } from './tasks'
 import { keptFolds } from './tasksView'
-import { RESULT_MAX, SUMMARY_TITLE_MAX, clipInput, resultAsk, summarize, titleAsk } from './summary'
+import {
+  RESULT_MAX,
+  SUMMARY_MODEL,
+  SUMMARY_SYSTEM,
+  SUMMARY_TIMEOUT_MS,
+  SUMMARY_TITLE_MAX,
+  SUMMARY_TOKENS,
+  cleanSummary,
+  clipInput,
+  resultAsk,
+  titleAsk,
+} from './summary'
 import { FETCH_TIMEOUT_MS, branchesOf, fetchRepo, remotesOf, sameRepoPaths, stashFileDiff, stashFiles, stashesOf, worktreesOf } from './gitRepo'
 import type { StashFile } from './gitRepo'
 import type { BranchList, Remotes, RepoView, StashInfo, WorktreeRow } from './repoViews'
@@ -103,6 +114,23 @@ async function stampNow($: Pick<EngineInterface, 'clock'>): Promise<number | und
     return await $.clock.now()
   } catch {
     return undefined
+  }
+}
+
+// One summary from the small model, '' when there is none: refused, failed, cut off or empty.
+async function summarize($: Pick<EngineInterface, 'model'>, prompt: string, max: number): Promise<string> {
+  try {
+    const r = await $.model.complete({
+      model: SUMMARY_MODEL,
+      system: SUMMARY_SYSTEM,
+      prompt,
+      maxTokens: SUMMARY_TOKENS,
+      effort: 'low',
+      timeoutMs: SUMMARY_TIMEOUT_MS,
+    })
+    return r.isAnswered ? cleanSummary(r.text, max) : ''
+  } catch {
+    return ''
   }
 }
 

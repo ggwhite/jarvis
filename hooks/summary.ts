@@ -1,4 +1,3 @@
-import type { EngineInterface } from 'claude-code'
 import { lineOf } from './tasks'
 
 // the small model that sums up a request and what it came to
@@ -48,21 +47,4 @@ export function cleanSummary(text: string, max: number): string {
   const plain = WIDE.reduce((t, [from, to]) => t.replace(from, to), text)
   const line = lineOf(plain, Number.MAX_SAFE_INTEGER).replace(STOP, '').replace(WRAPS, '').replace(STOP, '').trim()
   return lineOf(line, max)
-}
-
-// One summary from the small model, '' when there is none: refused, failed, cut off or empty.
-export async function summarize($: Pick<EngineInterface, 'model'>, prompt: string, max: number): Promise<string> {
-  try {
-    const r = await $.model.complete({
-      model: SUMMARY_MODEL,
-      system: SUMMARY_SYSTEM,
-      prompt,
-      maxTokens: SUMMARY_TOKENS,
-      effort: 'low',
-      timeoutMs: SUMMARY_TIMEOUT_MS,
-    })
-    return r.isAnswered ? cleanSummary(r.text, max) : ''
-  } catch {
-    return ''
-  }
 }
