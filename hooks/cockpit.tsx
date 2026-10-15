@@ -52,7 +52,7 @@ import type { OwnerMark, TaskFolds, TaskLine } from './tasksView'
 import { commitRows, laneColor, relTime } from './commitsView'
 import type { CommitsCtx, RefLabel, RepoPage } from './commitsView'
 import { MAX_REMOTES } from './repoViews'
-import { CELL_PX_H, bigTextSvg, burnSvg, cellPx, meterSvg, rampBarSvg, reactorSvg, rowPx, sparkSvg, stackedBarSvg, suitSvg, svgSafe } from './svgArt'
+import { CELL_PX_H, bigTextSvg, burnSvg, cellPx, meterSvg, rampBarSvg, reactorSvg, rowPx, ruleSvg, sparkSvg, stackedBarSvg, suitSvg, svgSafe } from './svgArt'
 import type { BranchList, BranchRow, RepoView, StashInfo, WorktreeRow } from './repoViews'
 import { graphWidth } from './commitGraph'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
@@ -440,7 +440,44 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       textNode(s)
     )
 
-  const texts = (segs: readonly Seg[]) => segs.filter(s => s.t !== '').map(segNode)
+  // a rule or padding Desktop may draw as lines: no picture, background or inversion of its own
+  const ruleable = (s: Seg): boolean => s.svg === undefined && !s.bg && !s.inverse && isRule(s.t)
+  const blank = (t: string): boolean => t.trim() === ''
+
+  // Desktop: rules and padding side by side in one ink drawn as one picture of lines, so they
+  // meet and take exactly their cells; padding alone stays an empty cell box
+  const texts = (segs: readonly Seg[]): RenderElement[] => {
+    const live = segs.filter(s => s.t !== '')
+    if (!svgOn) return live.map(segNode)
+    const out: RenderElement[] = []
+    let i = 0
+    while (i < live.length) {
+      let j = i
+      let run = ''
+      let ink: string | undefined
+      while (j < live.length) {
+        const s = live[j] as Seg
+        if (!ruleable(s)) break
+        if (!blank(s.t)) {
+          const c = s.color ?? FRAME
+          if (ink !== undefined && c !== ink) break
+          ink = c
+        }
+        run += s.t
+        j += 1
+      }
+      const source = ink === undefined ? '' : ruleSvg(run, ink)
+      const pic = source === '' ? undefined : svgNode(source, '─', cellWidth(run), 1)
+      if (pic !== undefined) {
+        out.push(pic)
+        i = j
+      } else {
+        out.push(segNode(live[i] as Seg))
+        i += 1
+      }
+    }
+    return out
+  }
 
   // a Button holds only text: its segments drawn as glyphs whatever the surface
   const plainTexts = (segs: readonly Seg[]) => segs.filter(s => s.t !== '').map(textNode)

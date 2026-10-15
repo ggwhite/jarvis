@@ -1665,47 +1665,52 @@ describe('fleet page on Desktop', () => {
     expect(after).toEqual(before)
   })
 
-  test('each section header is a row of cell boxes summing to the pane width, its rules clipped and its words whole', async ($, on) => {
+  test('each section header sums to the pane width: its rules pictures of lines, its words whole', async ($, on) => {
     const clock = fleetEngine(on, sampleWorld())
     const tree = await openFleetDesk($, clock, 60, 80)
     const kids = (n: Node): Node[] => (n.children ?? []).filter((k): k is Node => typeof k !== 'string')
     const rows: Node[] = []
     const walk = (n: Node) => {
-      if (n.type === 'Box' && kids(n).length > 0 && kids(n).every(k => k.type === 'Box' && kids(k)[0]?.type === 'Text')) rows.push(n)
+      if (n.type === 'Box' && n.props?.['flexDirection'] === 'row') rows.push(n)
       kids(n).forEach(walk)
     }
     walk(tree)
+    const cellsOf = (k: Node): number => (k.type === 'Svg' ? Number(k.props?.['width']) / cellPx(1) : Number(k.props?.['width'] ?? k.props?.['minWidth']))
     for (const title of ['ARC REACTOR', 'TODAY BURN', 'IRON LEGION']) {
-      const line = rows.find(r => textOf(r).startsWith('── ') && textOf(r).includes(title))
+      const line = rows.find(r => kids(r).some(k => k.type === 'Box' && textOf(k).includes(title)) && kids(r).some(k => k.type === 'Svg' && k.props?.['alt'] === '─'))
       expect(line).toBeDefined()
-      expect(kids(line as Node).reduce((n, k) => n + Number(k.props?.['width'] ?? k.props?.['minWidth']), 0)).toBe(80)
-      for (const k of kids(line as Node)) {
-        expect(k.props?.['flexShrink']).toBe(0)
-        expect(kids(k)[0]?.props?.['wrap']).toBe(/^[─ ]+$/.test(textOf(k)) ? 'truncate' : undefined)
+      const ks = kids(line as Node)
+      expect(ks.reduce((n, k) => n + cellsOf(k), 0)).toBe(80)
+      for (const k of ks) {
+        expect(k.props?.['flexShrink'] ?? 0).toBe(0)
+        expect(/[\u2500-\u257f]/.test(textOf(k))).toBe(false)
       }
+      const rules = ks.filter(k => k.type === 'Svg' && k.props?.['alt'] === '─')
+      expect(rules.length).toBeGreaterThan(0)
+      for (const k of rules) expect(String(k.props?.['source'])).toMatch(/<path d="M[\d.]+ 9\.5H/)
     }
   })
 
-  test('a rule is clipped to its cells; a title takes at least its cells, never truncated', async ($, on) => {
+  test('rules outside a Button are pictures; a title takes at least its cells, never truncated', async ($, on) => {
     const clock = fleetEngine(on, sampleWorld())
     const tree = await openFleetDesk($, clock, 60, 80)
     const kids = (n: Node): Node[] => (n.children ?? []).filter((k): k is Node => typeof k !== 'string')
-    const cells = (pred: (t: string) => boolean): Node[] => {
-      const out: Node[] = []
-      const walk = (n: Node) => {
-        if (n.type === 'Box' && n.props?.['flexShrink'] === 0 && kids(n).length === 1 && kids(n)[0]?.type === 'Text' && pred(textOf(n))) out.push(n)
-        kids(n).forEach(walk)
-      }
-      walk(tree)
-      return out
+    const loose: string[] = []
+    const inButton: Node[] = []
+    const walk = (n: Node, pressed: boolean) => {
+      if (pressed && n.type === 'Svg') inButton.push(n)
+      if (!pressed && n.type === 'Text' && /[\u2500-\u257f]/.test(textOf(n))) loose.push(textOf(n))
+      kids(n).forEach(k => walk(k, pressed || n.type === 'Button'))
     }
-    const rules = cells(t => /^─+$/.test(t))
-    expect(rules.length).toBeGreaterThan(0)
-    for (const b of rules) {
-      expect(b.props?.['width']).toBe(cellWidth(textOf(b)))
-      expect(kids(b)[0]?.props?.['wrap']).toBe('truncate')
+    walk(tree, false)
+    expect(loose).toEqual([])
+    expect(inButton).toEqual([])
+    const titles: Node[] = []
+    const find = (n: Node) => {
+      if (n.type === 'Box' && n.props?.['flexShrink'] === 0 && kids(n).length === 1 && kids(n)[0]?.type === 'Text' && textOf(n).startsWith('IRON LEGION')) titles.push(n)
+      kids(n).forEach(find)
     }
-    const titles = cells(t => t.startsWith('IRON LEGION'))
+    find(tree)
     expect(titles.length).toBeGreaterThan(0)
     for (const b of titles) {
       expect(b.props?.['minWidth']).toBe(cellWidth(textOf(b)))

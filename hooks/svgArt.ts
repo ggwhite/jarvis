@@ -280,3 +280,95 @@ export function burnSvg(hours: readonly number[], width: number, rows: number, n
   }
   return svgDoc(n, R + 2, body)
 }
+
+// Box-drawing glyphs by the arms they reach from the cell's middle: left, right, up, down.
+const LIGHT_ARMS: Record<string, string> = {
+  '─': 'lr', '│': 'ud', '┌': 'rd', '┐': 'ld', '└': 'ru', '┘': 'lu',
+  '├': 'rud', '┤': 'lud', '┬': 'lrd', '┴': 'lru', '┼': 'lrud',
+  '╴': 'l', '╵': 'u', '╶': 'r', '╷': 'd',
+}
+const HEAVY_ARMS: Record<string, string> = {
+  '━': 'lr', '┃': 'ud', '┏': 'rd', '┓': 'ld', '┗': 'ru', '┛': 'lu',
+  '┣': 'rud', '┫': 'lud', '┳': 'lrd', '┻': 'lru', '╋': 'lrud',
+  '╸': 'l', '╹': 'u', '╺': 'r', '╻': 'd',
+}
+// dashed: across or down, the dashes in a cell, heavy or not
+const DASHED: Record<string, { across: boolean; n: number; heavy: boolean }> = {
+  '╌': { across: true, n: 2, heavy: false }, '╍': { across: true, n: 2, heavy: true },
+  '┄': { across: true, n: 3, heavy: false }, '┅': { across: true, n: 3, heavy: true },
+  '┈': { across: true, n: 4, heavy: false }, '┉': { across: true, n: 4, heavy: true },
+  '╎': { across: false, n: 2, heavy: false }, '╏': { across: false, n: 2, heavy: true },
+  '┆': { across: false, n: 3, heavy: false }, '┇': { across: false, n: 3, heavy: true },
+  '┊': { across: false, n: 4, heavy: false }, '┋': { across: false, n: 4, heavy: true },
+}
+const ROUNDED = '╭╮╰╯'
+const RULE_LIGHT = 1.5
+const RULE_HEAVY = 3
+const RULE_R = 4
+
+// A run of box-drawing glyphs and spaces drawn cell by cell, `color` its ink, so the lines
+// meet and take exactly their cells; '' when a glyph is not one it can draw.
+export function ruleSvg(text: string, color: string): string {
+  const chars = [...text]
+  const W = CELL_PX_W
+  const H = CELL_PX_H
+  const cy = H / 2
+  // straight light, straight heavy, rounded corners, dashed light, dashed heavy
+  const d = { light: '', heavy: '', round: '', dashLight: '', dashHeavy: '' }
+  const arms = (x: number, a: string): string => {
+    const cx = x + W / 2
+    let out = ''
+    const l = a.includes('l')
+    const r = a.includes('r')
+    const u = a.includes('u')
+    const dn = a.includes('d')
+    if (l || r) out += `M${num(l ? x : cx)} ${num(cy)}H${num(r ? x + W : cx)}`
+    if (u || dn) out += `M${num(cx)} ${num(u ? 0 : cy)}V${num(dn ? H : cy)}`
+    return out
+  }
+  for (let i = 0; i < chars.length; i += 1) {
+    const ch = chars[i] as string
+    const x = i * W
+    const cx = x + W / 2
+    if (ch === ' ') continue
+    const light = LIGHT_ARMS[ch]
+    const heavy = HEAVY_ARMS[ch]
+    const dash = DASHED[ch]
+    if (light !== undefined) d.light += arms(x, light)
+    else if (heavy !== undefined) d.heavy += arms(x, heavy)
+    else if (ch === '═') d.light += `M${num(x)} ${num(cy - 2)}H${num(x + W)}M${num(x)} ${num(cy + 2)}H${num(x + W)}`
+    else if (ch === '║') d.light += `M${num(cx - 2)} 0V${H}M${num(cx + 2)} 0V${H}`
+    else if (ROUNDED.includes(ch)) {
+      const r = RULE_R
+      d.round +=
+        ch === '╭'
+          ? `M${num(cx)} ${H}V${num(cy + r)}A${r} ${r} 0 0 1 ${num(cx + r)} ${num(cy)}H${num(x + W)}`
+          : ch === '╮'
+            ? `M${num(x)} ${num(cy)}H${num(cx - r)}A${r} ${r} 0 0 1 ${num(cx)} ${num(cy + r)}V${H}`
+            : ch === '╰'
+              ? `M${num(cx)} 0V${num(cy - r)}A${r} ${r} 0 0 0 ${num(cx + r)} ${num(cy)}H${num(x + W)}`
+              : `M${num(x)} ${num(cy)}H${num(cx - r)}A${r} ${r} 0 0 0 ${num(cx)} ${num(cy - r)}V0`
+    } else if (dash !== undefined) {
+      const len = dash.across ? W : H
+      const step = len / dash.n
+      let out = ''
+      for (let k = 0; k < dash.n; k += 1) {
+        const a = k * step + step / 4
+        const b = a + step / 2
+        out += dash.across ? `M${num(x + a)} ${num(cy)}H${num(x + b)}` : `M${num(cx)} ${num(a)}V${num(b)}`
+      }
+      if (dash.heavy) d.dashHeavy += out
+      else d.dashLight += out
+    } else return ''
+  }
+  const path = (dd: string, width: number, extra: string): string =>
+    dd === '' ? '' : `<path d="${dd}" fill="none" stroke="${esc(color)}" stroke-width="${width}"${extra}/>`
+  const crisp = ' stroke-linecap="square" shape-rendering="crispEdges"'
+  const body =
+    path(d.light, RULE_LIGHT, crisp) +
+    path(d.heavy, RULE_HEAVY, crisp) +
+    path(d.round, RULE_LIGHT, ' stroke-linecap="square"') +
+    path(d.dashLight, RULE_LIGHT, ' stroke-linecap="butt" shape-rendering="crispEdges"') +
+    path(d.dashHeavy, RULE_HEAVY, ' stroke-linecap="butt" shape-rendering="crispEdges"')
+  return svgDoc(chars.length, 1, body)
+}

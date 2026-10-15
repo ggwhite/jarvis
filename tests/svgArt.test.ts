@@ -16,6 +16,7 @@ import {
   reactorSvg,
   ringSvg,
   rowPx,
+  ruleSvg,
   sparkSvg,
   stackedBarSvg,
   suitSvg,
@@ -254,5 +255,45 @@ describe('svgArt rings and burn', () => {
       burnSvg([Number.NaN, -5, Number.POSITIVE_INFINITY], 0, 0, 30, [0, 12]),
     ]
     for (const s of cases) expect(svgSafe(s)).toBe(true)
+  })
+})
+
+describe('svgArt rules', () => {
+  test('a rule takes exactly its cells, one row, and draws a line across them', () => {
+    const s = ruleSvg('──', THEME.frame)
+    expect(cellWidth('──')).toBe(2)
+    expect(attr(s, 'width')).toBe(String(cellPx(2)))
+    expect(attr(s, 'height')).toBe(String(CELL_PX_H))
+    expect(s).toContain('M0 9.5H8M8 9.5H16')
+    expect(s).toContain(`stroke="${THEME.frame}"`)
+    expect(svgSafe(s)).toBe(true)
+  })
+
+  test('corners, sides and tees reach the edges they join; rounded corners arc', () => {
+    expect(ruleSvg('│', '#fff')).toContain('M4 0V19')
+    expect(ruleSvg('┌', '#fff')).toContain('M4 9.5H8M4 9.5V19')
+    expect(ruleSvg('┘', '#fff')).toContain('M0 9.5H4M4 0V9.5')
+    expect(ruleSvg('┼', '#fff')).toContain('M0 9.5H8M4 0V19')
+    expect(ruleSvg('╭', '#fff')).toMatch(/A4 4 0 0 1 /)
+    expect(ruleSvg('╯', '#fff')).toMatch(/A4 4 0 0 0 /)
+    expect(count(ruleSvg('┄', '#fff'), /M[\d.]+ 9\.5H/g)).toBe(3)
+    expect(ruleSvg('━', '#fff')).toContain('stroke-width="3"')
+    for (const t of ['╭─ ', ' │', '╰──╯', '├┤┬┴', '═║', '┆╌']) expect(svgSafe(ruleSvg(t, '#fff'))).toBe(true)
+  })
+
+  test('spaces take their cells and draw nothing', () => {
+    const s = ruleSvg(' ─ ', '#fff')
+    expect(attr(s, 'width')).toBe(String(cellPx(3)))
+    expect(s).toContain('M8 9.5H16')
+    expect(count(s, /<path/g)).toBe(1)
+  })
+
+  test('a glyph it cannot draw gives nothing, for the caller to fall back on', () => {
+    expect(ruleSvg('─x', '#fff')).toBe('')
+    expect(ruleSvg('╔═╗', '#fff')).toBe('')
+  })
+
+  test('the same rule draws the same source', () => {
+    expect(ruleSvg('╭──╮', THEME.frame)).toBe(ruleSvg('╭──╮', THEME.frame))
   })
 })
