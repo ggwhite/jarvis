@@ -47,6 +47,13 @@ import {
   startTurn,
   withResult,
   withSummaryTitle,
+  TOPIC_CANDIDATES,
+  boardGroups,
+  dropEmptyTopics,
+  groupStatus,
+  topicCandidates,
+  topicsOf,
+  withClassified,
 } from '../hooks/tasks'
 import type { Seg } from '../hooks/cockpit'
 import { RESULT_ICON, TASK_ICON, withIcon } from '../hooks/icons'
@@ -62,7 +69,7 @@ import {
   resultAsk,
   titleAsk,
 } from '../hooks/summary'
-import type { TaskReply } from '../hooks/tasks'
+import type { TaskReply, TopicChoice } from '../hooks/tasks'
 import { EMPTY_TEXT, SUB_INDENT, TITLE_MIN, TOOL_MAX, isFolded, keptFolds, spinnerAt, taskLines, taskRows } from '../hooks/tasksView'
 import type { AgentBadge, OwnerMark } from '../hooks/tasksView'
 
@@ -1387,6 +1394,109 @@ describe('task board page', () => {
     await openTasks($)
     await pressKey($, 'task-1')
     expect(await boardOf($)).toBe(before)
+  })
+})
+
+describe('request topics', () => {
+  // a request item sent with rid `rid`, done when `done`
+  const req = (b: JarvisTaskBoard, text: string, rid: string, done = true) => {
+    const opened = openRequest(b, text, undefined, 0, rid).board
+    if (!done) return opened
+    const turn = `t-${rid}`
+    return endTurn(startTurn(opened, turn, text), turn, 'answer', 1)
+  }
+  const join = (id: string, title = '舊話題'): TopicChoice => ({ kind: 'join', id, title })
+  const fresh = (title: string): TopicChoice => ({ kind: 'new', title })
+
+  test('a classified request opens a new topic, numbered apart from items', () => {
+    const b = withClassified(req(EMPTY_BOARD, '查看 Jamie 的訊息', 'r1'), 'r1', '查看 Jamie 訊息', fresh('Jamie 七日簽到'))
+    expect(topicsOf(b)).toEqual([{ id: '1', title: 'Jamie 七日簽到' }])
+    expect(b.nextTopic).toBe(2)
+    expect(b.items[0]).toMatchObject({ title: '查看 Jamie 訊息', titleBy: 'haiku', topic: '1' })
+  })
+
+  test('a request joins a topic still on the board', () => {
+    let b = withClassified(req(EMPTY_BOARD, '查看 Jamie', 'r1'), 'r1', '查看 Jamie', fresh('Jamie'))
+    b = withClassified(req(b, '確認送出', 'r2'), 'r2', '確認送出', join('1', 'Jamie'))
+    expect(topicsOf(b)).toHaveLength(1)
+    expect(b.items.map(i => i.topic)).toEqual(['1', '1'])
+  })
+
+  test('a topic gone before the reply is opened again under its old title', () => {
+    const b = withClassified(req(EMPTY_BOARD, '確認送出', 'r2'), 'r2', '確認送出', join('7', 'Jamie'))
+    expect(topicsOf(b)).toEqual([{ id: '1', title: 'Jamie' }])
+    expect(b.items[0]?.topic).toBe('1')
+  })
+
+  test('a new topic with no title takes the item title; no title keeps the prompt line', () => {
+    const b = withClassified(req(EMPTY_BOARD, '算 1+1', 'r1'), 'r1', '', fresh(''))
+    expect(b.items[0]?.title).toBe('算 1+1')
+    expect(b.items[0]?.titleBy).toBeUndefined()
+    expect(topicsOf(b)).toEqual([{ id: '1', title: '算 1+1' }])
+  })
+
+  test('a title the model set stays, but the request still gets its topic', () => {
+    const opened = req(EMPTY_BOARD, '1', 'r1', false)
+    const titled = ok(applyTask(opened, { op: 'update', id: '1', title: '合併分支' }))
+    const b = withClassified(titled, 'r1', '選 1', fresh('合併'))
+    expect(b.items[0]).toMatchObject({ title: '合併分支', titleBy: 'model', topic: '1' })
+  })
+
+  test('an item gone by rid, or already with a topic, is left alone', () => {
+    const b = withClassified(req(EMPTY_BOARD, 'a', 'r1'), 'r1', 'A', fresh('T'))
+    expect(withClassified(b, 'gone', 'X', fresh('U'))).toBe(b)
+    const again = withClassified(b, 'r1', 'A', fresh('U'))
+    expect(topicsOf(again)).toEqual([{ id: '1', title: 'T' }])
+    expect(again.items[0]?.topic).toBe('1')
+  })
+
+  test('topics no item points at are dropped; the same board when there are none', () => {
+    const b = withClassified(req(EMPTY_BOARD, 'a', 'r1'), 'r1', 'A', fresh('T'))
+    expect(dropEmptyTopics(b)).toBe(b)
+    const emptied = { ...b, items: [] }
+    expect(topicsOf(dropEmptyTopics(emptied))).toEqual([])
+    expect(dropEmptyTopics(EMPTY_BOARD)).toBe(EMPTY_BOARD)
+  })
+
+  test('candidates are the topics most recently active first, each with its last request, at most TOPIC_CANDIDATES', () => {
+    let b = EMPTY_BOARD
+    b = withClassified(req(b, 'j1', 'r1'), 'r1', 'J1', fresh('Jamie'))
+    b = withClassified(req(b, 'a1', 'r2'), 'r2', 'A1', fresh('Andy'))
+    b = withClassified(req(b, 'j2', 'r3'), 'r3', 'J2', join('1', 'Jamie'))
+    expect(topicCandidates(b)).toEqual([
+      { id: '1', title: 'Jamie', latest: 'J2' },
+      { id: '2', title: 'Andy', latest: 'A1' },
+    ])
+    let many = EMPTY_BOARD
+    for (let k = 1; k <= TOPIC_CANDIDATES + 2; k++) many = withClassified(req(many, `p${k}`, `r${k}`), `r${k}`, `P${k}`, fresh(`T${k}`))
+    const ids = topicCandidates(many).map(c => c.id)
+    expect(ids).toHaveLength(TOPIC_CANDIDATES)
+    expect(ids[0]).toBe(String(TOPIC_CANDIDATES + 2))
+    expect(ids).not.toContain('1')
+  })
+
+  test('groups: a topic is one group placed by its newest request; an item with no topic stands alone', () => {
+    let b = EMPTY_BOARD
+    b = withClassified(req(b, 'j1', 'r1'), 'r1', 'J1', fresh('Jamie'))
+    b = withClassified(req(b, 'a1', 'r2'), 'r2', 'A1', fresh('Andy'))
+    b = withClassified(req(b, 'j2', 'r3'), 'r3', 'J2', join('1', 'Jamie'))
+    b = ok(applyTask(b, { op: 'add', item: '模型自己的' }))
+    const g = boardGroups(b)
+    expect(g.done.map(x => x.topic?.title)).toEqual(['Jamie', 'Andy'])
+    expect(g.done[0]?.items.map(i => i.title)).toEqual(['J1', 'J2'])
+    expect(g.planned.map(x => x.items.map(i => i.title))).toEqual([['模型自己的']])
+    expect(g.running).toEqual([])
+  })
+
+  test('a topic runs while any request runs, waits while any waits, else is done', () => {
+    let b = withClassified(req(EMPTY_BOARD, 'j1', 'r1'), 'r1', 'J1', fresh('Jamie'))
+    b = withClassified(req(b, 'j2', 'r2', false), 'r2', 'J2', join('1'))
+    const g = boardGroups(b)
+    expect(g.running.map(x => x.topic?.id)).toEqual(['1'])
+    expect(groupStatus(g.running[0]!)).toBe('in_progress')
+    const aborted = endTurn(startTurn(b, 't9', 'j2'), 't9', 'aborted', 2)
+    expect(boardGroups(aborted).planned.map(x => x.topic?.id)).toEqual(['1'])
+    expect(groupStatus({ items: [] })).toBe('completed')
   })
 })
 

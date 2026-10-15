@@ -89,6 +89,9 @@ export type JarvisSubtask = {
   endedAt?: number
 }
 
+// A topic the person's requests are grouped under, numbered apart from items.
+export type JarvisTopic = { id: string; title: string }
+
 // One work item. Its own `status` counts only while it has no subtasks; `nextSub` numbers
 // the next subtask. `origin` says where it came from: `request` for a request the person
 // sent (jarvis made it), `todo:<actor>` for TodoWrite, `tasks` for TaskCreate; none for the
@@ -110,6 +113,8 @@ export type JarvisTaskItem = {
   // a request item's own id, made when it is sent, so a summary that comes back late finds it
   // and nothing else
   rid?: string
+  // the topic a request item is grouped under, once the small model has placed it
+  topic?: string
   // who set `title` when not the prompt: `haiku`, the summary; `model`, the model's update or plan
   titleBy?: 'haiku' | 'model'
   // the summary of what its turn's answer came to; for one with subtasks, of the turn its plan
@@ -123,7 +128,7 @@ export type JarvisTaskItem = {
 }
 
 // The session's task board; `nextItem` numbers the next item, ids are never reused.
-export type JarvisTaskBoard = { items: JarvisTaskItem[]; nextItem: number }
+export type JarvisTaskBoard = { items: JarvisTaskItem[]; nextItem: number; topics?: JarvisTopic[]; nextTopic?: number }
 
 // ---- 艦隊 ----
 

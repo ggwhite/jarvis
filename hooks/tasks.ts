@@ -1,4 +1,4 @@
-import type { JarvisSubtask, JarvisTaskBoard, JarvisTaskItem, JarvisTaskStatus } from '../types'
+import type { JarvisSubtask, JarvisTaskBoard, JarvisTaskItem, JarvisTaskStatus, JarvisTopic } from '../types'
 
 // The tool the model keeps the board with: its short name as registered, and the name the
 // model calls it by.
@@ -89,7 +89,7 @@ export function putItem(
   extra: Partial<Pick<JarvisTaskItem, 'status' | 'origin' | 'key' | 'turnId' | 'queued' | 'startedAt' | 'rid'>> = {},
 ): JarvisTaskBoard {
   const item = withSubtasks({ id: String(board.nextItem), title, status: 'pending', subtasks: [], nextSub: 1, ...extra }, subtasks, actor)
-  return { items: [...board.items, item], nextItem: board.nextItem + 1 }
+  return { ...board, items: [...board.items, item], nextItem: board.nextItem + 1 }
 }
 
 // The item and subtask a subtask id names, if both exist.
@@ -458,6 +458,92 @@ export function withSummaryTitle(board: JarvisTaskBoard, rid: string, title: str
   const item = board.items.find(i => i.rid === rid)
   if (!item || item.titleBy === 'model' || title === '') return board
   return replaceItem(board, { ...item, title, titleBy: 'haiku' })
+}
+
+// ---- topics: what the person's requests are about ----
+
+// how many topics the small model is offered for a new request
+export const TOPIC_CANDIDATES = 10
+
+export const topicsOf = (board: JarvisTaskBoard): JarvisTopic[] => board.topics ?? []
+
+// The board without the topics no item points at; the same board when there are none.
+export function dropEmptyTopics(board: JarvisTaskBoard): JarvisTaskBoard {
+  const topics = topicsOf(board)
+  const kept = topics.filter(t => board.items.some(i => i.topic === t.id))
+  return kept.length === topics.length ? board : { ...board, topics: kept }
+}
+
+// a topic offered to the small model, with the title of its newest request
+export type TopicCandidate = { id: string; title: string; latest: string }
+
+// The topics with requests, the most recently active first (by their newest request's place
+// on the board), at most TOPIC_CANDIDATES.
+export function topicCandidates(board: JarvisTaskBoard): TopicCandidate[] {
+  const topics = topicsOf(board)
+  const out: TopicCandidate[] = []
+  for (const item of [...board.items].reverse()) {
+    if (item.topic === undefined || out.some(c => c.id === item.topic)) continue
+    const t = topics.find(x => x.id === item.topic)
+    if (t) out.push({ id: t.id, title: t.title, latest: item.title })
+  }
+  return out.slice(0, TOPIC_CANDIDATES)
+}
+
+// where the small model put a request: an offered topic (with its title, should it be gone
+// by the time the reply lands), or a new one ('' when it named none)
+export type TopicChoice = { kind: 'join'; id: string; title: string } | { kind: 'new'; title: string }
+
+// The board with a request item's summary title and its topic, found by `rid`. A topic gone
+// since it was offered is opened again under its title; a new one with no title takes the
+// item's. Unchanged when the item is gone; an item with a topic keeps it.
+export function withClassified(board: JarvisTaskBoard, rid: string, title: string, choice: TopicChoice): JarvisTaskBoard {
+  const titledBoard = withSummaryTitle(board, rid, title)
+  const item = titledBoard.items.find(i => i.rid === rid)
+  if (!item || item.topic !== undefined) return titledBoard
+  const topics = topicsOf(titledBoard)
+  if (choice.kind === 'join' && topics.some(t => t.id === choice.id)) return replaceItem(titledBoard, { ...item, topic: choice.id })
+  const n = titledBoard.nextTopic ?? 1
+  const id = String(n)
+  return {
+    ...replaceItem(titledBoard, { ...item, topic: id }),
+    topics: [...topics, { id, title: choice.title !== '' ? choice.title : item.title }],
+    nextTopic: n + 1,
+  }
+}
+
+// a topic's requests, or an item standing alone
+export type TaskGroup = { topic?: JarvisTopic; items: JarvisTaskItem[] }
+export type BoardGroups = { running: TaskGroup[]; planned: TaskGroup[]; done: TaskGroup[] }
+
+// A group runs when any item runs, else waits when any waits, else is done.
+export function groupStatus(group: TaskGroup): JarvisTaskStatus {
+  const s = group.items.map(itemStatus)
+  return s.includes('in_progress') ? 'in_progress' : s.includes('pending') ? 'pending' : 'completed'
+}
+
+// The board in the page's three parts by group: each topic one group, every other item its
+// own, placed by its newest item; running and planned oldest first, done newest first.
+export function boardGroups(board: JarvisTaskBoard): BoardGroups {
+  const topics = topicsOf(board)
+  const byTopic = new Map<string, TaskGroup>()
+  const placed: { group: TaskGroup; at: number }[] = []
+  board.items.forEach((item, at) => {
+    const topic = item.topic === undefined ? undefined : topics.find(t => t.id === item.topic)
+    const known = topic === undefined ? undefined : byTopic.get(topic.id)
+    if (known) {
+      known.items.push(item)
+      const p = placed.find(x => x.group === known)
+      if (p) p.at = at
+      return
+    }
+    const group: TaskGroup = topic === undefined ? { items: [item] } : { topic, items: [item] }
+    if (topic !== undefined) byTopic.set(topic.id, group)
+    placed.push({ group, at })
+  })
+  const ordered = placed.sort((a, b) => a.at - b.at).map(p => p.group)
+  const inStatus = (s: JarvisTaskStatus) => ordered.filter(g => groupStatus(g) === s)
+  return { running: inStatus('in_progress'), planned: inStatus('pending'), done: inStatus('completed').reverse() }
 }
 
 // a request item with a plan not yet done: no result stands beside it
