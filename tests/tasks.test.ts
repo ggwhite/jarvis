@@ -1191,14 +1191,39 @@ describe('task board page', () => {
     await turnEnds($, 't1')
     await draw($)
     expect(iconColor(await draw($))).toBe(THEME.bright)
-    await clock.advance(FRESH_MS - 1)
+    await clock.advance(FRESH_MS)
     const base = count.n
-    await clock.advance(ANIM_MS * 2)
+    await clock.advance(ANIM_MS * 4)
     expect(count.n).toBeGreaterThan(base)
     expect(iconColor(await draw($))).toBe(THEME.success)
     const after = count.n
     await clock.advance(IDLE_MS * 3)
     expect(count.n).toBe(after)
+  })
+
+  test('a tick running late past FRESH_MS still repaints the highlight away', async ($, on) => {
+    const late = { ms: 0 }
+    on('clock.every', { ms: ANIM_MS }, async (_$, e, next) => {
+      if (late.ms > 0) await clock.sleep(late.ms)
+      return next(e)
+    })
+    const { clock } = world(on)
+    const count = tickWrites(on)
+    await startSession($)
+    await send($, 'A')
+    await turnStarts($, 't1', 'A')
+    await openTasks($)
+    await draw($)
+    await clock.advance(1000)
+    await turnEnds($, 't1')
+    await draw($)
+    await clock.advance(FRESH_MS - ANIM_MS)
+    late.ms = ANIM_MS * 2
+    await clock.advance(ANIM_MS)
+    const base = count.n
+    await clock.advance(ANIM_MS * 3)
+    expect(count.n).toBeGreaterThan(base)
+    expect(iconColor(await draw($))).toBe(THEME.success)
   })
 
   test('a /clear empties the page', async ($, on) => {

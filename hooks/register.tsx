@@ -708,8 +708,9 @@ async function reconcile(
 async function tasksMoving($: Pick<EngineInterface, 'state'>, now: number, drawnAt: number): Promise<boolean> {
   if (now - drawnAt > SEEN_MS) return false
   try {
-    // live for one ANIM_MS past FRESH_MS, so a tick lands after the highlight ends and repaints it
-    return (await read($, ui)).page === 'tasks' && boardLive(await read($, tasks), now - ANIM_MS)
+    // live for three ANIM_MS past FRESH_MS, so a tick lands after the highlight ends and repaints it
+    // even when the timer runs late
+    return (await read($, ui)).page === 'tasks' && boardLive(await read($, tasks), now - 3 * ANIM_MS)
   } catch {
     return false
   }
