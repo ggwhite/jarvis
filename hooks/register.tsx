@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, Timer } from 'claude-code'
+import type { EngineInterface, Register, RenderElement, Timer } from 'claude-code'
 
 import type { FleetJumpError, FleetQuota, JarvisAgent, JarvisPage, JarvisTaskBoard, JarvisUi } from '../types'
 
@@ -28,6 +28,9 @@ import {
 } from './jarvis'
 import type { Completion, EngineAgent } from './jarvis'
 import { drawCockpit } from './cockpit'
+import type { Ctx } from './cockpit'
+import { desktopPage, drawDesktop } from './desktopView'
+import type { DesktopUi } from './desktopView'
 import { RUN_TIMEOUT_MS, createReporter, jarvisText, inHerdr } from './herdr'
 import type { Reporter } from './herdr'
 import { parseQuota } from './fleet'
@@ -938,6 +941,9 @@ export const register: Register = on => {
   let fleetBusy = false
   // when the session started: the standby suit's uptime
   let sessionStartedAt: number | undefined
+  // Desktop's layout: the native one, or the cell grid by JARVIS_DESKTOP_LAYOUT=cells; read at
+  // session.start, or by the first Desktop drawing when no session start came first
+  let desktopLayout: 'native' | 'cells' | undefined
   // the standby suit's quota read, when it last asked for one; set at session.start
   let quotaReadAt = -Infinity
   let quotaOn: ((now: number) => void) | undefined
@@ -984,6 +990,7 @@ export const register: Register = on => {
     let herdrOn = false
     let home = ''
     try {
+      desktopLayout = (await $.env.get('JARVIS_DESKTOP_LAYOUT')) === 'cells' ? 'cells' : 'native'
       const herdrEnv = await $.env.get('HERDR_ENV')
       const paneId = await $.env.get('HERDR_PANE_ID')
       home = (await $.env.get('HOME')) ?? ''
@@ -1807,7 +1814,7 @@ export const register: Register = on => {
         }),
       fetch: () => fetchCommits($, commitsCache, commitRepo),
     }
-    const drawn = drawCockpit(elements, view, {
+    const ctx: Ctx = {
       svg: e.surface === 'desktop',
       cols: e.props.bodyColumns,
       rows: e.props.scroll.bodyRows,
@@ -1867,7 +1874,26 @@ export const register: Register = on => {
               setUi(u => ({ ...u, taskFolds: { ...keptFolds(u.taskFolds, board), [id]: folded } })),
           }),
       commits,
-    })
+    }
+    if (e.surface === 'desktop' && desktopLayout === undefined) {
+      try {
+        desktopLayout = (await $.env.get('JARVIS_DESKTOP_LAYOUT')) === 'cells' ? 'cells' : 'native'
+      } catch {
+        // no env: the native layout
+        desktopLayout = 'native'
+      }
+    }
+    let drawn: RenderElement
+    if (e.surface === 'desktop' && desktopLayout === 'native' && desktopPage(shown.page, ctx)) {
+      try {
+        drawn = drawDesktop(elements as DesktopUi, view, ctx)
+      } catch {
+        // the native layout failed: the cell-grid drawing stands in rather than a blank pane
+        drawn = drawCockpit(elements, view, ctx)
+      }
+    } else {
+      drawn = drawCockpit(elements, view, ctx)
+    }
     return e.surface === 'terminal' ? drawn : desktopTree(drawn)
   })
 }

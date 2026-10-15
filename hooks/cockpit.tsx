@@ -145,7 +145,7 @@ const MK_ACTOR_COLS = 64
 // The widest a commit row's ref label is drawn, its icon included.
 const REF_MAX = 16
 
-type Ui = Pick<ReturnType<EngineInterface['ui']['resolve']>, 'Box' | 'Text' | 'Button'> & { Svg?: ElementConstructor<SvgProps> }
+export type Ui = Pick<ReturnType<EngineInterface['ui']['resolve']>, 'Box' | 'Text' | 'Button'> & { Svg?: ElementConstructor<SvgProps> }
 
 // `svg`: on Desktop the cells `t` takes are drawn as this picture instead, `alt` its words,
 // `animated` when it moves by itself (an interactive frame); `fill`: padding that pushes what
@@ -325,7 +325,7 @@ const NARROWEST: RowFit = { tag: false, full: false, badge: false, name: false, 
 const DESC_MIN = 8
 const TAG_DESC_MIN = 20
 
-const TABS: { page: JarvisPage; icon: string; label: string }[] = [
+export const TABS: { page: JarvisPage; icon: string; label: string }[] = [
   { page: 'now', icon: TAB_ICON.now, label: '現況' },
   { page: 'log', icon: TAB_ICON.log, label: '事件流' },
   { page: 'stats', icon: TAB_ICON.stats, label: '統計' },

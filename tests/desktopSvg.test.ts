@@ -59,9 +59,10 @@ export const pressOn = async ($: Engine, surface: Surface, key: string, rows = 4
 }
 
 // the engine beneath the mod, as jarvis.test.ts stands it
-export const engine = (on: On, agentId = 'agent-1') => {
+export const engine = (on: On, agentId = 'agent-1', layout: 'cells' | 'native' = 'cells') => {
   const clock = mock.clock(on, { now: 0 })
-  mock.env(on, {})
+  // the old desktop tests check the cell-grid layout; the native one is asked for by name
+  mock.env(on, layout === 'cells' ? { JARVIS_DESKTOP_LAYOUT: 'cells' } : {})
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
   on('classic.SessionStart', async () => ({}))
   on('agent.spawn', async () => ({ model: HAIKU, agentId }))

@@ -5945,6 +5945,7 @@ describe('role detail page', () => {
 
   test('Desktop: a run row\'s Button is its MK mark alone, every column after it outside at the same cell in every row', async ($, on) => {
     const clock = crew(on, [OPUS, SONNET, OPUS, SONNET, HAIKU, OPUS])
+    mock.env(on, { JARVIS_DESKTOP_LAYOUT: 'cells' })
     await fourWorkers($)
     await clock.advance(1000)
     const desk = { surface: 'desktop' as const, component: 'Pane' as const, requestId: 'jarvis', viewport: { columns: 120, rows: 50 }, props: PANE_PROPS(40, 100) }
