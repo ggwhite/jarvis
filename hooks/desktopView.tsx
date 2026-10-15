@@ -20,8 +20,8 @@ export const DESKTOP_PAGES: readonly JarvisPage[] = ['now', 'stats']
 // Whether the native layout draws this page: not while the boot screen plays.
 export const desktopPage = (page: JarvisPage, ctx: Pick<Ctx, 'boot'>): boolean => ctx.boot === undefined && DESKTOP_PAGES.includes(page)
 
-// a Markdown table cell: pipes escaped, line breaks flattened
-export const mdCell = (s: string): string => s.replace(/\r?\n/g, ' ').replace(/\|/g, '\\|')
+// a Markdown table cell: line breaks flattened, pipes and inline Markdown marks escaped
+export const mdCell = (s: string): string => s.replace(/\r\n?|\n/g, ' ').replace(/[\\`*_[\]<>|~]/g, '\\$&')
 
 export type EventCell = { time: string; who: string; tool: string; desc: string; took: string; mark: string }
 
@@ -245,7 +245,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     )
 
     const agents = view.sections.flatMap(s => s.units.flatMap(u => (u.kind === 'agent' ? [u.agent] : u.agents)))
-    const done = view.finished.length
+    const done = view.finished.filter(a => a.status === 'done').length
     const listCard = card(
       head('👥', '子代理', `▶${view.running.length} 執行中 · ${done} 完成`),
       agents.length === 0 ? [<Text color={DT.textSub}>還沒有派工。派出 subagent 後這裡會即時顯示。</Text>] : agents.slice(0, Math.max(3, rows - 30)).map(agentRow),
@@ -262,8 +262,8 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
               <Box width={6} flexShrink={0}>
                 <Text color={DT.orange700}>{actorName(f.actor)}</Text>
               </Box>
-              <Box width={10} flexShrink={0}>
-                <Text color={DT.text} bold>
+              <Box width={10} flexShrink={0} overflow="hidden">
+                <Text color={DT.text} bold wrap="truncate">
                   {f.tool}
                 </Text>
               </Box>
@@ -421,15 +421,18 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
   if (ctx.page !== 'now') ctx.onStandby?.(false)
 
   return (
-    <Box flexDirection="column" position="relative" backgroundColor={DT.bg} minHeight={rows} paddingX={2} paddingY={1} gap={1}>
+    <Box flexDirection="column" position="relative" backgroundColor={DT.bg} minHeight={rows} paddingX={2} paddingY={1}>
       {Svg ? (
         <Box position="absolute" top={0} left={0}>
           {picture(backdropSvg(cols, rows), '背景', cols, rows)}
         </Box>
       ) : null}
-      {titleBar}
-      {tabBar}
-      {page}
+      {/* positioned after the backdrop, so the content paints over it */}
+      <Box position="relative" flexDirection="column" gap={1}>
+        {titleBar}
+        {tabBar}
+        {page}
+      </Box>
     </Box>
   )
 }

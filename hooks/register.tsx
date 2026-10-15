@@ -941,8 +941,8 @@ export const register: Register = on => {
   let fleetBusy = false
   // when the session started: the standby suit's uptime
   let sessionStartedAt: number | undefined
-  // Desktop's layout: the native one, or the cell grid by JARVIS_DESKTOP_LAYOUT=cells; read at
-  // session.start, or by the first Desktop drawing when no session start came first
+  // Desktop's layout: the native one, or the cell grid by JARVIS_DESKTOP_LAYOUT=cells; read by
+  // the first Desktop drawing
   let desktopLayout: 'native' | 'cells' | undefined
   // the standby suit's quota read, when it last asked for one; set at session.start
   let quotaReadAt = -Infinity
@@ -990,7 +990,6 @@ export const register: Register = on => {
     let herdrOn = false
     let home = ''
     try {
-      desktopLayout = (await $.env.get('JARVIS_DESKTOP_LAYOUT')) === 'cells' ? 'cells' : 'native'
       const herdrEnv = await $.env.get('HERDR_ENV')
       const paneId = await $.env.get('HERDR_PANE_ID')
       home = (await $.env.get('HOME')) ?? ''

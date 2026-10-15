@@ -4,11 +4,27 @@ import { DT } from '../hooks/desktopTheme'
 import { eventsTable, mdCell } from '../hooks/desktopView'
 import { SUIT_TICK_MS } from '../hooks/suit'
 import { cellPx, rowPx } from '../hooks/svgArt'
-import { all, altOf, complete, drawOn, engine, pressOn, sourceOf, spawnInput, svgs, textOf, wellFormed } from './desktopSvg.test'
-import type { Node } from './desktopSvg.test'
+import { all, altOf, complete, drawOn, engine, pressOn, sourceOf, spawnInput, svgs, textOf, wellFormed } from './helpers'
+import type { Node } from './helpers'
 import { badProps } from './allowedProps'
 
 const native = (on: Parameters<typeof engine>[0]) => engine(on, 'agent-1', 'native')
+// a Markdown table row's cells, split as GFM does: on each pipe no backslash escapes
+const cells = (line: string): string[] => {
+  const out: string[] = []
+  let cell = ''
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i] ?? ''
+    if (ch === '\\') {
+      cell += ch + (line[i + 1] ?? '')
+      i++
+    } else if (ch === '|') {
+      out.push(cell.trim())
+      cell = ''
+    } else cell += ch
+  }
+  return out.slice(1)
+}
 const pills = (tree: Node) =>
   all(tree, x => x.type === 'Box' && x.props?.['borderStyle'] === 'round' && (x.children ?? []).some(c => typeof c !== 'string' && c.type === 'Button'))
 
@@ -25,6 +41,32 @@ describe('desktop native: frame', () => {
     const bd = svgs(layer)[0]
     expect(bd?.props?.['width']).toBe(cellPx(80))
     expect(bd?.props?.['height']).toBe(rowPx(45))
+  })
+
+  test('the title bar, tabs and page sit in a positioned box after the backdrop, painted over it', async ($, on) => {
+    native(on)
+    const tree = await drawOn($, 'desktop', 45, 80)
+    const [layer, content] = (tree.children ?? []) as Node[]
+    expect(layer?.props?.['position']).toBe('absolute')
+    expect(content?.props?.['position']).toBe('relative')
+    expect(content?.props?.['flexDirection']).toBe('column')
+    expect(content?.props?.['gap']).toBe(1)
+    expect(textOf(content as Node)).toContain('J.A.R.V.I.S.')
+    expect(svgs(content as Node).some(s => altOf(s) === 'MARK XLII')).toBe(true)
+  })
+
+  test('a throw in the native layout draws the cell grid instead of a blank pane', async ($, on) => {
+    on('ui.resolve', { surface: 'desktop' }, async (_$, e, next) => {
+      const table = (await next(e)) as unknown as Record<string, (props: Record<string, unknown>) => unknown>
+      const svg = table['Svg']
+      // only the native layout draws the backdrop
+      return { ...table, Svg: (props: Record<string, unknown>) => (props['alt'] === '背景' ? (() => { throw new Error('boom') })() : svg?.(props)) } as never
+    })
+    native(on)
+    const tree = await drawOn($, 'desktop', 45, 80)
+    expect(tree.props?.['backgroundColor']).not.toBe(DT.bg)
+    expect(textOf(tree)).toContain('J.A.R.V.I.S.')
+    expect(svgs(tree).some(s => altOf(s) === '背景')).toBe(false)
   })
 
   test('the tabs are orange pills: the current solid, the rest pale; no native variant anywhere', async ($, on) => {
@@ -125,6 +167,22 @@ describe('desktop native: now page', () => {
     expect(text.split('\n').filter(l => l.startsWith('|')).every(l => !/[^\\]\|[^|]*[^\\]\|.*a \| b/.test(l))).toBe(true)
   })
 
+  test('mdCell escapes backslashes, Markdown marks and lone carriage returns', () => {
+    expect(mdCell('a\\|b')).toBe('a\\\\\\|b')
+    expect(cells(`| ${mdCell('a\\|b')} |`)).toHaveLength(1)
+    expect(mdCell('__init__.py')).toBe('\\_\\_init\\_\\_.py')
+    expect(mdCell('a\rb\r\nc')).toBe('a b c')
+    expect(mdCell('`x` *y* [z] <w> ~v~')).toBe('\\`x\\` \\*y\\* \\[z\\] \\<w\\> \\~v\\~')
+  })
+
+  test('a description with an escaped pipe keeps the row to its six columns', () => {
+    const t = eventsTable([{ time: '10:00:00', who: '主線', tool: 'Grep', desc: "grep 'a\\|b' x", took: '1.2s', mark: '✓' }])
+    const row = cells(t.split('\n')[2] ?? '')
+    expect(row).toHaveLength(6)
+    expect(row[3]).toBe("grep 'a\\\\\\|b' x")
+    expect(row[4]).toBe('1.2s')
+  })
+
   test('mdCell escapes pipes and flattens line breaks; eventsTable writes a header and one row each', () => {
     expect(mdCell('a|b\nc')).toBe('a\\|b c')
     const t = eventsTable([{ time: '10:00:00', who: '主線', tool: 'Bash', desc: 'x|y', took: '1.2s', mark: '✓' }])
@@ -168,6 +226,30 @@ describe('desktop native: now page', () => {
     const tree = await drawOn($, 'desktop', 50, 100)
     expect(textOf(tree)).toContain('still going')
     expect(badProps(tree)).toEqual([])
+  })
+
+  test('the in-flight tool column cuts a long tool name short rather than wrapping', async ($, on) => {
+    let kept: unknown[] = []
+    on('state.set', { plugin: 'jarvis', key: 'inflight' }, async (_$, e, next) => {
+      if (e.value.length > 0) kept = [...e.value]
+      return next({ ...e, value: kept as typeof e.value })
+    })
+    native(on)
+    await $.tool.call({ tool: 'mcp__github__search_code', q: 'x' } as never)
+    const tree = await drawOn($, 'desktop', 50, 100)
+    const col = all(tree, x => x.type === 'Box' && x.props?.['width'] === 10 && textOf(x) === 'mcp__github__search_code')[0]
+    expect(col?.props?.['overflow']).toBe('hidden')
+    const label = all(col as Node, x => x.type === 'Text')[0]
+    expect(label?.props?.['wrap']).toBe('truncate')
+  })
+
+  test('the subagent card counts only the successful as done', async ($, on) => {
+    native(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    await $.turn.complete(complete('agent-1', { reason: 'error' }))
+    const text = textOf(await drawOn($, 'desktop', 50, 100))
+    expect(text).toContain('0 完成')
+    expect(text).not.toContain('1 完成')
   })
 
   test('the still suit asks the clock for no 250 ms frames', async ($, on) => {

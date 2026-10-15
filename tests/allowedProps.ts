@@ -1,4 +1,4 @@
-import type { Node } from './desktopSvg.test'
+import type { Node } from './helpers'
 
 // the only prop every element may carry
 const COMMON = ['children']
