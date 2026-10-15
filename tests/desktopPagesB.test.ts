@@ -361,6 +361,54 @@ describe('desktop native B: commits mode', () => {
   })
 })
 
+describe('desktop native B: commit tree page', () => {
+  test('back and refresh; the repo, its remote and fetch; the sub-tab pills; commits whose subject opens them', () => {
+    const calls: Calls = []
+    const tree = draw(baseCtx(calls, { page: 'commitTree', commits: commits(calls, { repo: repoPage() }) }))
+    const t = textOf(tree)
+    for (const word of ['main', '↑1', '3 commits', 'origin', 'fetch 10 分鐘前', '分支 3', 'Stash 1', 'Worktree 3', 'c2aaaaa', 'feature work']) expect(t).toContain(word)
+    expect(texts(tree, DT.fail)).toContain('fetch failed: denied')
+    for (const key of ['back', 'cm-refresh', 'cm-fetch', 'cm-view-branches', 'cm-commit-c2aaaaaaaaaa']) press(tree, key)
+    expect(calls).toEqual(['back', 'refreshTree', 'fetch', 'setView:branches', 'openCommit:c2aaaaaaaaaa'])
+    // the changes tab stays lit
+    const lit = all(tree, x => x.type === 'Box' && x.props?.['backgroundColor'] === DT.orangeFill)
+    expect(lit.map(textOf).join()).toContain('異動')
+    expect(badProps(tree)).toEqual([])
+  })
+
+  test('branches, stash and worktrees: each row its press', () => {
+    const calls: Calls = []
+    const at = (view: RepoPage['view']) => draw(baseCtx(calls, { page: 'commitTree', commits: commits(calls, { repo: repoPage({ view }) }) }))
+    const branches = at('branches')
+    expect(textOf(branches)).toContain('只在遠端 1 個')
+    press(branches, 'cm-branch-refs/heads/feat')
+    press(branches, 'cm-branches-remote')
+    const stash = at('stash')
+    expect(textOf(stash)).toContain('stash 由這個 repo 的所有 worktree 共用')
+    press(stash, 'cm-stash-s1')
+    const wt = at('worktrees')
+    expect(textOf(wt)).toContain('已不存在')
+    press(wt, 'cm-wt-/w/r/.claude/worktrees/agent-x')
+    expect(button(wt, 'cm-wt-/w/gone')).toBeUndefined()
+    expect(calls).toEqual(['openBranch:refs/heads/feat', 'toggleRemote', 'openStash:s1', 'openWorktree:/w/r/.claude/worktrees/agent-x'])
+    for (const tree of [branches, stash, wt]) expect(badProps(tree)).toEqual([])
+  })
+
+  test('every sub-page keeps its rows within the card at every width', () => {
+    for (const view of ['log', 'branches', 'stash', 'worktrees'] as const) {
+      for (const cols of WIDTHS) {
+        const tree = draw(baseCtx([], { page: 'commitTree', cols, commits: commits([], { repo: repoPage({ view, remoteOpen: true }) }) }))
+        expect(fixedRowsFit(tree, cols)).toBeGreaterThan(0)
+      }
+    }
+  })
+
+  test('no repo: the changes page', () => {
+    const tree = draw(baseCtx([], { page: 'commitTree', changes: CHANGES, commits: commits([]) }))
+    expect(button(tree, 'chg-s:/w/r/a.go')).toBeDefined()
+  })
+})
+
 const DIFF: DiffRow[] = [
   { kind: 'hunk', text: '@@ -1,3 +1,3 @@ func main' },
   { kind: 'ctx', old: 1, new: 1, text: 'package main' },
