@@ -156,3 +156,44 @@ describe('desktop svg: pipeline', () => {
     expect(cellWidth(textOf(tree))).toBeGreaterThan(0)
   })
 })
+
+describe('desktop svg: bars and lines', () => {
+  test('dispatch rows: the Button holds no Svg, the bars and lines beside it; a press opens the role', async ($, on) => {
+    engine(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    await $.turn.complete(complete('agent-1', { usage: { model: HAIKU, input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }))
+    await pressOn($, 'desktop', 'tab-stats')
+    const tree = await drawOn($, 'desktop')
+    const roleButtons = all(tree, x => x.type === 'Button' && String(x.props?.['key'] ?? '').startsWith('role-'))
+    expect(roleButtons.length).toBeGreaterThan(0)
+    for (const b of roleButtons) expect(svgs(b)).toHaveLength(0)
+    expect(svgs(tree).some(s => /^Explore 1$/.test(altOf(s)))).toBe(true)
+    expect(svgs(tree).some(s => altOf(s).endsWith(' 最近一小時'))).toBe(true)
+    expect(svgs(tree).some(s => altOf(s) === 'MODELS')).toBe(true)
+    wellFormed(tree, 80)
+    await pressOn($, 'desktop', 'role-Explore')
+    const role = await drawOn($, 'desktop')
+    expect(all(role, x => x.type === 'Button' && x.props?.['key'] === 'back')).toHaveLength(1)
+    expect(svgs(role).some(s => /次$/.test(altOf(s)))).toBe(true)
+  })
+
+  test('terminal dispatch rows: the whole row is the Button, drawn in glyphs', async ($, on) => {
+    engine(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    await $.turn.complete(complete('agent-1'))
+    await pressOn($, 'terminal', 'tab-stats')
+    const tree = await drawOn($, 'terminal')
+    const b = all(tree, x => x.type === 'Button' && x.props?.['key'] === 'role-Explore')[0]
+    expect(b && /[█░▏▎▍▌▋▊▉]/.test(textOf(b))).toBe(true)
+    expect(svgs(tree)).toHaveLength(0)
+  })
+
+  test('40 columns: the stats page draws, every Svg within the card', async ($, on) => {
+    engine(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    await pressOn($, 'desktop', 'tab-stats', 45, 40)
+    const tree = await drawOn($, 'desktop', 45, 40)
+    wellFormed(tree, 40)
+    for (const s of svgs(tree)) expect(Number(s.props?.['width'])).toBeLessThanOrEqual(cellPx(36))
+  })
+})

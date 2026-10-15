@@ -13,7 +13,7 @@ import {
 } from './fleet'
 import { RING_BIG, RING_SMALL, brailleLine, cellsToSegs, gaugeBar, gaugeCells } from './fleetChart'
 import type { ChartSeg } from './fleetChart'
-import { meterSvg } from './svgArt'
+import { meterSvg, sparkSvg } from './svgArt'
 import { THEME, cellWidth, fitCells, fmtClock, fmtDate, fmtUsd, padCells, shortModel } from './jarvis'
 
 // A suit as drawn: `chip` the label of its number Button, `top` what follows it on its
@@ -181,6 +181,14 @@ const sparkOf = (s: FleetSession, now: number, width: number): string => braille
 // An idle suit's line: today by the hour, scaled to the fleet's idle peak when given.
 const daySparkOf = (s: FleetSession, width: number, top: number | undefined): string => brailleLine(hourlyOf(s), width, top)
 
+// a suit's line seg: its braille, and on Desktop its picture from the same values
+const sparkSeg = (s: FleetSession, o: SuitOpts, width: number, idle: boolean, color: string): ChartSeg => {
+  const t = idle ? daySparkOf(s, width, o.idleMax) : sparkOf(s, o.now, width)
+  if (o.svg !== true) return { t, color }
+  const svg = idle ? sparkSvg(hourlyOf(s), width, o.idleMax, color) : sparkSvg(beatsOf(s.stamps, o.now), width, undefined, color)
+  return { t, color, svg, alt: idle ? '今日每小時' : '最近一小時' }
+}
+
 // The highest hour of today among `idle`: what SuitOpts.idleMax asks.
 export function idleHourMax(idle: readonly FleetSession[]): number {
   return Math.max(0, ...idle.flatMap(s => hourlyOf(s)))
@@ -209,7 +217,7 @@ export function wideCard(s: FleetSession, w: number, o: SuitOpts): CardLines {
   const info = fitCells(parts.join(' · '), Math.max(0, inner - S - 1))
   const row1: ChartSeg[] = [
     { t: '│ ', color: F },
-    { t: sparkOf(s, o.now, S), color: st.color },
+    sparkSeg(s, o, S, false, st.color),
     sp(inner - S - cellWidth(info)),
     { t: info, color: F },
     { t: ' │', color: F },
@@ -248,7 +256,7 @@ export function smallCard(s: FleetSession, w: number, o: SuitOpts): CardLines {
   const used = (S > 0 ? S + 1 : 0) + segsWidth(bar)
   const mid: ChartSeg[] = [
     { t: '│ ', color: F },
-    ...(S > 0 ? [{ t: daySparkOf(s, S, o.idleMax), color: P }, sp(1)] : []),
+    ...(S > 0 ? [sparkSeg(s, o, S, true, P), sp(1)] : []),
     ...bar,
     sp(inner - used),
     { t: ' │', color: F },
@@ -294,7 +302,7 @@ export function suitLine(s: FleetSession, w: number, o: SuitOpts & { spark: numb
     ...title,
     sp(tw - segsWidth(title)),
     sp(1),
-    ...(spark > 0 ? [{ t: s.status === 'idle' ? daySparkOf(s, spark, o.idleMax) : sparkOf(s, o.now, spark), color: st.color }, sp(1)] : []),
+    ...(spark > 0 ? [sparkSeg(s, o, spark, s.status === 'idle', st.color), sp(1)] : []),
     { t: s.contextPct === undefined ? '  --' : padCells(`${s.contextPct}%`, 4, 'right'), color: ctxTone(s.contextPct), bold: true },
     ...(idleOn ? [sp(1), { t: padCells(idle, IDLE_W, 'right'), color: F }] : []),
   ]

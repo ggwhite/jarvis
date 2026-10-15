@@ -1,7 +1,21 @@
 import { describe, expect, test } from 'claude-code/testing'
 
+import { BURN_RAMP, GAUGE_RAMP } from '../hooks/fleetChart'
 import { THEME, cellWidth } from '../hooks/jarvis'
-import { CELL_PX_H, CELL_PX_W, SVG_MAX, cellPx, meterSvg, rowPx, svgDoc, svgSafe } from '../hooks/svgArt'
+import {
+  CELL_PX_H,
+  CELL_PX_W,
+  SVG_MAX,
+  cellPx,
+  gaugeBarSvg,
+  meterSvg,
+  rampBarSvg,
+  rowPx,
+  sparkSvg,
+  stackedBarSvg,
+  svgDoc,
+  svgSafe,
+} from '../hooks/svgArt'
 
 // an attribute of the outer <svg>
 export const attr = (svg: string, name: string): string | undefined => svg.match(new RegExp(`^<svg[^>]* ${name}="([^"]*)"`))?.[1]
@@ -55,5 +69,63 @@ describe('svgArt basics', () => {
 
   test('the meter glyphs are a cell each, so a meter seg keeps its width', () => {
     expect(cellWidth('▰▱')).toBe(2)
+  })
+})
+
+const points = (svg: string): string[] => (svg.match(/points="([^"]*)"/)?.[1] ?? '').split(' ').filter(p => p !== '')
+
+describe('svgArt bars and lines', () => {
+  test('rampBarSvg: the width in cells, a gradient fill as far as pct', () => {
+    const s = rampBarSvg(10, 0.5, BURN_RAMP)
+    expect(attr(s, 'width')).toBe(String(cellPx(10)))
+    expect(attr(s, 'height')).toBe(String(CELL_PX_H))
+    expect(s).toContain('<linearGradient')
+    expect(s).toMatch(new RegExp(`class="fill"[^>]* width="${cellPx(10) / 2}"`))
+    expect(count(s, /<stop /g)).toBe(BURN_RAMP.length)
+  })
+
+  test('rampBarSvg at 0% is the track alone', () => {
+    expect(count(rampBarSvg(6, 0, BURN_RAMP), /class="fill"/g)).toBe(0)
+  })
+
+  test('gaugeBarSvg: red when depleted, the glow ramp otherwise', () => {
+    expect(gaugeBarSvg(8, 0.4, true)).toContain(`stop-color="${THEME.error}"`)
+    expect(count(gaugeBarSvg(8, 0.4, false), /<stop /g)).toBe(GAUGE_RAMP.length)
+  })
+
+  test('stackedBarSvg: a rect a part with a share, a muted track for none', () => {
+    const s = stackedBarSvg(20, [{ share: 0.75, color: '#111111' }, { share: 0.25, color: '#222222' }, { share: 0, color: '#333333' }])
+    expect(count(s, /class="part"/g)).toBe(2)
+    expect(s).toMatch(new RegExp(`fill="#111111"[^>]*/>`))
+    const empty = stackedBarSvg(20, [])
+    expect(count(empty, /class="part"/g)).toBe(0)
+    expect(empty).toContain(`fill="${THEME.muted}"`)
+  })
+
+  test('sparkSvg: a point a value, a flat line for one, a floor for none', () => {
+    expect(points(sparkSvg([1, 3, 2, 5], 10, undefined, THEME.accent))).toHaveLength(4)
+    const one = points(sparkSvg([4], 10, undefined, THEME.accent))
+    expect(one).toHaveLength(2)
+    expect(one[0]?.split(',')[1]).toBe(one[1]?.split(',')[1])
+    const none = sparkSvg([], 10, undefined, THEME.accent)
+    expect(none).not.toContain('<polyline')
+    expect(none).toContain('<line')
+  })
+
+  test('sparkSvg scales to top, a value past it at the top', () => {
+    const ys = points(sparkSvg([0, 20], 4, 10, THEME.accent)).map(p => Number(p.split(',')[1]))
+    expect(ys[1]).toBe(3)
+  })
+
+  test('bars and lines take odd input without throwing', () => {
+    const cases = [
+      rampBarSvg(Number.NaN, 2, BURN_RAMP),
+      rampBarSvg(-3, Number.NaN, []),
+      gaugeBarSvg(5, Number.POSITIVE_INFINITY, false),
+      stackedBarSvg(Number.NaN, [{ share: Number.NaN, color: '#000000' }]),
+      sparkSvg([Number.NaN, -1, Number.POSITIVE_INFINITY], 6, Number.NaN, THEME.primary),
+      sparkSvg([1, 2], 0, undefined, THEME.primary),
+    ]
+    for (const s of cases) expect(svgSafe(s)).toBe(true)
   })
 })

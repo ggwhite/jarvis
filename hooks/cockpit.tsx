@@ -49,7 +49,7 @@ import type { OwnerMark, TaskFolds, TaskLine } from './tasksView'
 import { commitRows, laneColor, relTime } from './commitsView'
 import type { CommitsCtx, RefLabel, RepoPage } from './commitsView'
 import { MAX_REMOTES } from './repoViews'
-import { CELL_PX_H, cellPx, meterSvg, rowPx, svgSafe } from './svgArt'
+import { CELL_PX_H, cellPx, meterSvg, rampBarSvg, rowPx, sparkSvg, stackedBarSvg, svgSafe } from './svgArt'
 import type { BranchList, BranchRow, RepoView, StashInfo, WorktreeRow } from './repoViews'
 import { graphWidth } from './commitGraph'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
@@ -720,6 +720,9 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const savedPct = sum.savedPct === undefined ? undefined : Math.round(sum.savedPct)
 
   const chartLine = (cells: readonly Cell[]): Seg[] => cellsToSegs(cells)
+  // a chart's cells: one picture on Desktop (its glyphs kept for width), the cells elsewhere
+  const chartSegs = (cells: readonly Cell[], svg: () => string, alt: string): Seg[] =>
+    svgOn ? [{ t: cells.map(c => c.ch).join(''), svg: svg(), alt }] : chartLine(cells)
 
   // `segs` padded with blanks to `width` cells
   const padSegs = (segs: readonly Seg[], width: number): Seg[] => [...segs, sp(width - segsWidth(segs))]
@@ -841,13 +844,21 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         { t: padCells(r.label, nameW), color: ROLE_COLOR[r.role], bold: true },
         sp(1),
         ...(modelW > 0 ? [modelSeg(r.role), sp(1)] : []),
-        ...chartLine(rampBar(barW, r.done / maxDone, BURN_RAMP)),
+        ...chartSegs(rampBar(barW, r.done / maxDone, BURN_RAMP), () => rampBarSvg(barW, r.done / maxDone, BURN_RAMP), `${r.label} ${r.done}`),
         sp(1),
         { t: padCells(String(r.done), numW, 'right'), color: r.done > 0 ? BRIGHT : FRAME, bold: r.done > 0 },
         sp(1),
         ...extras(r),
       ]
-      if (showBeats) segs.push(sp(2), { t: brailleLine(beats.get(r.role) ?? [], ROLE_BEAT_W), color: active ? ACCENT : FRAME })
+      if (showBeats) {
+        const vals = beats.get(r.role) ?? []
+        const color = active ? ACCENT : FRAME
+        segs.push(sp(2), {
+          t: brailleLine(vals, ROLE_BEAT_W),
+          color,
+          ...(svgOn ? { svg: sparkSvg(vals, ROLE_BEAT_W, undefined, color), alt: `${r.label} 最近一小時` } : {}),
+        })
+      }
       return segs
     }
     // one row only: every role on it, its done count and ▶ while running, cut to the card
@@ -860,17 +871,24 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       ])
       return { w, color: ACCENT, lines: [[title(TITLE_ICON.dispatch, 'DISPATCH', ACCENT)], clip(brief, inner)] }
     }
-    // each row a press that opens its role's page, drawn as before
-    const roleRow = (r: RoleStat): Line => ({
-      h: 1,
-      node: (
-        <Box flexDirection="row">
-          <Button key={`role-${r.role}`} plain onPress={() => ctx.openRole?.(r.role)}>
-            {texts(clip(row(r), inner))}
-          </Button>
-        </Box>
-      ),
-    })
+    // each row a press that opens its role's page; a Button holds only text, so on Desktop it
+    // is the role's icon and name, the pictures beside it
+    const roleRow = (r: RoleStat): Line => {
+      const segs = clip(row(r), inner)
+      const lead = svgOn ? segs.slice(0, 3) : segs
+      const rest = svgOn ? segs.slice(3) : []
+      return {
+        h: 1,
+        node: (
+          <Box flexDirection="row">
+            <Button key={`role-${r.role}`} plain onPress={() => ctx.openRole?.(r.role)}>
+              {plainTexts(lead)}
+            </Button>
+            {texts(rest)}
+          </Box>
+        ),
+      }
+    }
     const shown = cut === undefined ? statsRoles : statsRoles.slice(0, Math.max(0, cut - 1))
     const more: Seg[][] = cut === undefined ? [] : [[{ t: `… 還有 ${statsRoles.length - shown.length} 種`, color: FRAME }]]
     return { w, color: ACCENT, lines: [[title(TITLE_ICON.dispatch, 'DISPATCH', ACCENT)], ...shown.map(roleRow), ...more] }
@@ -904,7 +922,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       sp(1),
       { t: padCells(`×${r.count}`, countW), color: FRAME },
     ])
-    return { w, color: FRAME, lines: [head, chartLine(stackedBar(inner, parts)), ...rows, verdict, figures] }
+    return { w, color: FRAME, lines: [head, chartSegs(stackedBar(inner, parts), () => stackedBarSvg(inner, parts), 'MODELS'), ...rows, verdict, figures] }
   }
 
   // ---- 子代理清單 ---------------------------------------------------------
@@ -1290,7 +1308,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const modelRow = (g: RoleModelStat): Seg[] => [
       { t: padCells(g.label, labelW), color: g.family ? FAMILY_COLOR[g.family] : FRAME, bold: true },
       sp(1),
-      ...chartLine(rampBar(barW, g.count / runs.length, BURN_RAMP)),
+      ...chartSegs(rampBar(barW, g.count / runs.length, BURN_RAMP), () => rampBarSvg(barW, g.count / runs.length, BURN_RAMP), `${g.label} ${countText(g)}`),
       sp(1),
       { t: padCells(countText(g), countW, 'right'), color: BRIGHT, bold: true },
       sp(2),

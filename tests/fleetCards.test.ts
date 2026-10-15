@@ -226,3 +226,24 @@ describe('svg form: ctx meter', () => {
     expect((c.body[0] ?? []).some(s => s.svg !== undefined)).toBe(false)
   })
 })
+
+describe('svg form: lines', () => {
+  test('a busy card: the last hour line carries its picture', () => {
+    const c = wideCard(suit(), 60, { now: T0, self: false, svg: true })
+    const line = (c.body[0] ?? []).find(s => s.svg !== undefined)
+    expect(line?.alt).toBe('最近一小時')
+    expect(line?.svg).toContain('<polyline')
+    expect(cellWidth(line?.t ?? '')).toBe(cellWidth(brailleLine(beatsOf(suit().stamps, T0), cellWidth(line?.t ?? ''))))
+  })
+
+  test('an idle card and line: today by the hour carries its picture', () => {
+    const idle = suit({ status: 'idle', hourly: [0, 1, 2, 3, ...Array<number>(20).fill(0)] })
+    expect((smallCard(idle, 40, { now: T0, self: false, svg: true }).body[0] ?? []).some(s => s.alt === '今日每小時')).toBe(true)
+    expect(suitLine(idle, 60, { now: T0, self: false, spark: 6, svg: true }).top.some(s => s.alt === '今日每小時')).toBe(true)
+  })
+
+  test('no svg: no card carries a picture', () => {
+    const c = wideCard(suit(), 60, { now: T0, self: false })
+    expect([...c.body.flat(), ...c.top].some(s => s.svg !== undefined)).toBe(false)
+  })
+})
