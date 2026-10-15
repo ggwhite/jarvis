@@ -2,7 +2,7 @@ import type { JarvisStatus, JarvisTaskBoard, JarvisTaskItem, JarvisTaskStatus } 
 import type { Seg } from './cockpit'
 import { RESULT_ICON, TASK_ICON, withIcon } from './icons'
 import { ANIM_MS, SPINNER, THEME, cellWidth, fitCells, fmtReadout, padCells } from './jarvis'
-import { boardSections, isFresh, itemFresh, itemStartedAt, itemStatus } from './tasks'
+import { boardSections, isFresh, itemFresh, itemRunning, itemStartedAt, itemStatus } from './tasks'
 
 export const EMPTY_TEXT = '還沒有任務。送出請求後，這裡會列出正在做、預計要做和做完的事。'
 
@@ -106,10 +106,10 @@ function taskRow(
 
 // An item's right side, roomiest first: done/total and, while running, its time; the
 // time goes first.
-function itemRights(item: JarvisTaskItem, status: JarvisTaskStatus, now: number): Seg[][] {
+function itemRights(item: JarvisTaskItem, running: boolean, now: number): Seg[][] {
   const done = item.subtasks.filter(s => s.status === 'completed').length
   const count: Seg[] = item.subtasks.length > 0 ? [{ t: `${done}/${item.subtasks.length}`, color: THEME.frame }] : []
-  const since = status === 'in_progress' ? itemStartedAt(item) : undefined
+  const since = running ? itemStartedAt(item) : undefined
   return since === undefined ? [count] : [spaced([...count, time(now - since)]), count]
 }
 
@@ -140,9 +140,11 @@ const headingRow = (label: string, n: number, width: number): Seg[] => [{ t: pad
 // when it has subtasks to fold.
 function itemLines(item: JarvisTaskItem, width: number, owner: (agentId: string) => OwnerMark, now: number, folds: TaskFolds): TaskLine[] {
   const status = itemStatus(item)
-  const head = look(status, itemFresh(item, now), now)
+  const running = itemRunning(item)
+  // a partly done item idle between subtasks stands still: no spinner, no clock
+  const head = look(status === 'in_progress' && !running ? 'pending' : status, itemFresh(item, now), now)
   const folded = isFolded(item, folds)
-  const segs = taskRow(0, head.icon, item.title, head.style, itemRights(item, status, now), width, item.result ?? '')
+  const segs = taskRow(0, head.icon, item.title, head.style, itemRights(item, running, now), width, item.result ?? '')
   const lines: TaskLine[] = [item.subtasks.length > 0 ? { segs, item: { id: item.id, folded } } : { segs }]
   if (folded) return lines
   for (const s of item.subtasks) {

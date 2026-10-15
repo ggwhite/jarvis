@@ -217,14 +217,20 @@ export function applyTask(board: JarvisTaskBoard, input: Readonly<Record<string,
   return typeof next === 'string' ? { error: next } : { board: next, text: boardText(next) }
 }
 
-// An item with subtasks is done when all are, running when any is, else waiting; one
-// without has its own status.
+// An item with subtasks is done when all are, running when any is running or some (not all)
+// are done, else waiting; one without has its own status.
 export function itemStatus(item: JarvisTaskItem): JarvisTaskStatus {
   const subs = item.subtasks
   if (subs.length === 0) return item.status
   if (subs.every(s => s.status === 'completed')) return 'completed'
-  if (subs.some(s => s.status === 'in_progress')) return 'in_progress'
+  if (subs.some(s => s.status === 'in_progress' || s.status === 'completed')) return 'in_progress'
   return 'pending'
+}
+
+// Whether something is actually running in an item: a subtask, or the item itself when it has
+// none. A partly done item is in_progress by status but idle between subtasks.
+export function itemRunning(item: JarvisTaskItem): boolean {
+  return item.subtasks.length === 0 ? item.status === 'in_progress' : item.subtasks.some(s => s.status === 'in_progress')
 }
 
 export type BoardSections = { running: JarvisTaskItem[]; planned: JarvisTaskItem[]; done: JarvisTaskItem[] }
@@ -397,7 +403,7 @@ export function itemFresh(item: JarvisTaskItem, now: number): boolean {
 // Whether the board has something that moves at `now`: running work, or work just done.
 export function boardLive(board: JarvisTaskBoard, now: number): boolean {
   return board.items.some(
-    i => itemStatus(i) === 'in_progress' || itemFresh(i, now) || i.subtasks.some(s => s.status === 'in_progress' || isFresh(s, now)),
+    i => itemRunning(i) || itemFresh(i, now) || i.subtasks.some(s => s.status === 'in_progress' || isFresh(s, now)),
   )
 }
 

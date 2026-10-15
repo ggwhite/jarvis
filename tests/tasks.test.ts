@@ -20,6 +20,7 @@ import {
   applyTask,
   boardCounts,
   boardLive,
+  itemRunning,
   boardText,
   countsText,
   currentRequest,
@@ -197,14 +198,15 @@ describe('task board ops', () => {
 })
 
 describe('task board status and order', () => {
-  test('an item with subtasks: all done is done, any running is running, else pending', () => {
+  test('an item with subtasks: all done is done, any running or some done is running, else pending', () => {
     const b = build(
       { op: 'add', item: 'A', subtasks: ['a1', 'a2'] },
       { op: 'update', id: '1.1', status: 'completed' },
     )
     const item = b.items[0]
     if (!item) throw new Error('no item')
-    expect(itemStatus(item)).toBe('pending')
+    expect(itemStatus(item)).toBe('in_progress')
+    expect(itemStatus({ ...item, subtasks: item.subtasks.map(s => ({ ...s, status: 'pending' as const })) })).toBe('pending')
     expect(itemStatus({ ...item, subtasks: item.subtasks.map(s => ({ ...s, status: 'completed' as const })) })).toBe('completed')
     expect(itemStatus({ ...item, subtasks: [{ ...item.subtasks[0]!, status: 'in_progress' }] })).toBe('in_progress')
     expect(itemStatus({ ...item, status: 'completed', subtasks: [] })).toBe('completed')
@@ -225,8 +227,8 @@ describe('task board status and order', () => {
       { op: 'update', id: '6', status: 'completed' },
     )
     const s = boardSections(b)
-    expect(s.running.map(i => i.title)).toEqual(['C', 'E'])
-    expect(s.planned.map(i => i.title)).toEqual(['A', 'D'])
+    expect(s.running.map(i => i.title)).toEqual(['C', 'D', 'E'])
+    expect(s.planned.map(i => i.title)).toEqual(['A'])
     expect(s.done.map(i => i.title)).toEqual(['F', 'B'])
   })
 
@@ -671,6 +673,51 @@ describe('task board folds', () => {
     const b = board()
     expect(keptFolds({ '1': true, '9': false }, b)).toEqual({ '1': true })
     expect(keptFolds(undefined, b)).toEqual({})
+  })
+})
+
+describe('a partly done item', () => {
+  const text = (row: readonly Seg[]) => row.map(s => s.t).join('')
+  const partial = () =>
+    ok(applyTask(build({ op: 'add', item: 'A', subtasks: ['a1', 'a2'] }), { op: 'update', id: '1.1', status: 'completed' }, undefined, 0))
+
+  test('sits in 進行中 and reads [>], with no subtask running', () => {
+    const b = partial()
+    expect(boardSections(b).running.map(i => i.title)).toEqual(['A'])
+    expect(boardSections(b).planned).toEqual([])
+    expect(boardText(b).split('\n')[1]).toBe('[>] 1 A')
+  })
+
+  test('the idle tick stops: nothing running means no live board once the fresh window passes', () => {
+    const b = partial()
+    expect(boardLive(b, FRESH_MS - 1)).toBe(true)
+    expect(boardLive(b, FRESH_MS)).toBe(false)
+    expect(itemRunning(b.items[0] as JarvisTaskItem)).toBe(false)
+    const next = ok(applyTask(b, { op: 'update', id: '1.2', status: 'in_progress' }, undefined, 5000))
+    expect(boardLive(next, 1e9)).toBe(true)
+    expect(itemRunning(next.items[0] as JarvisTaskItem)).toBe(true)
+  })
+
+  test('idle: no spinner and no elapsed time on the item row; running: both', () => {
+    const b = partial()
+    const idle = taskLines(b, 60, 10, () => ({ t: 'MK', color: THEME.frame }), 70_000)
+    const head = idle[1]?.segs ?? []
+    expect(head[0]).toEqual({ t: withIcon(TASK_ICON.pending, ''), color: THEME.frame })
+    expect(text(head).endsWith(' 1/2')).toBe(true)
+    const b2 = ok(applyTask(b, { op: 'update', id: '1.2', status: 'in_progress' }, undefined, 5000))
+    const run = taskLines(b2, 60, 10, () => ({ t: 'MK', color: THEME.frame }), 70_000)[1]?.segs ?? []
+    expect(run[0]).toEqual({ t: spinnerAt(70_000), color: THEME.accent })
+    expect(text(run).endsWith(' 1/2 1:05')).toBe(true)
+  })
+
+  test('endTurn on a request with a partly done subtask list keeps it in 進行中', () => {
+    let b = startTurn(openRequest(EMPTY_BOARD, 'R', undefined, 0).board, 't1', 'R')
+    b = ok(applyTask(b, { op: 'add', to: '1', subtasks: ['x', 'y'] }))
+    b = ok(applyTask(b, { op: 'update', id: '1.1', status: 'completed' }))
+    const after = endTurn(b, 't1', 'answer', 10)
+    expect(after.items[0]?.status).toBe('completed')
+    expect(itemStatus(after.items[0] as JarvisTaskItem)).toBe('in_progress')
+    expect(currentRequest(after)).toBeUndefined()
   })
 })
 
