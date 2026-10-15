@@ -770,6 +770,9 @@ describe('task board requests wired', () => {
   test("an interrupted turn leaves its request pending; a subagent's turn closes nothing", async ($, on) => {
     world(on)
     await send($, 'A')
+    await turnStarts($, 'ts', 'sub work', 'agent-7')
+    await turnEnds($, 'ts', 'answer', 'agent-7')
+    expect(await boardOf($)).toContain('[>] 1 A（本輪請求）')
     await turnStarts($, 't1', 'A')
     await turnStarts($, 'ta', 'sub work', 'agent-7')
     await turnEnds($, 'ta', 'answer', 'agent-7')
