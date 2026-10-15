@@ -220,7 +220,9 @@ describe('desktop svg: the suit', () => {
     await pressOn($, 'desktop', 'suit-mark', 50)
     const tree = await drawOn($, 'desktop', 50)
     expect(textOf(tree)).toContain('MARK XLII · PAUSED')
-    expect(sourceOf(svgs(tree).find(s => altOf(s) === 'MARK XLII') ?? {})).not.toContain('class="scan"')
+    const held = svgs(tree).find(s => altOf(s) === 'MARK XLII')
+    expect(sourceOf(held ?? {})).not.toContain('class="scan"')
+    expect(held?.props?.['isInteractive']).toBeUndefined()
   })
 
   test('the tick never changes a picture while nothing else does', async ($, on) => {
@@ -231,6 +233,7 @@ describe('desktop svg: the suit', () => {
     await clock.advance(SUIT_TICK_MS * 3)
     const after = sources(await drawOn($, 'desktop', 50))
     expect(before.length).toBeGreaterThan(0)
+    expect(before.some(s => s.includes('class="scan"'))).toBe(true)
     expect(after).toEqual(before)
   })
 

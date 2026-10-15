@@ -430,7 +430,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // a Button holds only text: its segments drawn as glyphs whatever the surface
   const plainTexts = (segs: readonly Seg[]) => segs.filter(s => s.t !== '').map(textNode)
 
-  // a picture `w` cells by `h` rows, or undefined when it may not be drawn (then the glyphs are)
+  // a picture `wide` cells by `tall` rows, or undefined when it may not be drawn (then the glyphs are)
   const svgNode = (source: string, alt: string, wide: number, tall: number, animated = false): RenderElement | undefined =>
     SvgEl && svgSafe(source) ? (
       <SvgEl source={source} alt={alt} width={cellPx(wide)} height={rowPx(tall)} {...(animated ? { isInteractive: true } : {})} />
@@ -1614,7 +1614,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
           'MARK XLII',
           SCAN_FRAME_W,
           SUIT_CANVAS_ROWS,
-          true,
+          !suitPaused,
         )
       : undefined
     const frame = picture
