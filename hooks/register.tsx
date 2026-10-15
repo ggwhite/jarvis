@@ -43,7 +43,7 @@ import { MAX_LISTED, sessionGroups, unpushedGroups } from './changesView'
 import type { ChangesView } from './changesView'
 import { commitFileDiff, commitFiles, commitTreeOf, findRepos, repoSummary } from './gitCommits'
 import type { CommitFile, CommitTree, RepoSummary } from './gitCommits'
-import { forDesktop } from './icons'
+import { desktopTree } from './icons'
 import { commitRepoName, repoRows } from './commitsView'
 import type { CommitsCtx, RepoList } from './commitsView'
 import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, boardLive, closeResults, dropEmptyTopics, dropIdle, endTurn, fromTaskCreate, fromTaskUpdate, fromTodos, markWorked, openRequest, recordsRequest, requestContext, requestTitle, requestsEnding, slashName, startTurn, topicCandidates, withClassified, withResult } from './tasks'
@@ -1808,6 +1808,7 @@ export const register: Register = on => {
       fetch: () => fetchCommits($, commitsCache, commitRepo),
     }
     const drawn = drawCockpit(elements, view, {
+      svg: e.surface === 'desktop',
       cols: e.props.bodyColumns,
       rows: e.props.scroll.bodyRows,
       frame: SPINNER[t.n % SPINNER.length] ?? '⠋',
@@ -1869,16 +1870,4 @@ export const register: Register = on => {
     })
     return e.surface === 'terminal' ? drawn : desktopTree(drawn)
   })
-}
-
-// Desktop draws no Nerd Font glyphs: every string of the tree, but the keys and the press handles
-const desktopTree = <T,>(n: T): T => {
-  if (typeof n === 'string') return forDesktop(n) as T
-  if (Array.isArray(n)) return n.map(desktopTree) as T
-  if (n !== null && typeof n === 'object') {
-    const out: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(n)) out[k] = k === 'key' || k === 'press' ? v : desktopTree(v)
-    return out as T
-  }
-  return n
 }

@@ -1,4 +1,4 @@
-import type { EngineInterface, RenderElement } from 'claude-code'
+import type { ElementConstructor, EngineInterface, RenderElement, SvgProps } from 'claude-code'
 
 import type {
   FleetQuota,
@@ -49,6 +49,7 @@ import type { OwnerMark, TaskFolds, TaskLine } from './tasksView'
 import { commitRows, laneColor, relTime } from './commitsView'
 import type { CommitsCtx, RefLabel, RepoPage } from './commitsView'
 import { MAX_REMOTES } from './repoViews'
+import { CELL_PX_H, cellPx, meterSvg, rowPx, svgSafe } from './svgArt'
 import type { BranchList, BranchRow, RepoView, StashInfo, WorktreeRow } from './repoViews'
 import { graphWidth } from './commitGraph'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
@@ -141,9 +142,11 @@ const MK_ACTOR_COLS = 64
 // The widest a commit row's ref label is drawn, its icon included.
 const REF_MAX = 16
 
-type Ui = Pick<ReturnType<EngineInterface['ui']['resolve']>, 'Box' | 'Text' | 'Button'>
+type Ui = Pick<ReturnType<EngineInterface['ui']['resolve']>, 'Box' | 'Text' | 'Button'> & { Svg?: ElementConstructor<SvgProps> }
 
-export type Seg = { t: string; color?: string; bg?: string; bold?: boolean; inverse?: boolean }
+// `svg`: on Desktop the cells `t` takes are drawn as this picture instead, `alt` its words,
+// `animated` when it moves by itself (an interactive frame)
+export type Seg = { t: string; color?: string; bg?: string; bold?: boolean; inverse?: boolean; svg?: string; alt?: string; animated?: boolean }
 
 type Block = { node: RenderElement; h: number }
 
@@ -153,6 +156,8 @@ type Line = Seg[] | { node: RenderElement; h: number }
 type CardSpec = { w: number; color: string; lines: Line[] }
 
 export type Ctx = {
+  // Desktop: the charts drawn as Svg pictures
+  svg?: boolean
   cols: number
   rows: number
   // the spinner's frame, and the scan sweep's, at this tick
@@ -350,7 +355,9 @@ function clip(segs: readonly Seg[], width: number): Seg[] {
       left -= w
     } else {
       const bare = s.t.trimEnd()
-      out.push({ ...s, t: cellWidth(bare) <= left ? padCells(bare, left) : fitCells(s.t, left) })
+      // a picture cut short no longer fits its cells: its glyphs are drawn instead
+      const { svg: _svg, alt: _alt, animated: _animated, ...rest } = s
+      out.push({ ...rest, t: cellWidth(bare) <= left ? padCells(bare, left) : fitCells(s.t, left) })
       break
     }
   }
@@ -396,7 +403,41 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     ...(s.inverse ? { inverse: true } : {}),
   })
 
-  const texts = (segs: readonly Seg[]) => segs.filter(s => s.t !== '').map(s => <Text {...style(s)}>{s.t}</Text>)
+  // Desktop draws the charts as pictures; any other surface, or a missing Svg, their glyphs
+  const SvgEl = ctx.svg === true ? ui.Svg : undefined
+  const svgOn = SvgEl !== undefined
+
+  const textNode = (s: Seg) => <Text {...style(s)}>{s.t}</Text>
+
+  const segNode = (s: Seg): RenderElement =>
+    SvgEl && s.svg !== undefined && svgSafe(s.svg) ? (
+      <SvgEl
+        source={s.svg}
+        alt={s.alt ?? s.t}
+        width={cellPx(cellWidth(s.t))}
+        height={CELL_PX_H}
+        {...(s.animated ? { isInteractive: true } : {})}
+      />
+    ) : (
+      textNode(s)
+    )
+
+  const texts = (segs: readonly Seg[]) => segs.filter(s => s.t !== '').map(segNode)
+
+  // a Button holds only text: its segments drawn as glyphs whatever the surface
+  const plainTexts = (segs: readonly Seg[]) => segs.filter(s => s.t !== '').map(textNode)
+
+  // a picture `w` cells by `h` rows, or undefined when it may not be drawn (then the glyphs are)
+  const svgNode = (source: string, alt: string, w: number, h: number, animated = false): RenderElement | undefined =>
+    SvgEl && svgSafe(source) ? (
+      <SvgEl source={source} alt={alt} width={cellPx(w)} height={rowPx(h)} {...(animated ? { isInteractive: true } : {})} />
+    ) : undefined
+
+  // `▰▱` for `lit` of `total` cells: one picture on Desktop, two glyph runs elsewhere
+  const meter = (lit: number, total: number, color: string, alt: string): Seg[] =>
+    svgOn
+      ? [{ t: '▰'.repeat(lit) + '▱'.repeat(total - lit), color, svg: meterSvg(lit, total, color), alt }]
+      : [{ t: '▰'.repeat(lit), color }, { t: '▱'.repeat(total - lit), color: MUTED }]
 
   const lineNode = (segs: readonly Seg[]) => <Box flexDirection="row">{texts(segs)}</Box>
 
@@ -692,8 +733,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const lit = Math.min(m.chain, CHAIN_WARN)
     const chain: Seg[] = [
       { t: 'CHAIN ', color: FRAME },
-      { t: '▰'.repeat(lit), color: warn ? ERROR : ACCENT },
-      { t: '▱'.repeat(CHAIN_WARN - lit), color: MUTED },
+      ...meter(lit, CHAIN_WARN, warn ? ERROR : ACCENT, `CHAIN ${m.chain}/${CHAIN_WARN}`),
       { t: ` ${m.chain}/${CHAIN_WARN}`, color: warn ? ERROR : PRIMARY, bold: warn },
     ]
     const last: Seg[] =
@@ -1373,7 +1413,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const now = view.now
     // every idle suit's day is scaled to the fleet's idle peak
     const idleMax = idleHourMax(idle)
-    const opts = (s: FleetSession) => ({ now, self: ctx.sessionId !== '' && s.sessionId === ctx.sessionId, idleMax })
+    const opts = (s: FleetSession) => ({ now, self: ctx.sessionId !== '' && s.sessionId === ctx.sessionId, idleMax, ...(svgOn ? { svg: true } : {}) })
     const w = cols
     const spark = plan.mode === 'narrow' ? 6 : 10
     const units: { b: Block; suits: number }[] = []
@@ -1519,7 +1559,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const lit = r.meter ? Math.min(meterW, Math.max(0, Math.ceil(r.meter.pct * meterW))) : 0
     return [
       ...(label === '' ? [] : [{ t: label, color: FRAME }, sp(1)]),
-      ...(meterW > 0 ? [{ t: '▰'.repeat(lit), color }, { t: '▱'.repeat(meterW - lit), color: MUTED }, sp(1)] : []),
+      ...(meterW > 0 ? [...meter(lit, meterW, color, `${r.label} ${r.value}`.trim()), sp(1)] : []),
       { t: r.value, color },
     ]
   }

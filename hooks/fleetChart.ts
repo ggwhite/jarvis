@@ -1,7 +1,8 @@
 import { THEME } from './jarvis'
 
-// A run of text in one style, as the cockpit draws it.
-export type ChartSeg = { t: string; color?: string; bg?: string; bold?: boolean }
+// A run of text in one style, as the cockpit draws it; `svg`, on Desktop, the picture drawn
+// in the cells `t` takes, `alt` its words.
+export type ChartSeg = { t: string; color?: string; bg?: string; bold?: boolean; svg?: string; alt?: string }
 
 // One terminal cell: its character and colors.
 export type Cell = { ch: string; fg?: string; bg?: string; bold?: boolean }

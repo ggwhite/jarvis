@@ -13,6 +13,7 @@ import {
 } from './fleet'
 import { RING_BIG, RING_SMALL, brailleLine, cellsToSegs, gaugeBar, gaugeCells } from './fleetChart'
 import type { ChartSeg } from './fleetChart'
+import { meterSvg } from './svgArt'
 import { THEME, cellWidth, fitCells, fmtClock, fmtDate, fmtUsd, padCells, shortModel } from './jarvis'
 
 // A suit as drawn: `chip` the label of its number Button, `top` what follows it on its
@@ -20,7 +21,7 @@ import { THEME, cellWidth, fitCells, fmtClock, fmtDate, fmtUsd, padCells, shortM
 export type CardLines = { chip: ChartSeg[]; top: ChartSeg[]; body: ChartSeg[][] }
 // `idleMax`: the highest hour of today among the idle suits (idleHourMax), the top every
 // idle suit's day is scaled to; without it each is scaled to its own.
-export type SuitOpts = { now: number; self: boolean; idleMax?: number }
+export type SuitOpts = { now: number; self: boolean; idleMax?: number; svg?: boolean }
 
 export const TITLE_MIN = 8
 export const SELF_TEXT = 'THIS'
@@ -156,13 +157,15 @@ const titled = (title: string, room: number, self: boolean, color: string): Char
   return [{ t: fitCells(title, tw), color, bold: true }, ...(withSelf ? [sp(1), { t: SELF_TEXT, color: F, bold: true }] : [])]
 }
 
-const ctxBar = (pct: number | undefined, n: number): ChartSeg[] => {
+const ctxBar = (pct: number | undefined, n: number, svg = false): ChartSeg[] => {
   const tone = pct === undefined ? F : pct >= CONTEXT_ALERT ? E : pct >= CONTEXT_WARN ? A : P
   const fill = pct === undefined ? 0 : Math.min(n, Math.max(0, Math.round((pct * n) / 100)))
+  const meter: ChartSeg[] = svg
+    ? [{ t: '▰'.repeat(fill) + '▱'.repeat(n - fill), color: tone, svg: meterSvg(fill, n, tone), alt: `CTX ${pct === undefined ? '--' : `${pct}%`}` }]
+    : [{ t: '▰'.repeat(fill), color: tone }, { t: '▱'.repeat(n - fill), color: M }]
   return [
     { t: 'CTX ', color: F },
-    { t: '▰'.repeat(fill), color: tone },
-    { t: '▱'.repeat(n - fill), color: M },
+    ...meter,
     sp(1),
     { t: pct === undefined ? '  --' : padCells(`${pct}%`, 4, 'right'), color: tone, bold: true },
   ]
@@ -211,7 +214,7 @@ export function wideCard(s: FleetSession, w: number, o: SuitOpts): CardLines {
     { t: info, color: F },
     { t: ' │', color: F },
   ]
-  const bar = ctxBar(s.contextPct, 10)
+  const bar = ctxBar(s.contextPct, 10, o.svg === true)
   const today = fitCells(`TODAY ${fmtBig(s.todayTokens)} · ${fmtUsd(s.todayCost)}`, Math.max(0, inner - segsWidth(bar) - 1))
   const row2: ChartSeg[] = [
     { t: '│ ', color: F },
@@ -239,7 +242,7 @@ export function smallCard(s: FleetSession, w: number, o: SuitOpts): CardLines {
   const fill = Math.max(1, w - 9 - segsWidth(title) - tagW)
   const top: ChartSeg[] = [sp(1), ...title, { t: ` ${'─'.repeat(fill)} `, color: F }, tag, { t: ' ╮', color: F }]
   const inner = Math.max(0, w - 4)
-  const bar = ctxBar(s.contextPct, 5)
+  const bar = ctxBar(s.contextPct, 5, o.svg === true)
   const room = inner - segsWidth(bar) - 1
   const S = room >= 2 ? Math.min(10, room) : 0
   const used = (S > 0 ? S + 1 : 0) + segsWidth(bar)

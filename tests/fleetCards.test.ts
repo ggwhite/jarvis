@@ -210,3 +210,19 @@ describe('fleet cards', () => {
     expect(old.body[0]?.find(x => /^[\u2800-\u28FF]+$/.test(x.t))?.t).toBe('⣀'.repeat(10))
   })
 })
+
+describe('svg form: ctx meter', () => {
+  test('svg: the CTX meter is one seg carrying its picture, the glyphs kept for width', () => {
+    const c = wideCard(suit(), 60, { now: T0, self: false, svg: true })
+    const row2 = c.body[1] ?? []
+    const meter = row2.find(s => s.svg !== undefined)
+    expect(meter?.t).toBe('▰▰▰▰▱▱▱▱▱▱')
+    expect(meter?.alt).toBe('CTX 44%')
+    expect(segsWidth(row2)).toBe(segsWidth(wideCard(suit(), 60, { now: T0, self: false }).body[1] ?? []))
+  })
+
+  test('no svg: the CTX meter is two glyph segs, no picture', () => {
+    const c = smallCard(suit({ status: 'idle' }), 40, { now: T0, self: false })
+    expect((c.body[0] ?? []).some(s => s.svg !== undefined)).toBe(false)
+  })
+})
