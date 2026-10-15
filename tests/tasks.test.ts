@@ -71,7 +71,6 @@ import {
   cleanSummary,
   parseClassify,
   resultAsk,
-  titleAsk,
 } from '../hooks/summary'
 import type { TaskReply, TopicCandidate, TopicChoice } from '../hooks/tasks'
 import { EMPTY_TEXT, SUB_INDENT, TITLE_MIN, TOOL_MAX, isFolded, keptFolds, spinnerAt, splitLead, taskLines, taskRows, topicFolded, topicKey } from '../hooks/tasksView'
@@ -1575,11 +1574,8 @@ describe('request summaries', () => {
     expect(cleanSummary('它的 ‘x’ 與 “y” 值', RESULT_MAX)).toBe("它的 'x' 與 \"y\" 值")
   })
 
-  test('the asks carry the request and the answer, each cut to SUMMARY_INPUT_MAX', () => {
+  test('the result ask carries the request and the answer, each cut to SUMMARY_INPUT_MAX', () => {
     const long = 'x'.repeat(SUMMARY_INPUT_MAX + 500)
-    expect(titleAsk('算 7*6')).toContain('算 7*6')
-    expect(titleAsk(long)).toContain('x'.repeat(SUMMARY_INPUT_MAX))
-    expect(titleAsk(long)).not.toContain('x'.repeat(SUMMARY_INPUT_MAX + 1))
     const r = resultAsk('算 7*6', '答案是 42')
     expect(r).toContain('算 7*6')
     expect(r).toContain('回答：\n答案是 42')

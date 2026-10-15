@@ -19,10 +19,6 @@ export const SUMMARY_SYSTEM =
 // a text cut to SUMMARY_INPUT_MAX characters
 export const clipInput = (text: string): string => [...text].slice(0, SUMMARY_INPUT_MAX).join('')
 
-// What a request asks for, the words its title is made from.
-export const titleAsk = (prompt: string): string =>
-  `用不超過 ${SUMMARY_TITLE_MAX} 個字寫出這個請求要做什麼，動詞開頭，例如「計算 7*6」「解釋 CAS」「修 jarvis 的高亮」。\n\n請求：\n${clipInput(prompt)}`
-
 // What a request came to, from its prompt, its plan's subtasks when it has one, and the answer
 // of the turn it was done in.
 export const resultAsk = (prompt: string, answer: string, subtasks: readonly string[] = []): string =>
