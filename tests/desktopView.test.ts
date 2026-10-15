@@ -200,8 +200,9 @@ describe('desktop native: now page', () => {
     expect(((btn as Node).children ?? []).map(textOf).join('')).toBe('MK-1')
     expect(textOf(tree)).toContain('find the | files')
     await pressOn($, 'desktop', 'agent-agent-1', 50, 100)
-    // the detail page is not native: drawCockpit draws it
-    expect((await drawOn($, 'desktop', 50, 100)).props?.['backgroundColor']).not.toBe(DT.bg)
+    const detail = await drawOn($, 'desktop', 50, 100)
+    expect(detail.props?.['backgroundColor']).toBe(DT.bg)
+    expect(textOf(detail)).toContain('返回')
   })
 
   test('a subagent row never reaches past its card: fixed columns add up within the card', async ($, on) => {

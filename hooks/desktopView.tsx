@@ -2,6 +2,7 @@ import type { ElementConstructor, MarkdownProps, RenderElement } from 'claude-co
 
 import { HEALTH_TEXT, TABS } from './cockpit'
 import type { Ctx, Ui } from './cockpit'
+import { A_PAGES, drawPageA, isPageA, shownPageA } from './desktopPagesA'
 import { DT, GLASS, backdropSvg } from './desktopTheme'
 import { BIG_ROWS, bigWidth } from './fleetChart'
 import { ROLE_ICON, forDesktop } from './icons'
@@ -15,7 +16,7 @@ import type { JarvisAgent, JarvisPage } from '../types'
 export type DesktopUi = Ui & { Markdown?: ElementConstructor<MarkdownProps> }
 
 // The pages the native Desktop layout draws; every other page keeps drawCockpit.
-export const DESKTOP_PAGES: readonly JarvisPage[] = ['now', 'stats']
+export const DESKTOP_PAGES: readonly JarvisPage[] = ['now', 'stats', ...A_PAGES]
 
 // Whether the native layout draws this page: not while the boot screen plays.
 export const desktopPage = (page: JarvisPage, ctx: Pick<Ctx, 'boot'>): boolean => ctx.boot === undefined && DESKTOP_PAGES.includes(page)
@@ -30,6 +31,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
   const { Box, Text, Button, Svg } = ui
   const cols = ctx.cols
   const rows = Number.isFinite(ctx.rows) && ctx.rows > 0 ? Math.min(ctx.rows, MAX_ROWS) : 40
+  const shownPage = shownPageA(view, ctx)
 
   // a picture in whole cells and rows, or its words where it cannot go
   const picture = (source: string, alt: string, wide: number, tall: number, animated = false): RenderElement =>
@@ -82,7 +84,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
 
   const tabBar = (
     <Box flexDirection="row" gap={1} flexWrap="wrap">
-      {TABS.map(tab => pill(`tab-${tab.page}`, `${forDesktop(tab.icon)} ${tab.label}`, tab.page === ctx.page, () => ctx.go(tab.page)))}
+      {TABS.map(tab => pill(`tab-${tab.page}`, `${forDesktop(tab.icon)} ${tab.label}`, tab.page === shownPage || (shownPage === 'roleDetail' && tab.page === 'stats'), () => ctx.go(tab.page)))}
     </Box>
   )
 
@@ -485,8 +487,13 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     )
   }
 
-  const page: RenderElement = ctx.page === 'now' ? nowPage() : statsPage()
-  if (ctx.page !== 'now') ctx.onStandby?.(false)
+  const page: RenderElement =
+    shownPage === 'now'
+      ? nowPage()
+      : isPageA(shownPage)
+        ? drawPageA({ ui, view, ctx, rows, cardInner, card, head, tile, pill, picture, actorName }, shownPage)
+        : statsPage()
+  if (shownPage !== 'now') ctx.onStandby?.(false)
 
   return (
     <Box flexDirection="column" backgroundColor={DT.bg} minHeight={rows} paddingX={2} paddingY={1} gap={1}>
