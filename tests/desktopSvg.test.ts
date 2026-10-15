@@ -2,6 +2,7 @@ import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
+import { BIG_ROWS, bigWidth } from '../hooks/fleetChart'
 import { BOOT_MS, CHAIN_WARN, cellWidth } from '../hooks/jarvis'
 import { EMOJI_OF, TAB_ICON, desktopTree } from '../hooks/icons'
 import { SUIT_CANVAS_ROWS, SUIT_ROWS, SUIT_TICK_MS } from '../hooks/suit'
@@ -260,4 +261,37 @@ describe('desktop svg: the suit', () => {
     expect(svgs(loading).some(s => /^\d+%$/.test(altOf(s)))).toBe(true)
     expect(/[█░▀▄]/.test(textOf(loading))).toBe(false)
   })
+})
+
+describe('desktop svg: reactor and digits', () => {
+  const mainCardHeight = (tree: Node): number | undefined =>
+    all(tree, x => x.type === 'Box' && x.props?.['borderStyle'] === 'round' && textOf(x).includes('MAIN LINE'))
+      .map(x => Number(x.props?.['height']))[0]
+
+  test('the title reactor pulses as a picture while a subagent runs, rests dark after', async ($, on) => {
+    const clock = engine(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    const live = svgs(await drawOn($, 'desktop', 50)).find(s => altOf(s) === '反應爐運轉中')
+    expect(live?.props?.['isInteractive']).toBe(true)
+    expect(live?.props?.['width']).toBe(8)
+    await $.turn.complete(complete('agent-1'))
+    await clock.advance(3000)
+    const idle = svgs(await drawOn($, 'desktop', 50)).find(s => altOf(s) === '反應爐待機')
+    expect(idle?.props?.['isInteractive']).toBeUndefined()
+  })
+
+  for (const cols of [120, 80, 50]) {
+    test(`stats (${cols}): the success rate is one picture, the card as tall as on the terminal`, async ($, on) => {
+      engine(on)
+      await pressOn($, 'desktop', 'tab-stats', 45, cols)
+      const desk = await drawOn($, 'desktop', 45, cols)
+      const digits = svgs(desk).find(s => altOf(s) === 'SUCCESS RATE --')
+      expect(digits?.props?.['width']).toBe(cellPx(bigWidth('--')))
+      expect(digits?.props?.['height']).toBe(rowPx(BIG_ROWS))
+      expect(/[▀▄]/.test(textOf(desk))).toBe(false)
+      const term = await drawOn($, 'terminal', 45, cols)
+      expect(mainCardHeight(desk)).toBe(mainCardHeight(term))
+      wellFormed(desk, cols)
+    })
+  }
 })

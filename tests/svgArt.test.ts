@@ -1,16 +1,18 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { BURN_RAMP, GAUGE_RAMP } from '../hooks/fleetChart'
+import { BIG_ROWS, BURN_RAMP, GAUGE_RAMP, bigWidth } from '../hooks/fleetChart'
 import { THEME, cellWidth } from '../hooks/jarvis'
 import {
   CELL_PX_H,
   CELL_PX_W,
   SVG_MAX,
+  bigTextSvg,
   cellPx,
   gaugeBarSvg,
   meterSvg,
   pixelRects,
   rampBarSvg,
+  reactorSvg,
   rowPx,
   sparkSvg,
   stackedBarSvg,
@@ -172,5 +174,23 @@ describe('svgArt suit', () => {
   test('suitSvg takes an empty picture without throwing', () => {
     expect(svgSafe(suitSvg([], {}))).toBe(true)
     expect(svgSafe(suitSvg([[undefined]], { sights: true }))).toBe(true)
+  })
+})
+
+describe('svgArt reactor and digits', () => {
+  test('reactorSvg: a cell; pulsing only when live', () => {
+    expect(attr(reactorSvg(true), 'width')).toBe(String(CELL_PX_W))
+    expect(reactorSvg(true)).toContain('<animate attributeName="r"')
+    expect(reactorSvg(false)).not.toContain('<animate')
+    expect(reactorSvg(false)).toContain(`fill="${THEME.muted}"`)
+  })
+
+  test('bigTextSvg: the digits in cells, three rows tall, one color', () => {
+    const s = bigTextSvg('92%', THEME.primary)
+    expect(attr(s, 'width')).toBe(String(cellPx(bigWidth('92%'))))
+    expect(attr(s, 'height')).toBe(String(rowPx(BIG_ROWS)))
+    expect(count(s, /<rect /g)).toBeGreaterThan(5)
+    expect(count(s, new RegExp(`fill="(?!${THEME.primary})[^"]*"`, 'g'))).toBe(0)
+    expect(svgSafe(bigTextSvg('', THEME.error))).toBe(true)
   })
 })

@@ -206,16 +206,21 @@ export function bigWidth(text: string): number {
   return n === 0 ? 0 : n * GLYPH_W + (n - 1) * GLYPH_GAP
 }
 
-// `text` in the pixel font, one color; a character the font lacks is a blank glyph.
-export function bigText(text: string, color: string): Cell[][] {
+// `text` in the pixel font, one color, BIG_ROWS * 2 pixels tall; a character the font lacks
+// is a blank glyph.
+export function bigPixels(text: string, color: string): Pixels {
   const glyphs = [...text].map(ch => FONT[ch] ?? ['...', '...', '...', '...', '...'])
-  const px: Pixels = Array.from({ length: BIG_ROWS * 2 }, (_, y) =>
+  return Array.from({ length: BIG_ROWS * 2 }, (_, y) =>
     glyphs.flatMap((g, i) => [
       ...(i > 0 ? Array<string | undefined>(GLYPH_GAP).fill(undefined) : []),
       ...[...(g[y] ?? '...')].map(c => (c === '#' ? color : undefined)),
     ]),
   )
-  return pixelsToCells(px)
+}
+
+// `text` in the pixel font as half blocks.
+export function bigText(text: string, color: string): Cell[][] {
+  return pixelsToCells(bigPixels(text, color))
 }
 
 export type StackPart = { share: number; color: string }

@@ -1,4 +1,4 @@
-import { GAUGE_RAMP } from './fleetChart'
+import { BIG_ROWS, GAUGE_RAMP, bigPixels, bigWidth } from './fleetChart'
 import type { Pixels, StackPart } from './fleetChart'
 import { THEME } from './jarvis'
 
@@ -184,4 +184,22 @@ export function suitSvg(px: Pixels, look: SuitLook): string {
       : ''
   const body = `<g>${breath}${pixelRects(px, x0, 0, c => !glows(c))}<g>${glow}${pixelRects(px, x0, 0, glows)}</g></g>`
   return svgDoc(cols + 2 * pad, rows, `${look.sights ? corners(w, h) : ''}${body}${scan}`)
+}
+
+// The arc reactor beside the title, a cell: an ice-blue core pulsing while a squad member
+// runs, a dark one at rest.
+export function reactorSvg(live: boolean): string {
+  const cx = CELL_PX_W / 2
+  const cy = num(CELL_PX_H / 2)
+  if (!live) return svgDoc(1, 1, `<circle cx="${cx}" cy="${cy}" r="3" fill="${THEME.muted}"/>`)
+  return svgDoc(
+    1,
+    1,
+    `<circle cx="${cx}" cy="${cy}" r="3.5" fill="${THEME.accent}"><animate attributeName="r" values="2;3.8;2" dur="1.2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.6;1;0.6" dur="1.2s" repeatCount="indefinite"/></circle>`,
+  )
+}
+
+// `text` in the pixel font, one color, BIG_ROWS rows tall.
+export function bigTextSvg(text: string, color: string): string {
+  return svgDoc(bigWidth(text), BIG_ROWS, pixelRects(bigPixels(text, color)))
 }

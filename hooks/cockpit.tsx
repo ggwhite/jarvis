@@ -13,7 +13,7 @@ import type {
   QuotaWindow,
 } from '../types'
 import { fleetSections, fmtAgo, fmtBig, wrapCells } from './fleet'
-import { BURN_RAMP, bigText, bigWidth, brailleLine, burnChart, cellsToSegs, rampBar, stackedBar } from './fleetChart'
+import { BIG_ROWS, BURN_RAMP, bigText, bigWidth, brailleLine, burnChart, cellsToSegs, rampBar, stackedBar } from './fleetChart'
 import type { Cell, StackPart } from './fleetChart'
 import { idlePerRow, planFleet } from './fleetLayout'
 import type { FleetMode, FleetPlan } from './fleetLayout'
@@ -52,7 +52,7 @@ import type { OwnerMark, TaskFolds, TaskLine } from './tasksView'
 import { commitRows, laneColor, relTime } from './commitsView'
 import type { CommitsCtx, RefLabel, RepoPage } from './commitsView'
 import { MAX_REMOTES } from './repoViews'
-import { CELL_PX_H, cellPx, meterSvg, rampBarSvg, rowPx, sparkSvg, stackedBarSvg, suitSvg, svgSafe } from './svgArt'
+import { CELL_PX_H, bigTextSvg, cellPx, meterSvg, rampBarSvg, reactorSvg, rowPx, sparkSvg, stackedBarSvg, suitSvg, svgSafe } from './svgArt'
 import type { BranchList, BranchRow, RepoView, StashInfo, WorktreeRow } from './repoViews'
 import { graphWidth } from './commitGraph'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
@@ -553,13 +553,18 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // the title in the suit's red and gold, the arc reactor pulsing while a squad member
   // runs, and the health on the right
   const titleBar = (): Block => {
-    const reactor = reactorOf(ctx.beat, view.running.length > 0)
+    const live = view.running.length > 0
+    const reactor = reactorOf(ctx.beat, live)
     const left: Seg[] = [
       { t: '⌜ ', color: THEME.suitGold, bold: true },
       { t: 'J.A.R.V.I.S.', color: THEME.suitRed, bold: true },
       { t: ' ⌝', color: THEME.suitGold, bold: true },
       sp(1),
-      { t: reactor.glyph, color: reactor.color },
+      {
+        t: reactor.glyph,
+        color: reactor.color,
+        ...(svgOn ? { svg: reactorSvg(live), alt: live ? '反應爐運轉中' : '反應爐待機', ...(live ? { animated: true } : {}) } : {}),
+      },
     ]
     const health: Seg = { t: HEALTH_TEXT[view.health], color: HEALTH_COLOR[view.health], bold: true }
     const right: Seg =
@@ -730,6 +735,17 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // `segs` padded with blanks to `width` cells
   const padSegs = (segs: readonly Seg[], width: number): Seg[] => [...segs, sp(width - segsWidth(segs))]
 
+  // a picture with text rows to its right, `tall` rows in all: the big digits on Desktop
+  const beside = (pic: RenderElement, right: readonly Seg[][], tall: number): Line => ({
+    h: tall,
+    node: (
+      <Box flexDirection="row">
+        {pic}
+        <Box flexDirection="column">{right.map(r => lineNode(r))}</Box>
+      </Box>
+    ),
+  })
+
   const mainStatsSpec = (w: number, mode: FleetMode): CardSpec => {
     const inner = w - 4
     const family = nameFamilyOf(m.model)
@@ -753,6 +769,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const headLine = leftRight(head, [state], inner)
     const digits = bigText(pctText, failHigh ? ERROR : PRIMARY)
     const dW = bigWidth(pctText)
+    const bigPic = svgOn ? svgNode(bigTextSvg(pctText, failHigh ? ERROR : PRIMARY), `SUCCESS RATE ${pctText}`, dW, BIG_ROWS) : undefined
     const top = topTools(m.toolCounts, 2)
     const col1: Seg[][] = [
       [{ t: 'OK ', color: FRAME }, { t: String(m.ok), color: PRIMARY, bold: true }],
@@ -787,6 +804,15 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         second ? [sp(cellWidth('TOP ')), ...tool(second)] : [],
         last,
       ]
+      if (bigPic) {
+        const right = [0, 1, 2, 3].map(i => [
+          sp(2),
+          ...padSegs(col1[i] ?? [], col1W),
+          sp(2),
+          ...clip(col2W[i] ?? [], Math.max(0, inner - dW - 2 - col1W - 2)),
+        ])
+        return { w, color: FRAME, lines: [headLine, beside(bigPic, right, 4)] }
+      }
       const rows = [0, 1, 2, 3].map(i => [
         ...(digits[i] ? chartLine(digits[i]) : [sp(dW)]),
         sp(2),
@@ -798,7 +824,17 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     }
     if (mode === 'narrow') {
       const under = [0, 1, 2].map(i => clip([...padSegs(col1[i] ?? [], col1W), sp(2), ...(col2[i] ?? [])], inner))
+      if (bigPic) return { w, color: FRAME, lines: [headLine, { h: BIG_ROWS, node: <Box flexDirection="row">{bigPic}</Box> }, ...under] }
       return { w, color: FRAME, lines: [headLine, ...digits.map(r => chartLine(r)), ...under] }
+    }
+    if (bigPic) {
+      const right = [0, 1, 2].map(i => [
+        sp(2),
+        ...padSegs(col1[i] ?? [], col1W),
+        sp(2),
+        ...clip(col2[i] ?? [], Math.max(0, inner - dW - 2 - col1W - 2)),
+      ])
+      return { w, color: FRAME, lines: [headLine, beside(bigPic, right, 3)] }
     }
     const rows = [0, 1, 2].map(i => [
       ...chartLine(digits[i] ?? []),

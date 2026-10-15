@@ -7,6 +7,7 @@ import {
   GAUGE_RAMP,
   RING_BIG,
   RING_SMALL,
+  bigPixels,
   bigText,
   bigWidth,
   brailleLine,
@@ -254,5 +255,15 @@ describe('stacked bar', () => {
     const bar = stackedBar(8, [])
     expect(bar.map(c => c.ch).join('')).toBe('░'.repeat(8))
     expect(bar.every(c => c.fg === THEME.muted)).toBe(true)
+  })
+})
+
+describe('bigPixels', () => {
+  test('bigText is the pixels of bigPixels as half blocks', () => {
+    for (const t of ['92%', '--', '100%']) {
+      expect(bigText(t, THEME.primary)).toEqual(pixelsToCells(bigPixels(t, THEME.primary)))
+      expect(bigPixels(t, THEME.primary)).toHaveLength(BIG_ROWS * 2)
+      expect(bigPixels(t, THEME.primary)[0]).toHaveLength(bigWidth(t))
+    }
   })
 })
