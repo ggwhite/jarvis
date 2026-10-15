@@ -4,12 +4,12 @@ import { MIN_EVENT_ROWS } from './cockpit'
 import type { Ctx } from './cockpit'
 import { DT } from './desktopTheme'
 import type { DesktopUi } from './desktopView'
-import { MAX_EVENTS, ROLES, elapsedMs, eventRows, fitCells, fmtClock, fmtDate, fmtMs, fmtReadout } from './jarvis'
-import type { Cockpit, EventRow } from './jarvis'
+import { MAX_EVENTS, ROLES, WORKFLOW_TYPE, elapsedMs, eventRows, fitCells, fmtClock, fmtDate, fmtDur, fmtK, fmtMs, fmtReadout, phaseOf, shortModel } from './jarvis'
+import type { Cockpit, EventRow, Phase } from './jarvis'
 import { EMPTY_BOARD, boardCounts, boardGroups, countsText, groupStatus, isFresh, itemFresh, itemRunning, itemStartedAt, itemStatus } from './tasks'
 import type { TaskGroup } from './tasks'
 import { EMPTY_TEXT, TOOL_MAX, isFolded, topicFolded, topicKey } from './tasksView'
-import type { JarvisEvent, JarvisPage, JarvisSubtask, JarvisTaskItem, JarvisTaskStatus } from '../types'
+import type { JarvisAgent, JarvisEvent, JarvisPage, JarvisSubtask, JarvisTaskItem, JarvisTaskStatus } from '../types'
 
 // What the native layout's skeleton hands these pages: the elements, what to draw, and its
 // card, heading, tile, pill and picture, all already sized to the pane.
@@ -28,7 +28,7 @@ export type KitA = {
 }
 
 // The pages drawn here: the event log, the task board, a subagent's and a role's page.
-export const A_PAGES: readonly JarvisPage[] = ['log', 'tasks']
+export const A_PAGES: readonly JarvisPage[] = ['log', 'tasks', 'detail']
 
 export const isPageA = (page: JarvisPage): boolean => A_PAGES.includes(page)
 
@@ -165,6 +165,108 @@ function logPage(kit: KitA): RenderElement {
         {kit.pill('pause', ctx.paused ? '▶ 繼續' : '⏸ 暫停', ctx.paused, ctx.pause)}
       </Box>
       {eventsCard(kit, top, list, eventLimit(kit.rows, 14), '還沒有工具呼叫', true)}
+    </Box>
+  )
+}
+
+// ---- 子代理 ----
+
+// a squad member's status words, and their color
+const PHASE_WORDS: Record<Phase, string> = {
+  init: '◌ INITIALIZING…',
+  active: 'ACTIVE',
+  waiting: '⏳ WAITING ON BACKGROUND',
+  complete: '✅ MISSION COMPLETE',
+  failed: '❌ MISSION FAILED',
+  lost: '? SIGNAL LOST',
+}
+const PHASE_SHORT: Record<Phase, string> = { init: 'INIT', active: 'ACTIVE', waiting: 'WAITING', complete: 'COMPLETE', failed: 'FAILED', lost: 'LOST' }
+const phaseColor = (p: Phase): string => (p === 'failed' || p === 'lost' ? DT.fail : p === 'complete' ? DT.ok : DT.data)
+
+// a squad member's mark: ⌜MK-N⌝ while it runs, ⌞MK-N⌟ once done; a bare MK without a number
+const markOf = (a: JarvisAgent, n: number): string => {
+  const [open, close] = a.status === 'running' ? ['⌜', '⌝'] : ['⌞', '⌟']
+  return `${open}${n < 1 ? 'MK' : `MK-${n}`}${close}`
+}
+
+// a token count: 1.2k, 61k, 2.4M
+const tokens = (n: number): string => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : fmtK(n))
+
+// The page's own presses above it: 返回 always, on the key the cell grid gives it.
+function actionsRow(kit: KitA, back: () => void): RenderElement {
+  const { Box } = kit.ui
+  return (
+    <Box flexDirection="row" gap={1} flexWrap="wrap">
+      {kit.pill('back', '← 返回', false, back)}
+    </Box>
+  )
+}
+
+// One subagent: 返回 (to the role page it was opened from, else the now page), its record as
+// labelled fields, then its own calls.
+function detailPage(kit: KitA): RenderElement {
+  const { Box, Text } = kit.ui
+  const { view, ctx } = kit
+  const listed = [...view.running, ...view.stale, ...view.finished]
+  const a = listed.find(x => x.id === ctx.agentId)
+  const roleShown = ROLES.find(r => r === ctx.role)
+  const back = () => ctx.go(ctx.detailFrom === 'roleDetail' && roleShown ? 'roleDetail' : 'now')
+  if (a === undefined) return actionsRow(kit, back)
+  const member = view.roster.get(a.id) ?? { n: 0, color: DT.orange }
+  const p = phaseOf(a, view.now)
+  const LABEL_W = 8
+  const valueW = Math.max(1, kit.cardInner - LABEL_W - 1)
+  const field = (label: string, value: string, color: string = DT.text, bold = false, wrap = false): RenderElement => (
+    <Box flexDirection="row" gap={1}>
+      <Box width={LABEL_W} flexShrink={0}>
+        <Text color={DT.textSub}>{label}</Text>
+      </Box>
+      <Box width={valueW} flexShrink={0} overflow="hidden">
+        <Text color={color} bold={bold} wrap={wrap ? 'wrap' : 'truncate'}>
+          {value}
+        </Text>
+      </Box>
+    </Box>
+  )
+  const status = p === 'active' ? `${ctx.frame} ${PHASE_WORDS.active}${a.tool !== '' ? ` · ${a.tool}` : ''}` : PHASE_WORDS[p]
+  const cache = [...(a.cacheRead > 0 ? [`讀取 ${tokens(a.cacheRead)}`] : []), ...(a.cacheWrite > 0 ? [`寫入 ${tokens(a.cacheWrite)}`] : [])].join(' · ')
+  const typeLabel = a.type === WORKFLOW_TYPE ? 'workflow' : a.type
+  const infoTop = topLine(
+    kit.ui,
+    [
+      <Text color={member.color} bold>
+        {markOf(a, member.n)}
+      </Text>,
+      <Text color={DT.orange} bold>{`👥 子代理 · ${typeLabel}`}</Text>,
+    ],
+    <Text color={phaseColor(p)} bold>
+      {PHASE_SHORT[p]}
+    </Text>,
+  )
+  const infoCard = kit.card(
+    infoTop,
+    [
+      <Box flexDirection="column">
+        {field('類型', a.type, member.color, true)}
+        {field('模型', shortModel(a.model), DT.text)}
+        {field('狀態', status, phaseColor(p), true)}
+        {field('任務', a.description, DT.text, false, true)}
+        {field('開始', fmtClock(a.runStartedAt), DT.textSub)}
+        {field('耗時', fmtDur(elapsedMs(a, view.now)), DT.orangeBright, true)}
+        {field('Token', `輸入 ${tokens(a.input)} · 輸出 ${tokens(a.output)}`, DT.data)}
+        {cache === '' ? null : field('快取', cache, DT.data)}
+        {a.runId === undefined ? null : field('Workflow', `${a.runId === '' ? '(無 id)' : a.runId}${a.agentIndex !== undefined ? ` · 第 ${a.agentIndex} 個` : ''}`, DT.textSub)}
+      </Box>,
+    ],
+    DT.orangeEdge,
+  )
+  const own = view.events.filter(ev => ev.actor === a.id)
+  const eventsTop = topLine(kit.ui, [<Text color={DT.orange} bold>📜 事件流 · 這個 subagent</Text>], <Text color={DT.textSub}>{`${own.length} 則`}</Text>)
+  return (
+    <Box flexDirection="column" gap={1}>
+      {actionsRow(kit, back)}
+      {infoCard}
+      {eventsCard(kit, eventsTop, own, eventLimit(kit.rows, 30), '這個 subagent 還沒有工具呼叫', false)}
     </Box>
   )
 }
@@ -378,5 +480,5 @@ function tasksPage(kit: KitA): RenderElement {
 
 // One of A_PAGES as `page` (from shownPageA).
 export function drawPageA(kit: KitA, page: JarvisPage): RenderElement {
-  return page === 'tasks' ? tasksPage(kit) : logPage(kit)
+  return page === 'tasks' ? tasksPage(kit) : page === 'detail' ? detailPage(kit) : logPage(kit)
 }

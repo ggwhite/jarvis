@@ -99,6 +99,57 @@ describe('desktop native: event log', () => {
   })
 })
 
+describe('desktop native: subagent page', () => {
+  test('返回, the record as fields, then its own calls; only allowed props', async ($, on) => {
+    native(on)
+    await $.agent.spawn(spawnInput('find the files', 'Explore'))
+    await $.tool.call({ tool: 'Grep', pattern: 'needle', agentId: 'agent-1' } as never)
+    await $.tool.call({ tool: 'Read', file_path: '/main.ts' } as never)
+    await pressOn($, 'desktop', 'agent-agent-1', 50, 100)
+    const tree = await drawOn($, 'desktop', 50, 100)
+    expect(isNative(tree)).toBe(true)
+    const text = textOf(tree)
+    for (const word of ['返回', 'MK-1', '子代理', '類型', 'Explore', '模型', '狀態', '任務', 'find the files', '耗時', 'Token', '這個 subagent', 'Grep'])
+      expect(text).toContain(word)
+    // the main loop's calls are not this subagent's
+    expect(text).not.toContain('/main.ts')
+    expect(all(tree, x => x.type === 'Button' && x.props?.['key'] === 'back')).toHaveLength(1)
+    expect(badProps(tree)).toEqual([])
+    wellFormed(tree, 100)
+  })
+
+  test('empty: no calls yet says so', async ($, on) => {
+    native(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    await pressOn($, 'desktop', 'agent-agent-1')
+    expect(textOf(await drawOn($, 'desktop'))).toContain('這個 subagent 還沒有工具呼叫')
+  })
+
+  test('返回 goes back to the now page', async ($, on) => {
+    native(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    await pressOn($, 'desktop', 'agent-agent-1')
+    await pressOn($, 'desktop', 'back')
+    const tree = await drawOn($, 'desktop', 50, 100)
+    expect(textOf(tree)).toContain('MARK XLII')
+    expect(textOf(tree)).not.toContain('返回')
+  })
+
+  test('the fields and event rows never reach past their card', async ($, on) => {
+    native(on)
+    await $.agent.spawn(spawnInput('a description long enough to need cutting short in a narrow card '.repeat(3), 'Explore'))
+    await $.tool.call({ tool: 'Bash', command: 'a command long enough to need cutting short '.repeat(3), agentId: 'agent-1' } as never)
+    await pressOn($, 'desktop', 'agent-agent-1')
+    for (const cols of COLS) {
+      const tree = await drawOn($, 'desktop', 50, cols)
+      const rows = fixedRows(tree)
+      expect(rows.length).toBeGreaterThanOrEqual(5)
+      for (const row of rows) expect(rowWidth(row)).toBeLessThanOrEqual(cardInner(cols))
+      expect(badProps(tree)).toEqual([])
+    }
+  })
+})
+
 const task = ($: Engine, input: Record<string, unknown>) => $.tool.call({ tool: TASK_TOOL, ...input } as never)
 const withTasks = (on: Parameters<typeof engine>[0]) => {
   on('tool.register', async (_$, e) => ({ value: { tool: `mcp__jarvis__${e.name}` } }))
