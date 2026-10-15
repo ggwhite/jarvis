@@ -32,12 +32,12 @@ import {
   recordsRequest,
   requestContext,
   requestTitle,
-  sortedItems,
+  boardSections,
   startTurn,
 } from '../hooks/tasks'
 import type { Seg } from '../hooks/cockpit'
 import { TASK_ICON } from '../hooks/icons'
-import { THEME, cellWidth } from '../hooks/jarvis'
+import { THEME, cellWidth, padCells } from '../hooks/jarvis'
 import type { TaskReply } from '../hooks/tasks'
 import { EMPTY_TEXT, SUB_INDENT, taskRows } from '../hooks/tasksView'
 
@@ -190,19 +190,24 @@ describe('task board status and order', () => {
     expect(itemStatus({ ...item, status: 'completed', subtasks: [] })).toBe('completed')
   })
 
-  test('sortedItems: running, then pending, then done; each group in the order added', () => {
+  test('boardSections: running and planned in the order added, done newest first', () => {
     const b = build(
       { op: 'add', item: 'A' },
       { op: 'add', item: 'B', subtasks: ['b1'] },
       { op: 'add', item: 'C', subtasks: ['c1'] },
       { op: 'add', item: 'D', subtasks: ['d1', 'd2'] },
       { op: 'add', item: 'E' },
+      { op: 'add', item: 'F' },
       { op: 'update', id: '2.1', status: 'completed' },
       { op: 'update', id: '3.1', status: 'in_progress' },
       { op: 'update', id: '4.1', status: 'completed' },
       { op: 'update', id: '5', status: 'in_progress' },
+      { op: 'update', id: '6', status: 'completed' },
     )
-    expect(sortedItems(b).map(i => i.title)).toEqual(['C', 'E', 'A', 'D', 'B'])
+    const s = boardSections(b)
+    expect(s.running.map(i => i.title)).toEqual(['C', 'E'])
+    expect(s.planned.map(i => i.title)).toEqual(['A', 'D'])
+    expect(s.done.map(i => i.title)).toEqual(['F', 'B'])
   })
 
   test('counts, and the text the model reads in the order added', () => {
@@ -465,7 +470,7 @@ describe('task board rows', () => {
       expect(t).not.toMatch(/[\n\t]/)
       expect(cellWidth(t)).toBe(40)
     }
-    expect(rows[0]?.map(s => s.t).join('')).toContain('a b c')
+    expect(rows[1]?.map(s => s.t).join('')).toContain('a b c')
   })
 
 
@@ -473,31 +478,39 @@ describe('task board rows', () => {
     expect(taskRows(EMPTY_BOARD, 76, 10, owner).map(text)).toEqual([EMPTY_TEXT])
   })
 
-  test('items running first, a done item folded, counts at the right, subtasks indented', () => {
+  test('three parts under their headings: running, planned, done; a done item folded, counts at the right, subtasks indented', () => {
     const rows = taskRows(board(), 60, 20, owner).map(text)
-    expect(rows).toHaveLength(5)
-    expect(rows[0]?.startsWith(`${TASK_ICON.in_progress} A`)).toBe(true)
-    expect(rows[0]?.endsWith(' 0/2')).toBe(true)
-    expect(rows[1]?.startsWith(`${' '.repeat(SUB_INDENT)}${TASK_ICON.in_progress} a1`)).toBe(true)
-    expect(rows[2]?.startsWith(`${' '.repeat(SUB_INDENT)}${TASK_ICON.pending} a2`)).toBe(true)
-    expect(rows[2]?.endsWith(' MK-1')).toBe(true)
-    expect(rows[3]?.startsWith(`${TASK_ICON.pending} C`)).toBe(true)
-    expect(rows[3]?.trimEnd()).toBe(`${TASK_ICON.pending} C`)
-    expect(rows[4]?.startsWith(`${TASK_ICON.completed} B`)).toBe(true)
-    expect(rows[4]?.endsWith(' 1/1')).toBe(true)
+    expect(rows).toHaveLength(8)
+    expect(rows[0]?.trimEnd()).toBe('進行中 1')
+    expect(rows[1]?.startsWith(`${TASK_ICON.in_progress} A`)).toBe(true)
+    expect(rows[1]?.endsWith(' 0/2')).toBe(true)
+    expect(rows[2]?.startsWith(`${' '.repeat(SUB_INDENT)}${TASK_ICON.in_progress} a1`)).toBe(true)
+    expect(rows[3]?.startsWith(`${' '.repeat(SUB_INDENT)}${TASK_ICON.pending} a2`)).toBe(true)
+    expect(rows[3]?.endsWith(' MK-1')).toBe(true)
+    expect(rows[4]?.trimEnd()).toBe('預計 1')
+    expect(rows[5]?.trimEnd()).toBe(`${TASK_ICON.pending} C`)
+    expect(rows[6]?.trimEnd()).toBe('已完成 1')
+    expect(rows[7]?.startsWith(`${TASK_ICON.completed} B`)).toBe(true)
+    expect(rows[7]?.endsWith(' 1/1')).toBe(true)
   })
 
-  test('colors by status; the owner mark in its color, an unknown owner a bare MK in frame', () => {
+  test('an empty part draws no heading', () => {
+    const rows = taskRows(build({ op: 'add', item: 'A' }), 40, 10, owner).map(text)
+    expect(rows.map(r => r.trimEnd())).toEqual(['預計 1', `${TASK_ICON.pending} A`])
+  })
+
+  test('colors by status, headings in bold frame; the owner mark in its color, an unknown owner a bare MK in frame', () => {
     const rows = taskRows(board(), 60, 20, owner)
-    expect(rows[0]?.[0]).toEqual({ t: `${TASK_ICON.in_progress} `, color: THEME.accent })
-    expect(rows[0]?.[1]).toMatchObject({ color: THEME.bright, bold: true })
-    expect(rows[2]?.[1]).toEqual({ t: `${TASK_ICON.pending} `, color: THEME.frame })
-    expect(rows[2]?.[2]).toMatchObject({ color: THEME.primary })
-    expect(rows[2]?.at(-1)).toEqual({ t: 'MK-1', color: MEMBER })
-    expect(rows[4]?.[0]).toEqual({ t: `${TASK_ICON.completed} `, color: THEME.success })
-    expect(rows[4]?.[1]).toMatchObject({ color: THEME.frame })
+    expect(rows[0]).toEqual([{ t: padCells('進行中 1', 60), color: THEME.frame, bold: true }])
+    expect(rows[1]?.[0]).toEqual({ t: `${TASK_ICON.in_progress} `, color: THEME.accent })
+    expect(rows[1]?.[1]).toMatchObject({ color: THEME.bright, bold: true })
+    expect(rows[3]?.[1]).toEqual({ t: `${TASK_ICON.pending} `, color: THEME.frame })
+    expect(rows[3]?.[2]).toMatchObject({ color: THEME.primary })
+    expect(rows[3]?.at(-1)).toEqual({ t: 'MK-1', color: MEMBER })
+    expect(rows[7]?.[0]).toEqual({ t: `${TASK_ICON.completed} `, color: THEME.success })
+    expect(rows[7]?.[1]).toMatchObject({ color: THEME.frame })
     const stranger = build({ op: 'add', item: 'A', subtasks: ['a1'] }, { op: 'update', id: '1.1', agent: 'agent-x' })
-    expect(taskRows(stranger, 40, 5, owner)[1]?.at(-1)).toEqual({ t: 'MK', color: THEME.frame })
+    expect(taskRows(stranger, 40, 5, owner)[2]?.at(-1)).toEqual({ t: 'MK', color: THEME.frame })
   })
 
   test('every row is exactly width cells; long CJK titles end in an ellipsis', () => {
@@ -505,17 +518,18 @@ describe('task board rows', () => {
     for (const width of [24, 40, 76]) {
       const rows = taskRows(long, width, 10, owner)
       for (const row of rows) expect(cellWidth(text(row))).toBe(width)
-      expect(text(rows[0] ?? []).includes('…')).toBe(true)
-      expect(text(rows[1] ?? []).endsWith(' MK-1')).toBe(true)
+      expect(text(rows[1] ?? []).includes('…')).toBe(true)
+      expect(text(rows[2] ?? []).endsWith(' MK-1')).toBe(true)
     }
   })
 
-  test('more rows than room: the last row says how many are left out; no room draws nothing', () => {
+  test('more rows than room: the last row says how many are left out, the oldest done first; no room draws nothing', () => {
     const rows = taskRows(board(), 60, 3, owner).map(text)
     expect(rows).toHaveLength(3)
-    expect(rows[2]).toBe('還有 3 列')
+    expect(rows[0]?.trimEnd()).toBe('進行中 1')
+    expect(rows[2]).toBe('還有 6 列')
     expect(taskRows(board(), 60, 0, owner)).toEqual([])
-    expect(taskRows(board(), 60, 1, owner).map(text)).toEqual(['還有 5 列'])
+    expect(taskRows(board(), 60, 1, owner).map(text)).toEqual(['還有 8 列'])
   })
 })
 

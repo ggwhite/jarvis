@@ -217,14 +217,13 @@ export function itemStatus(item: JarvisTaskItem): JarvisTaskStatus {
   return 'pending'
 }
 
-const RANK: Record<JarvisTaskStatus, number> = { in_progress: 0, pending: 1, completed: 2 }
+export type BoardSections = { running: JarvisTaskItem[]; planned: JarvisTaskItem[]; done: JarvisTaskItem[] }
 
-// running items first, then waiting, then done; each group in the order added
-export function sortedItems(board: JarvisTaskBoard): JarvisTaskItem[] {
-  return board.items
-    .map((item, i) => ({ item, i, rank: RANK[itemStatus(item)] }))
-    .sort((a, b) => a.rank - b.rank || a.i - b.i)
-    .map(x => x.item)
+// The board in the page's three parts: running and planned in the order added, done newest
+// first so the latest work reads first.
+export function boardSections(board: JarvisTaskBoard): BoardSections {
+  const inStatus = (s: JarvisTaskStatus) => board.items.filter(i => itemStatus(i) === s)
+  return { running: inStatus('in_progress'), planned: inStatus('pending'), done: inStatus('completed').reverse() }
 }
 
 export type BoardCounts = { items: number; itemsDone: number; subtasks: number; subtasksDone: number }
