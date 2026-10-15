@@ -10,6 +10,8 @@ import type { FileStat } from '../hooks/gitDiff'
 import { COMMIT_ICON } from '../hooks/icons'
 import { BOOT_MS, THEME, cellWidth } from '../hooks/jarvis'
 import { ioOf } from '../hooks/register'
+import { DT } from '../hooks/desktopTheme'
+import { badProps } from './allowedProps'
 
 // a stat over a set of directories and files
 const statOf = (dirs: string[], files: string[] = []): Pick<ChangesIo, 'stat'> & { asked: string[] } => {
@@ -2850,5 +2852,55 @@ describe('commits mode: into a branch, a stash, a worktree', () => {
     const t = await shown($)
     expect(t).toContain('1 repos')
     expect(t).not.toContain('1 / 2')
+  })
+})
+
+describe('Desktop native changes page through the engine', () => {
+  const R = '/w/r'
+  const A = `${R}/a.go`
+  const G = '/usr/bin/git'
+  const answers: Record<string, Run> = {
+    [`${G} -C ${R} symbolic-ref -q --short refs/remotes/origin/HEAD`]: { exitCode: 0, stdout: 'origin/main\n' },
+    [`${G} -C ${R} merge-base HEAD origin/main`]: { exitCode: 0, stdout: 'b4se\n' },
+    [`${G} -C ${R} rev-list --count b4se..HEAD`]: { exitCode: 0, stdout: '1\n' },
+    [`${G} -C ${R} diff --numstat -z --no-renames b4se`]: { exitCode: 0, stdout: '4\t1\ta.go\x00' },
+    [`${G} -C ${R} ls-files --others --exclude-standard -z`]: { exitCode: 0, stdout: '' },
+  }
+  const isChg = (x: Node) => x.type === 'Button' && keyOf(x).startsWith('chg-')
+  const shownDesk = async ($: Engine) => {
+    await deskTree($)
+    await settle()
+    return deskTree($)
+  }
+
+  test('native world: the changes tab draws the native page with its chg- buttons; a mode pill switches the mode', async ($, on) => {
+    world(on, { native: true, dirs: [`${R}/.git`], files: { [A]: 1 }, results: { [A]: editResult(A, 'a') }, git: answers })
+    await start($)
+    await edit($, A)
+    await deskPress($, 'tab-changes')
+    const tree = await shownDesk($)
+    expect(tree.props?.['backgroundColor']).toBe(DT.bg)
+    const keys = allOf(tree, isChg).map(keyOf)
+    expect(keys).toContain('chg-mode-unpushed')
+    expect(keys).toContain(`chg-s:${A}`)
+    // the session's own changes need no refresh
+    expect(keys).not.toContain('chg-refresh')
+    expect(badProps(tree)).toEqual([])
+    await deskPress($, 'chg-mode-unpushed')
+    const unpushed = await shownDesk($)
+    expect(unpushed.props?.['backgroundColor']).toBe(DT.bg)
+    const after = allOf(unpushed, isChg).map(keyOf)
+    expect(after).toContain('chg-refresh')
+    expect(after).toContain(`chg-u:${A}`)
+    expect(textOf(unpushed)).toContain('↑1')
+    expect(badProps(unpushed)).toEqual([])
+  })
+
+  test('without native the same world draws the cell grid on Desktop', async ($, on) => {
+    world(on, { dirs: [`${R}/.git`], files: { [A]: 1 }, results: { [A]: editResult(A, 'a') }, git: answers })
+    await start($)
+    await edit($, A)
+    await deskPress($, 'tab-changes')
+    expect((await shownDesk($)).props?.['backgroundColor']).not.toBe(DT.bg)
   })
 })
