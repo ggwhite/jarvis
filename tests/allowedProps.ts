@@ -1,8 +1,7 @@
 import type { Node } from './desktopSvg.test'
 
-// what the engine itself carries on any element: the address, the children, the closures, and
-// the press marker desktopTree keeps
-const COMMON = ['key', 'children', 'onPress', 'onLinkPress', 'press']
+// the only prop every element may carry
+const COMMON = ['children']
 
 // The props Claude Desktop's bundled Claude Code 2.1.295 accepts, read from its binary on
 // 2026-10-15; one outside these and the whole pane is refused.
@@ -15,9 +14,10 @@ export const ALLOWED: Record<string, readonly string[]> = {
     'borderStyle', 'borderColor', 'borderDimColor', 'backgroundColor', 'overflow', 'display',
     'position', 'top', 'left', 'right', 'bottom',
   ],
-  Text: ['color', 'backgroundColor', 'dimColor', 'bold', 'italic', 'underline', 'strikethrough', 'inverse', 'wrap'],
-  Button: ['label', 'hotkey', 'action', 'plain', 'dimColor', 'variant', 'role', 'autoFocus'],
-  Markdown: ['text', 'dimColor', 'pressableLinks'],
+  // weight: the engine adds it to a bold Text; no source of ours writes it
+  Text: ['weight', 'color', 'backgroundColor', 'dimColor', 'bold', 'italic', 'underline', 'strikethrough', 'inverse', 'wrap'],
+  Button: ['key', 'onPress', 'label', 'hotkey', 'action', 'plain', 'dimColor', 'variant', 'role', 'autoFocus'],
+  Markdown: ['key', 'onLinkPress', 'text', 'dimColor', 'pressableLinks'],
   Svg: ['source', 'alt', 'width', 'height', 'isInteractive'],
 }
 

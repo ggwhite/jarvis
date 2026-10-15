@@ -54,4 +54,13 @@ describe('desktop theme: allowed props', () => {
   test('an element type outside the list is reported', () => {
     expect(badProps({ type: 'Client', props: {} })).toEqual(['Client'])
   })
+
+  test('key is for Button and Markdown only; onPress for Button only; onLinkPress for Markdown only', () => {
+    expect(badProps({ type: 'Box', props: { key: 'k' } })).toEqual(['Box.key'])
+    expect(badProps({ type: 'Svg', props: { key: 'k' } })).toEqual(['Svg.key'])
+    expect(badProps({ type: 'Text', props: { onPress: () => undefined } })).toEqual(['Text.onPress'])
+    expect(badProps({ type: 'Button', props: { key: 'k', onPress: () => undefined } })).toEqual([])
+    expect(badProps({ type: 'Markdown', props: { key: 'k', onLinkPress: () => undefined } })).toEqual([])
+    expect(badProps({ type: 'Markdown', props: { onPress: () => undefined } })).toEqual(['Markdown.onPress'])
+  })
 })
