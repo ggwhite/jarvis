@@ -2,9 +2,10 @@ import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { CHAIN_WARN, cellWidth } from '../hooks/jarvis'
+import { BOOT_MS, CHAIN_WARN, cellWidth } from '../hooks/jarvis'
 import { EMOJI_OF, TAB_ICON, desktopTree } from '../hooks/icons'
-import { CELL_PX_H, cellPx, svgSafe } from '../hooks/svgArt'
+import { SUIT_CANVAS_ROWS, SUIT_ROWS, SUIT_TICK_MS } from '../hooks/suit'
+import { CELL_PX_H, cellPx, rowPx, svgSafe } from '../hooks/svgArt'
 
 export type Node = { type?: string; props?: Record<string, unknown>; children?: (Node | string)[] }
 export type Surface = 'terminal' | 'desktop' | 'mobile'
@@ -195,5 +196,65 @@ describe('desktop svg: bars and lines', () => {
     const tree = await drawOn($, 'desktop', 45, 40)
     wellFormed(tree, 40)
     for (const s of svgs(tree)) expect(Number(s.props?.['width'])).toBeLessThanOrEqual(cellPx(36))
+  })
+})
+
+describe('desktop svg: the suit', () => {
+  const sources = (tree: Node) => svgs(tree).map(sourceOf).sort()
+
+  test('the standby suit is one moving picture in its sights, no half blocks', async ($, on) => {
+    engine(on)
+    const tree = await drawOn($, 'desktop', 50)
+    const suit = svgs(tree).find(s => altOf(s) === 'MARK XLII')
+    expect(suit?.props?.['width']).toBe(cellPx(36))
+    expect(suit?.props?.['height']).toBe(rowPx(SUIT_CANVAS_ROWS))
+    expect(suit?.props?.['isInteractive']).toBe(true)
+    expect(/[▀▄]/.test(textOf(tree))).toBe(false)
+    expect(textOf(tree)).toContain('MARK XLII · STANDBY')
+    wellFormed(tree, 80)
+  })
+
+  test('the mark line is the press that holds the suit; held, it reads PAUSED and stops', async ($, on) => {
+    engine(on)
+    await drawOn($, 'desktop', 50)
+    await pressOn($, 'desktop', 'suit-mark', 50)
+    const tree = await drawOn($, 'desktop', 50)
+    expect(textOf(tree)).toContain('MARK XLII · PAUSED')
+    expect(sourceOf(svgs(tree).find(s => altOf(s) === 'MARK XLII') ?? {})).not.toContain('class="scan"')
+  })
+
+  test('the tick never changes a picture while nothing else does', async ($, on) => {
+    const clock = engine(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    await clock.advance(3000)
+    const before = sources(await drawOn($, 'desktop', 50))
+    await clock.advance(SUIT_TICK_MS * 3)
+    const after = sources(await drawOn($, 'desktop', 50))
+    expect(before.length).toBeGreaterThan(0)
+    expect(after).toEqual(before)
+  })
+
+  test('narrow (40): the suit centered alone, its readouts under it', async ($, on) => {
+    engine(on)
+    const tree = await drawOn($, 'desktop', 50, 40)
+    expect(svgs(tree).some(s => altOf(s) === 'MARK XLII')).toBe(true)
+    wellFormed(tree, 40)
+  })
+
+  test('boot: the art a still picture, the loading bar a picture', async ($, on) => {
+    const clock = engine(on)
+    on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+    on('command.run', async () => ({}))
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await clock.advance(BOOT_MS)
+    await $.command.run({ command: 'jarvis', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 100 } })
+    const online = await drawOn($, 'desktop', 50)
+    const art = svgs(online).find(s => altOf(s) === 'MARK XLII')
+    expect(art?.props?.['height']).toBe(rowPx(SUIT_ROWS))
+    expect(art?.props?.['isInteractive']).toBeUndefined()
+    await clock.advance(BOOT_MS * 0.6)
+    const loading = await drawOn($, 'desktop', 50)
+    expect(svgs(loading).some(s => /^\d+%$/.test(altOf(s)))).toBe(true)
+    expect(/[█░▀▄]/.test(textOf(loading))).toBe(false)
   })
 })

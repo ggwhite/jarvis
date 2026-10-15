@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { THEME, cellWidth } from '../hooks/jarvis'
 import type { Cell } from '../hooks/fleetChart'
-import { mix } from '../hooks/fleetChart'
+import { mix, pixelsToCells } from '../hooks/fleetChart'
 import {
   CHARGE_MS,
   HOVER_MS,
@@ -23,9 +23,11 @@ import {
   WAVE_MS,
   crewDeployed,
   fmtUptime,
+  framePixels,
   readoutMeterW,
   sideReadout,
   standbyReadouts,
+  suitArtPixels,
   suitCells,
   suitFrame,
   suitResting,
@@ -439,5 +441,31 @@ describe('readouts beside the suit', () => {
     expect(sideReadout(r.left[0] as Readout, READOUT_SIDE_MIN_W)).toEqual({ label: '5H', meterW: 4 })
     expect(sideReadout(r.left[2] as Readout, READOUT_SIDE_MIN_W)).toEqual({ label: 'CREW', meterW: 0 })
     expect(sideReadout(r.left[3] as Readout, READOUT_SIDE_MIN_W)).toEqual({ label: 'UPTIME', meterW: 0 })
+  })
+})
+
+describe('suit pixels', () => {
+  test('framePixels is what suitFrame draws, a canvas 32 by 32', () => {
+    for (const tick of [0, 3, 17, 40]) {
+      const opts = { busy: false, now: 10_000 }
+      const { px, pose } = framePixels(tick, opts)
+      expect(px).toHaveLength(SUIT_CANVAS_ROWS * 2)
+      expect(px.every(r => r.length === SUIT_CANVAS_COLS)).toBe(true)
+      const half = (c: Cell) => (c.ch === '█' && c.fg ? { ch: '▀', fg: c.fg, bg: c.fg } : c)
+      expect(suitFrame(tick, opts)).toEqual({ cells: pixelsToCells(px).map(r => r.map(half)), pose })
+    }
+  })
+
+  test('held still, the pixels never change with the tick', () => {
+    const a = framePixels(0, { busy: true, now: 1, still: true }).px
+    const b = framePixels(37, { busy: true, now: 99_999, still: true }).px
+    expect(b).toEqual(a)
+  })
+
+  test('suitArtPixels is the art suitCells draws, 24 wide and 28 tall', () => {
+    const px = suitArtPixels()
+    expect(px).toHaveLength(SUIT_ART.length)
+    expect(px.every(r => r.length === SUIT_COLS)).toBe(true)
+    expect(pixelsToCells(px)).toHaveLength(SUIT_ROWS)
   })
 })

@@ -9,13 +9,16 @@ import {
   cellPx,
   gaugeBarSvg,
   meterSvg,
+  pixelRects,
   rampBarSvg,
   rowPx,
   sparkSvg,
   stackedBarSvg,
+  suitSvg,
   svgDoc,
   svgSafe,
 } from '../hooks/svgArt'
+import { framePixels, suitArtPixels } from '../hooks/suit'
 
 // an attribute of the outer <svg>
 export const attr = (svg: string, name: string): string | undefined => svg.match(new RegExp(`^<svg[^>]* ${name}="([^"]*)"`))?.[1]
@@ -127,5 +130,47 @@ describe('svgArt bars and lines', () => {
       sparkSvg([1, 2], 0, undefined, THEME.primary),
     ]
     for (const s of cases) expect(svgSafe(s)).toBe(true)
+  })
+})
+
+describe('svgArt suit', () => {
+  test('pixelRects: a run of one color in a row is one rect', () => {
+    const s = pixelRects([['#AA0000', '#AA0000', '#AA0000', undefined, '#00AA00'], [undefined, undefined]])
+    expect(count(s, /<rect /g)).toBe(2)
+    expect(s).toContain(`width="${3 * CELL_PX_W}"`)
+    expect(s).toContain(`height="${CELL_PX_H / 2}"`)
+  })
+
+  test('suitSvg: the canvas in cells, corners when sighted', () => {
+    const px = framePixels(0, { busy: false, now: 0, still: true }).px
+    const s = suitSvg(px, { sights: true })
+    expect(attr(s, 'width')).toBe(String(cellPx(32 + 4)))
+    expect(attr(s, 'height')).toBe(String(rowPx(16)))
+    expect(s).toContain(`stroke="${THEME.frame}"`)
+    expect(count(s, /<rect /g)).toBeGreaterThan(20)
+    expect(count(s, /<rect /g)).toBeLessThan(600)
+    expect(svgSafe(s)).toBe(true)
+  })
+
+  test('suitSvg: breath quicker when busy, the eyes flash fast on a deploy', () => {
+    const px = framePixels(0, { busy: false, now: 0, still: true }).px
+    const dur = (s: string) => s.match(/<animateTransform[^>]* dur="([^"]+)"/)?.[1]
+    expect(dur(suitSvg(px, { busy: false }))).toBe('3s')
+    expect(dur(suitSvg(px, { busy: true }))).toBe('1.5s')
+    expect(suitSvg(px, { crewFlash: true })).toMatch(/attributeName="opacity"[^>]* dur="0.3s"/)
+  })
+
+  test('suitSvg: paused has no scan line nor motion; still (the boot art) none either', () => {
+    const px = framePixels(0, { busy: false, now: 0, still: true }).px
+    expect(suitSvg(px, {})).toContain('class="scan"')
+    expect(suitSvg(px, { paused: true })).not.toContain('class="scan"')
+    expect(suitSvg(px, { paused: true })).not.toContain('<animate')
+    expect(suitSvg(suitArtPixels(), { still: true })).not.toContain('<animate')
+    expect(attr(suitSvg(suitArtPixels(), { still: true }), 'width')).toBe(String(cellPx(24)))
+  })
+
+  test('suitSvg takes an empty picture without throwing', () => {
+    expect(svgSafe(suitSvg([], {}))).toBe(true)
+    expect(svgSafe(suitSvg([[undefined]], { sights: true }))).toBe(true)
   })
 })

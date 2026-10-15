@@ -22,15 +22,18 @@ import {
   SCAN_SIDE_MIN_COLS,
   SUIT_BLOCK_ROWS,
   SUIT_CANVAS_COLS,
+  SUIT_CANVAS_ROWS,
   SUIT_COLS,
   SUIT_REST_TICK_MS,
   SUIT_ROWS,
   SUIT_TICK_MS,
   SUIT_UNDER_ROWS,
   crewDeployed,
+  framePixels,
   readoutMeterW,
   sideReadout,
   standbyReadouts,
+  suitArtPixels,
   suitCells,
   suitFrame,
   suitResting,
@@ -49,7 +52,7 @@ import type { OwnerMark, TaskFolds, TaskLine } from './tasksView'
 import { commitRows, laneColor, relTime } from './commitsView'
 import type { CommitsCtx, RefLabel, RepoPage } from './commitsView'
 import { MAX_REMOTES } from './repoViews'
-import { CELL_PX_H, cellPx, meterSvg, rampBarSvg, rowPx, sparkSvg, stackedBarSvg, svgSafe } from './svgArt'
+import { CELL_PX_H, cellPx, meterSvg, rampBarSvg, rowPx, sparkSvg, stackedBarSvg, suitSvg, svgSafe } from './svgArt'
 import type { BranchList, BranchRow, RepoView, StashInfo, WorktreeRow } from './repoViews'
 import { graphWidth } from './commitGraph'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
@@ -428,9 +431,9 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const plainTexts = (segs: readonly Seg[]) => segs.filter(s => s.t !== '').map(textNode)
 
   // a picture `w` cells by `h` rows, or undefined when it may not be drawn (then the glyphs are)
-  const svgNode = (source: string, alt: string, w: number, h: number, animated = false): RenderElement | undefined =>
+  const svgNode = (source: string, alt: string, wide: number, tall: number, animated = false): RenderElement | undefined =>
     SvgEl && svgSafe(source) ? (
-      <SvgEl source={source} alt={alt} width={cellPx(w)} height={rowPx(h)} {...(animated ? { isInteractive: true } : {})} />
+      <SvgEl source={source} alt={alt} width={cellPx(wide)} height={rowPx(tall)} {...(animated ? { isInteractive: true } : {})} />
     ) : undefined
 
   // `▰▱` for `lit` of `total` cells: one picture on Desktop, two glyph runs elsewhere
@@ -1590,7 +1593,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     })
 
   // the suit at rest over its two lines: standing by, and whether any order ever came; its
-  // readouts either side when wide, under the two lines when narrow
+  // readouts either side when wide, under the two lines when narrow. On Desktop the suit is
+  // one picture moving by itself; the tick never reaches it.
   const standbyBlock = (): Block => {
     const now = view.now
     const lastEv = view.events.at(-1)
@@ -1603,30 +1607,38 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       failed: view.finished.filter(a => a.status === 'failed').length,
       ...(lastEv ? { lastAgoMs: now - (lastEv.ts + lastEv.ms) } : {}),
     })
-    const frame = suitFrame(ctx.suitTick ?? 0, {
-      busy: suitBusy,
-      now,
-      resting: suitRests,
-      still: suitPaused,
-      ...(ctx.deployedAt === undefined ? {} : { deployedAt: ctx.deployedAt }),
-    })
-    const sighted = sightedArt(frame.cells)
-    // each row of the suit, corners and all, a press that holds or plays it; beside it what
-    // the row holds either side
-    let art: { pre: Seg[]; suit: Seg[]; post: Seg[] }[]
+    const crew = crewDeployed(now, ctx.deployedAt)
+    const picture = svgOn
+      ? svgNode(
+          suitSvg(framePixels(0, { busy: suitBusy, now, still: true }).px, { busy: suitBusy, crewFlash: crew, paused: suitPaused, sights: true }),
+          'MARK XLII',
+          SCAN_FRAME_W,
+          SUIT_CANVAS_ROWS,
+          true,
+        )
+      : undefined
+    const frame = picture
+      ? undefined
+      : suitFrame(ctx.suitTick ?? 0, {
+          busy: suitBusy,
+          now,
+          resting: suitRests,
+          still: suitPaused,
+          ...(ctx.deployedAt === undefined ? {} : { deployedAt: ctx.deployedAt }),
+        })
+    const side = Math.floor((cols - SCAN_FRAME_W) / 2)
+    const rest = cols - SCAN_FRAME_W - side
+    // the readouts from the art's second row, each in the first form that fits its side
+    const leftOf = (i: number): Seg[] => {
+      const l = clip(readoutSegs(r.left[i - 1], x => sideReadout(x, side)), side)
+      return [sp(side - segsWidth(l)), ...l]
+    }
+    const rightOf = (i: number): Seg[] => {
+      const rt = clip(readoutSegs(r.right[i - 1], x => sideReadout(x, rest)), rest)
+      return [...rt, sp(rest - segsWidth(rt))]
+    }
     let under: Seg[][] = []
-    if (scanSide) {
-      const side = Math.floor((cols - SCAN_FRAME_W) / 2)
-      const rest = cols - SCAN_FRAME_W - side
-      // the readouts from the art's second row, each in the first form that fits its side
-      art = sighted.map((row, i) => {
-        const l = clip(readoutSegs(r.left[i - 1], x => sideReadout(x, side)), side)
-        const rt = clip(readoutSegs(r.right[i - 1], x => sideReadout(x, rest)), rest)
-        return { pre: [sp(side - segsWidth(l)), ...l], suit: row, post: [...rt, sp(rest - segsWidth(rt))] }
-      })
-    } else {
-      const side = Math.floor((cols - SCAN_FRAME_W) / 2)
-      art = sighted.map(row => ({ pre: [sp(side)], suit: row, post: [sp(cols - SCAN_FRAME_W - side)] }))
+    if (!scanSide) {
       // under the suit the full labels, the meter giving way a cell at a time
       const full = (width: number) => (x: Readout) => ({ label: x.label, meterW: readoutMeterW(x, width) })
       under = Array.from({ length: SUIT_UNDER_ROWS }, (_, i) => {
@@ -1635,23 +1647,55 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       })
     }
     const toggle = () => ctx.toggleSuit?.()
-    const artNodes = art.map(({ pre, suit, post }, i) => (
-      <Box flexDirection="row">
-        {texts(pre)}
-        <Button key={`suit-row-${i}`} plain onPress={toggle}>
-          {texts(suit)}
-        </Button>
-        {texts(post)}
-      </Box>
-    ))
+    let artNodes: RenderElement[]
+    if (picture) {
+      const at = Array.from({ length: SUIT_CANVAS_ROWS }, (_, i) => i)
+      artNodes = [
+        scanSide ? (
+          <Box flexDirection="row">
+            <Box flexDirection="column" width={side}>
+              {at.map(i => lineNode(leftOf(i)))}
+            </Box>
+            {picture}
+            <Box flexDirection="column" width={rest}>
+              {at.map(i => lineNode(rightOf(i)))}
+            </Box>
+          </Box>
+        ) : (
+          <Box flexDirection="row">
+            {texts([sp(side)])}
+            {picture}
+            {texts([sp(rest)])}
+          </Box>
+        ),
+      ]
+    } else {
+      // each row of the suit, corners and all, a press that holds or plays it; beside it what
+      // the row holds either side
+      const art = sightedArt(frame?.cells ?? []).map((row, i) =>
+        scanSide ? { pre: leftOf(i), suit: row, post: rightOf(i) } : { pre: [sp(side)], suit: row, post: [sp(rest)] },
+      )
+      artNodes = art.map(({ pre, suit, post }, i) => (
+        <Box flexDirection="row">
+          {texts(pre)}
+          <Button key={`suit-row-${i}`} plain onPress={toggle}>
+            {texts(suit)}
+          </Button>
+          {texts(post)}
+        </Box>
+      ))
+    }
+    const artRows = picture ? SUIT_CANVAS_ROWS : artNodes.length
+    // Desktop's suit holds one pose: its words follow what it does, not the tick
+    const pose = frame ? frame.pose : suitBusy ? 'ACTIVE' : 'STANDBY'
     // the line under the suit, its p drawn before it, centered as one
     const mark = clip(
       [
         suitPaused
           ? { t: 'MARK XLII · PAUSED', color: FRAME }
-          : crewDeployed(now, ctx.deployedAt)
+          : crew
             ? { t: '◆ CREW DEPLOYED', color: ACCENT }
-            : { t: `MARK XLII · ${frame.pose}`, color: FRAME },
+            : { t: `MARK XLII · ${pose}`, color: FRAME },
       ],
       cols,
     )
@@ -1683,7 +1727,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       ...under,
     ]
     return {
-      h: artNodes.length + 2 + lines.length,
+      h: artRows + 2 + lines.length,
       node: (
         <Box flexDirection="column">
           {artNodes}
@@ -1698,17 +1742,31 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // ---- 開機 ---------------------------------------------------------------
 
   const bootBlock = (stage: BootStage): Block => {
-    const art = artFits && rows >= 1 + BOOT_SUIT_H ? [...suitArt(), BLANK] : []
-    const lines: Seg[][] = [BLANK, ...art, centered([{ t: 'J.A.R.V.I.S. ONLINE', color: BRIGHT, bold: true }], cols)]
+    const showArt = artFits && rows >= 1 + BOOT_SUIT_H
+    const pic = showArt && svgOn ? svgNode(suitSvg(suitArtPixels(), { still: true }), 'MARK XLII', SUIT_COLS, SUIT_ROWS) : undefined
+    const art: Line[] = !showArt
+      ? []
+      : pic
+        ? [{ h: SUIT_ROWS, node: <Box flexDirection="row">{texts([sp(Math.floor((cols - SUIT_COLS) / 2))])}{pic}</Box> }, BLANK]
+        : [...suitArt(), BLANK]
+    const lines: Line[] = [BLANK, ...art, centered([{ t: 'J.A.R.V.I.S. ONLINE', color: BRIGHT, bold: true }], cols)]
     if (stage.phase === 'loading') {
       const barW = Math.max(4, Math.min(24, cols - 8))
       const fill = Math.round((stage.pct / 100) * barW)
       lines.push(
         centered([{ t: 'LOADING CREW MANIFEST… ', color: PRIMARY }, { t: `${stage.pct}%`, color: ACCENT, bold: true }], cols),
-        centered([{ t: '█'.repeat(fill), color: ACCENT }, { t: '░'.repeat(barW - fill), color: MUTED }], cols),
+        centered(
+          svgOn
+            ? [{ t: '█'.repeat(fill) + '░'.repeat(barW - fill), color: ACCENT, svg: rampBarSvg(barW, stage.pct / 100, [ACCENT]), alt: `${stage.pct}%` }]
+            : [{ t: '█'.repeat(fill), color: ACCENT }, { t: '░'.repeat(barW - fill), color: MUTED }],
+          cols,
+        ),
       )
     }
-    return { h: lines.length, node: <Box flexDirection="column">{lines.map(lineNode)}</Box> }
+    return {
+      h: lines.reduce((n, l) => n + (Array.isArray(l) ? 1 : l.h), 0),
+      node: <Box flexDirection="column">{lines.map(l => (Array.isArray(l) ? lineNode(l) : l.node))}</Box>,
+    }
   }
 
   if (ctx.boot) {

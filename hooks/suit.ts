@@ -56,14 +56,18 @@ const SUIT_COLOR: Record<string, string> = {
   D: THEME.muted,
 }
 
-// The suit as cells: two pixels to a cell, half blocks only, a cell of one color the top
-// half over a background of the same.
-export function suitCells(): Cell[][] {
-  const px: Pixels = SUIT_ART.map(r => {
+// The suit's art as pixels, each row centered to SUIT_COLS: what suitCells draws as cells.
+export function suitArtPixels(): Pixels {
+  return SUIT_ART.map(r => {
     const left = Math.floor((SUIT_COLS - r.length) / 2)
     return [...r.padStart(left + r.length, '.').padEnd(SUIT_COLS, '.')].map(ch => SUIT_COLOR[ch])
   })
-  return pixelsToCells(px).map(row => row.map(c => (c.ch === '█' && c.fg ? { ch: '▀', fg: c.fg, bg: c.fg } : c)))
+}
+
+// The suit as cells: two pixels to a cell, half blocks only, a cell of one color the top
+// half over a background of the same.
+export function suitCells(): Cell[][] {
+  return pixelsToCells(suitArtPixels()).map(row => row.map(c => (c.ch === '█' && c.fg ? { ch: '▀', fg: c.fg, bg: c.fg } : c)))
 }
 
 // A power readout's meter, in cells.
@@ -380,14 +384,11 @@ export function crewDeployed(now: number, deployedAt: number | undefined): boole
   return deployedAt !== undefined && now >= deployedAt && now - deployedAt < CREW_SHOW_MS
 }
 
-// The standby suit at frame `tick`: the poses in turn, the scan line a pixel row lower each
-// frame, the eyes and palms flashing just after a spawn; `resting`, standing by with no scan
-// line whatever the tick; `still`, standing by at the start of its breath whatever the tick,
-// the times or a spawn. Nothing but the tick and the times decide it.
-export function suitFrame(
+// The standby suit's pixels at frame `tick`, and its pose: what suitFrame draws as cells.
+export function framePixels(
   tick: number,
   opts: { busy: boolean; deployedAt?: number; now: number; resting?: boolean; still?: boolean },
-): { cells: Cell[][]; pose: Pose } {
+): { px: Pixels; pose: Pose } {
   const f = Number.isFinite(tick) ? Math.max(0, Math.floor(tick)) : 0
   const { i, t } = opts.resting || opts.still ? { i: 0, t: 0 } : poseAt(f)
   const at = POSES[i] ?? POSES[0]
@@ -419,6 +420,18 @@ export function suitFrame(
   }
   const scan = opts.resting || opts.still ? undefined : px[f % CANVAS_PX]
   if (scan) scan.forEach((color, x) => (scan[x] = color === undefined ? undefined : mix(color, THEME.bright, SCAN_MIX)))
+  return { px, pose }
+}
+
+// The standby suit at frame `tick`: the poses in turn, the scan line a pixel row lower each
+// frame, the eyes and palms flashing just after a spawn; `resting`, standing by with no scan
+// line whatever the tick; `still`, standing by at the start of its breath whatever the tick,
+// the times or a spawn. Nothing but the tick and the times decide it.
+export function suitFrame(
+  tick: number,
+  opts: { busy: boolean; deployedAt?: number; now: number; resting?: boolean; still?: boolean },
+): { cells: Cell[][]; pose: Pose } {
+  const { px, pose } = framePixels(tick, opts)
   const cells = pixelsToCells(px).map(row => row.map(c => (c.ch === '█' && c.fg ? { ch: '▀', fg: c.fg, bg: c.fg } : c)))
   return { cells, pose }
 }

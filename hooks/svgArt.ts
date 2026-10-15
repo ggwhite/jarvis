@@ -1,5 +1,5 @@
 import { GAUGE_RAMP } from './fleetChart'
-import type { StackPart } from './fleetChart'
+import type { Pixels, StackPart } from './fleetChart'
 import { THEME } from './jarvis'
 
 // One cell of the Desktop pane in CSS px, measured with svgprobe on 2026-10-15: bodyColumns
@@ -119,4 +119,69 @@ export function sparkSvg(vals: readonly number[], width: number, top: number | u
     1,
     `<polyline points="${pts.join(' ')}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>`,
   )
+}
+
+// Pixels two to a row of cells, CELL_PX_W wide and half a row tall, from (`x0`, `y0`); a run
+// of one color in a row is one rect. `keep` leaves out the colors it says no to.
+export function pixelRects(px: Pixels, x0 = 0, y0 = 0, keep?: (color: string) => boolean): string {
+  const pw = CELL_PX_W
+  const ph = CELL_PX_H / 2
+  let out = ''
+  px.forEach((row, y) => {
+    let x = 0
+    while (x < row.length) {
+      const c = row[x]
+      if (c === undefined || (keep && !keep(c))) {
+        x += 1
+        continue
+      }
+      let end = x + 1
+      while (end < row.length && row[end] === c) end += 1
+      out += `<rect x="${num(x0 + x * pw)}" y="${num(y0 + y * ph)}" width="${num((end - x) * pw)}" height="${num(ph)}" fill="${c}"/>`
+      x = end
+    }
+  })
+  return out
+}
+
+// `busy` quickens the breath, `crewFlash` the eyes; `paused` and `still` hold every motion;
+// `sights` a blank cell and a corner either side, as the standby suit stands in.
+export type SuitLook = { busy?: boolean; crewFlash?: boolean; paused?: boolean; still?: boolean; sights?: boolean }
+
+// the sights' four corners round a `w` by `h` picture
+const corners = (w: number, h: number): string => {
+  const a = 8
+  const i = 2
+  const d = [
+    `M${i} ${i + a}V${i}H${i + a}`,
+    `M${w - i - a} ${i}H${w - i}V${i + a}`,
+    `M${i} ${h - i - a}V${h - i}H${i + a}`,
+    `M${w - i - a} ${h - i}H${w - i}V${h - i - a}`,
+  ]
+  return `<path d="${d.join('')}" fill="none" stroke="${THEME.frame}" stroke-width="1.5"/>`
+}
+
+// The suit as one picture: its breath, its eyes' glow and the scan line its own animations,
+// so nothing but the look decides the source.
+export function suitSvg(px: Pixels, look: SuitLook): string {
+  const cols = Math.max(0, ...px.map(r => r.length))
+  const rows = Math.ceil(px.length / 2)
+  const pad = look.sights ? 2 : 0
+  const w = cellPx(cols + 2 * pad)
+  const h = rowPx(rows)
+  const x0 = cellPx(pad)
+  const glows = (c: string) => c === THEME.accent
+  const moving = look.still !== true && look.paused !== true
+  const breath = moving
+    ? `<animateTransform attributeName="transform" type="translate" values="0 0;0 2;0 0" dur="${look.busy ? '1.5s' : '3s'}" repeatCount="indefinite"/>`
+    : ''
+  const glow = moving
+    ? `<animate attributeName="opacity" values="1;0.35;1" dur="${look.crewFlash ? '0.3s' : '2s'}" repeatCount="indefinite"/>`
+    : ''
+  const scan =
+    moving && h > CELL_PX_H
+      ? `<rect class="scan" x="${x0}" y="0" width="${cellPx(cols)}" height="${CELL_PX_H}" fill="${THEME.bright}" opacity="0.18"><animate attributeName="y" values="0;${h - CELL_PX_H};0" dur="2s" repeatCount="indefinite"/></rect>`
+      : ''
+  const body = `<g>${breath}${pixelRects(px, x0, 0, c => !glows(c))}<g>${glow}${pixelRects(px, x0, 0, glows)}</g></g>`
+  return svgDoc(cols + 2 * pad, rows, `${look.sights ? corners(w, h) : ''}${body}${scan}`)
 }
