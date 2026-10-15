@@ -44,7 +44,7 @@ import type { DiffRow, Failed, NumstatRow } from './gitDiff'
 import { tailCells } from './changes'
 import type { ChangeMode } from './changes'
 import { EMPTY_BOARD, boardCounts, countsText } from './tasks'
-import { taskLines } from './tasksView'
+import { splitLead, taskLines } from './tasksView'
 import type { OwnerMark, TaskFolds, TaskLine } from './tasksView'
 import { commitRows, laneColor, relTime } from './commitsView'
 import type { CommitsCtx, RefLabel, RepoPage } from './commitsView'
@@ -2292,7 +2292,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // An item's row with subtasks: its icon and title are the Button that folds or opens
   // them, so a pointer over the row inverts them alone; other rows are plain.
   const taskLine = (l: TaskLine): Line => {
-    const [icon, title, ...rest] = l.segs
+    const { lead, rest: segs } = splitLead(l.segs)
+    const [icon, title, ...rest] = segs
     const it = l.item
     const toggle = ctx.toggleTask
     if (it === undefined || toggle === undefined || icon === undefined || title === undefined) return l.segs
@@ -2301,6 +2302,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       h: 1,
       node: (
         <Box flexDirection="row">
+          {lead.length > 0 ? texts(lead) : null}
           <Button key={`task-${it.id}`} plain onPress={() => toggle(it.id, !it.folded)}>
             {texts([icon, { ...title, t: name }])}
           </Button>

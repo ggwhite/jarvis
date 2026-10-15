@@ -74,7 +74,7 @@ import {
   titleAsk,
 } from '../hooks/summary'
 import type { TaskReply, TopicCandidate, TopicChoice } from '../hooks/tasks'
-import { EMPTY_TEXT, SUB_INDENT, TITLE_MIN, TOOL_MAX, isFolded, keptFolds, spinnerAt, taskLines, taskRows } from '../hooks/tasksView'
+import { EMPTY_TEXT, SUB_INDENT, TITLE_MIN, TOOL_MAX, isFolded, keptFolds, spinnerAt, splitLead, taskLines, taskRows, topicFolded, topicKey } from '../hooks/tasksView'
 import type { AgentBadge, OwnerMark } from '../hooks/tasksView'
 
 const ok = (r: TaskReply): JarvisTaskBoard => {
@@ -2234,5 +2234,90 @@ describe('request topic asks', () => {
   test('the system asks for the lines as told, without the wide symbols', () => {
     expect(CLASSIFY_SYSTEM).toContain('照指示的行數')
     expect(CLASSIFY_SYSTEM).toContain('→')
+  })
+})
+
+describe('task board topics drawn', () => {
+  const owner = () => ({ t: 'MK', color: THEME.frame })
+  const text = (segs: readonly Seg[]) => segs.map(s => s.t).join('')
+  const fresh = (title: string): TopicChoice => ({ kind: 'new', title })
+  const join = (id: string): TopicChoice => ({ kind: 'join', id, title: '' })
+  const req = (b: JarvisTaskBoard, t: string, rid: string, done = true) => {
+    const opened = openRequest(b, t, undefined, 0, rid).board
+    return done ? endTurn(startTurn(opened, `t-${rid}`, t), `t-${rid}`, 'answer', 1) : opened
+  }
+  // Jamie (two requests, the second running), Andy (one, done)
+  const board = () => {
+    let b = withClassified(req(EMPTY_BOARD, 'j1', 'r1'), 'r1', '查看 Jamie', fresh('Jamie 簽到'))
+    b = withResult(b, 'r1', '看歷史累計')
+    b = withClassified(req(b, 'a1', 'r2'), 'r2', '查看 Andy', fresh('Andy 門檻'))
+    b = withResult(b, 'r2', '本來就是元')
+    return withClassified(req(b, 'j2', 'r3', false), 'r3', '確認送出', join('1'))
+  }
+
+  test('a topic of many requests is one row with its requests indented under it', () => {
+    const rows = taskLines(board(), 60, 20, owner, 0).map(l => text(l.segs))
+    expect(rows[0]).toMatch(/^進行中 1/)
+    expect(rows[1]).toContain('Jamie 簽到')
+    expect(rows[1]).toContain('1/2')
+    expect(rows[2]?.startsWith(' '.repeat(SUB_INDENT))).toBe(true)
+    expect(rows[2]).toContain('查看 Jamie')
+    expect(rows[3]).toContain('確認送出')
+    expect(rows[4]).toMatch(/^已完成 1/)
+  })
+
+  test('a topic of one request is one row under the topic title with the request result', () => {
+    const rows = taskLines(board(), 60, 20, owner, 0).map(l => text(l.segs))
+    const andy = rows.find(r => r.includes('Andy')) ?? ''
+    expect(andy).toContain('Andy 門檻')
+    expect(andy).not.toContain('查看 Andy')
+    expect(andy).toContain('本來就是元')
+    expect(andy.startsWith(' ')).toBe(false)
+  })
+
+  test('a one-request topic shows the title the model set', () => {
+    const b = ok(applyTask(board(), { op: 'update', id: '2', title: '模型的標題' }))
+    const rows = taskLines(b, 60, 20, owner, 0).map(l => text(l.segs))
+    expect(rows.some(r => r.includes('模型的標題'))).toBe(true)
+  })
+
+  test('a done topic shows its newest result and is folded; a running one is open', () => {
+    let b = board()
+    b = endTurn(startTurn(b, 't9', 'j2'), 't9', 'answer', 2)
+    b = withResult(b, 'r3', '已私訊')
+    const lines = taskLines(b, 60, 20, owner, 0)
+    const jamie = lines.find(l => text(l.segs).includes('Jamie 簽到'))
+    expect(text(jamie?.segs ?? [])).toContain('已私訊')
+    expect(jamie?.item).toEqual({ id: topicKey('1'), folded: true })
+    expect(lines.some(l => text(l.segs).includes('查看 Jamie'))).toBe(false)
+    const running = taskLines(board(), 60, 20, owner, 0).find(l => text(l.segs).includes('Jamie 簽到'))
+    expect(running?.item).toEqual({ id: 't:1', folded: false })
+  })
+
+  test('a press folds or opens a topic; kept folds keep the topics still on the board', () => {
+    const b = board()
+    const g = boardGroups(b).running[0]!
+    expect(topicFolded(g, {})).toBe(false)
+    expect(topicFolded(g, { 't:1': true })).toBe(true)
+    const lines = taskLines(b, 60, 20, owner, 0, { 't:1': true })
+    expect(lines.some(l => text(l.segs).includes('確認送出'))).toBe(false)
+    expect(keptFolds({ 't:1': true, 't:9': false, '1': true }, b)).toEqual({ 't:1': true, '1': true })
+  })
+
+  test('a request with a plan under a topic draws its subtasks two indents in, every row width cells', () => {
+    const planned = ok(applyTask(board(), { op: 'add', subtasks: ['步驟一'] }))
+    // a request whose only subtask waits is planned, so its topic would fold: start the subtask
+    const b = ok(applyTask(planned, { op: 'update', id: '3.1', status: 'in_progress' }))
+    const lines = taskLines(b, 40, 20, owner, 0)
+    const sub = lines.find(l => text(l.segs).includes('步驟一'))
+    expect(text(sub?.segs ?? []).startsWith(' '.repeat(SUB_INDENT * 2))).toBe(true)
+    const reqRow = lines.find(l => text(l.segs).includes('確認送出'))
+    expect(reqRow?.item).toEqual({ id: '3', folded: false })
+    for (const l of lines) expect(cellWidth(text(l.segs))).toBe(40)
+  })
+
+  test('a row\'s leading indent stays outside its button', () => {
+    expect(splitLead([{ t: '    ' }, { t: 'x' }, { t: 'y' }])).toEqual({ lead: [{ t: '    ' }], rest: [{ t: 'x' }, { t: 'y' }] })
+    expect(splitLead([{ t: 'x' }])).toEqual({ lead: [], rest: [{ t: 'x' }] })
   })
 })
