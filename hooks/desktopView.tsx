@@ -3,12 +3,13 @@ import type { ElementConstructor, MarkdownProps, RenderElement } from 'claude-co
 import { HEALTH_TEXT, TABS } from './cockpit'
 import type { Ctx, Ui } from './cockpit'
 import { DT, LIGHT, backdropSvg } from './desktopTheme'
+import { BIG_ROWS, bigWidth } from './fleetChart'
 import { ROLE_ICON, forDesktop } from './icons'
-import { MAIN_ACTOR, MAIN_SOURCE, ROLE_LABEL, THEME, elapsedMs, fitCells, fmtClock, fmtDur, fmtK, fmtMs, phaseOf, roleOf, shortModel, tokenTotal, tokensOf } from './jarvis'
+import { CHAIN_WARN, MAIN_ACTOR, MAIN_SOURCE, ROLE_LABEL, THEME, elapsedMs, fitCells, fmtClock, fmtDur, fmtK, fmtMs, fmtUsd, phaseOf, roleModels, roleOf, shareLabel, shortModel, tokenTotal, tokensOf, topTools } from './jarvis'
 import type { Cockpit, Phase } from './jarvis'
 import { POWER_METER_W, SUIT_CANVAS_COLS, SUIT_CANVAS_ROWS, crewDeployed, framePixels, standbyReadouts } from './suit'
 import type { Readout } from './suit'
-import { cellPx, clamp01, meterSvg, reactorSvg, rowPx, suitSvg, svgSafe } from './svgArt'
+import { bigTextSvg, cellPx, clamp01, meterSvg, rampBarSvg, reactorSvg, rowPx, stackedBarSvg, suitSvg, svgSafe } from './svgArt'
 import type { JarvisAgent, JarvisPage } from '../types'
 
 export type DesktopUi = Ui & { Markdown?: ElementConstructor<MarkdownProps> }
@@ -314,7 +315,109 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     )
   }
 
-  const page: RenderElement = ctx.page === 'now' ? nowPage() : <Box flexDirection="column" gap={1} />
+  const MODEL_COLORS = [DT.orange500, DT.data, DT.ok, DT.orange200]
+
+  const statsPage = (): RenderElement => {
+    const m = view.main
+    const total = m.ok + m.fail
+    const rate = total === 0 ? undefined : Math.round((m.ok / total) * 100)
+    const rateText = rate === undefined ? '--' : `${rate}%`
+    const rateColor = rate === undefined ? DT.textFaint : rate >= 90 ? DT.orange500 : rate >= 70 ? DT.orange700 : DT.fail
+    const chainColor = m.chain >= CHAIN_WARN ? DT.fail : DT.orange500
+    const top = topTools(m.toolCounts, 1)[0]
+    const mainCard = card(head('💻', 'MAIN LINE', `${shortModel(m.model)} · ${m.isRunning ? '● 運作中' : '○ 閒置'}`), [
+      <Box flexDirection="row" gap={1} flexWrap="wrap">
+        {tile([<Text color={DT.textSub}>SUCCESS RATE</Text>, picture(bigTextSvg(rateText, rateColor), `SUCCESS RATE ${rateText}`, bigWidth(rateText), BIG_ROWS)])}
+        {tile([
+          <Text color={DT.textSub}>{`OK   ${m.ok}`}</Text>,
+          <Text color={m.fail > 0 ? DT.fail : DT.textSub}>{`FAIL ${m.fail}`}</Text>,
+        ])}
+        {tile([
+          <Text color={DT.textSub}>CHAIN</Text>,
+          <Box flexDirection="row" gap={1} alignItems="center">
+            {picture(meterSvg(Math.min(m.chain, CHAIN_WARN), CHAIN_WARN, chainColor, LIGHT), `CHAIN ${m.chain}/${CHAIN_WARN}`, CHAIN_WARN, 1)}
+            <Text color={chainColor} bold>{`${m.chain}/${CHAIN_WARN}`}</Text>
+          </Box>,
+        ])}
+        {tile([
+          <Text color={DT.textSub}>{`TOP  ${top ? `${top.tool} ${top.count}` : '--'}`}</Text>,
+          <Text color={DT.text} wrap="truncate">{`LAST ${m.lastTool === '' ? '--' : `${m.lastTool} ${m.lastDesc}`}`}</Text>,
+        ])}
+      </Box>,
+    ])
+
+    const counts = view.dispatch.map(d => d.running + d.done + d.failed)
+    const dmax = Math.max(1, ...counts)
+    const models = roleModels([...view.running, ...view.stale, ...view.finished])
+    // as the subagent rows: where the card is too narrow the model gives way, so the row
+    // never reaches past the card
+    const DCOL = { name: 14, model: 8, count: 4 }
+    const BAR_MIN = 6
+    const showModel = DCOL.name + DCOL.model + DCOL.count + 3 + BAR_MIN <= cardInner
+    const barW = Math.max(1, cardInner - DCOL.name - DCOL.count - 2 - (showModel ? DCOL.model + 1 : 0))
+    const shownRoles = view.dispatch.filter((d, i) => (d.role !== 'workflow' && d.role !== 'other') || (counts[i] ?? 0) > 0)
+    const dispatchCard = card(
+      head('📨', 'DISPATCH', `${counts.reduce((sum, n) => sum + n, 0)} 次派工`),
+      shownRoles.map(d => {
+        const n = d.running + d.done + d.failed
+        return (
+          <Box flexDirection="row" gap={1} alignItems="center">
+            <Box width={DCOL.name} flexShrink={0}>
+              <Button key={`role-${d.role}`} plain onPress={() => ctx.openRole?.(d.role)}>
+                <Text color={DT.orange700} bold>{`${ROLE_ICON[d.role]} ${d.label}`}</Text>
+              </Button>
+            </Box>
+            {showModel ? (
+              <Box width={DCOL.model} flexShrink={0} overflow="hidden">
+                <Text color={DT.textSub} wrap="truncate">
+                  {models.get(d.role)?.label ?? ''}
+                </Text>
+              </Box>
+            ) : null}
+            {picture(rampBarSvg(barW, n / dmax, d.failed > 0 ? [DT.orange400, DT.orange500, DT.fail] : [DT.orange400, DT.orange500], LIGHT), `${d.label} ${n}`, barW, 1)}
+            <Box width={DCOL.count} flexShrink={0} justifyContent="flex-end">
+              <Text color={n > 0 ? DT.text : DT.textFaint} bold={n > 0}>
+                {String(n)}
+              </Text>
+            </Box>
+          </Box>
+        )
+      }),
+    )
+
+    const { Markdown } = ui
+    const s = view.summary
+    const modelsTable =
+      view.models.length === 0
+        ? ''
+        : ['| 模型 | 比例 | 次數 |', '|---|---:|---:|', ...view.models.map(x => `| ${mdCell(x.label)} | ${shareLabel(x.share)} | ${x.count} |`)].join('\n')
+    const modelsCard = card(head('🧠', 'MODELS', s.savedPct === undefined ? undefined : `SAVED ${Math.round(s.savedPct)}%`), [
+      picture(
+        stackedBarSvg(cardInner, view.models.map((x, i) => ({ share: x.share, color: MODEL_COLORS[i % MODEL_COLORS.length] ?? DT.orange500 })), LIGHT),
+        'MODELS',
+        cardInner,
+        1,
+      ),
+      modelsTable === '' ? (
+        <Text color={DT.textSub}>還沒有模型用量</Text>
+      ) : Markdown ? (
+        <Markdown key="models-table" text={modelsTable} />
+      ) : (
+        <Text color={DT.text}>{modelsTable}</Text>
+      ),
+      <Text color={DT.orange700}>{`SAVED ${s.savedPct === undefined ? '--' : `${Math.round(s.savedPct)}%`}  ≈${fmtUsd(s.cost)} vs Opus ${fmtUsd(s.opusCost)}`}</Text>,
+    ])
+
+    return (
+      <Box flexDirection="column" gap={1}>
+        {mainCard}
+        {dispatchCard}
+        {modelsCard}
+      </Box>
+    )
+  }
+
+  const page: RenderElement = ctx.page === 'now' ? nowPage() : statsPage()
   if (ctx.page !== 'now') ctx.onStandby?.(false)
 
   return (

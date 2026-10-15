@@ -185,3 +185,72 @@ describe('desktop native: now page', () => {
     expect(periods.filter(ms => ms === SUIT_TICK_MS)).toEqual([])
   })
 })
+
+describe('desktop native: stats page', () => {
+  test('MAIN LINE: the success rate in big pixel digits, the CHAIN meter, OK and FAIL', async ($, on) => {
+    native(on)
+    await pressOn($, 'desktop', 'tab-stats')
+    const tree = await drawOn($, 'desktop', 50, 100)
+    expect(textOf(tree)).toContain('MAIN LINE')
+    expect(svgs(tree).some(s => altOf(s).startsWith('SUCCESS RATE'))).toBe(true)
+    expect(svgs(tree).some(s => altOf(s).startsWith('CHAIN'))).toBe(true)
+    expect(textOf(tree)).toContain('OK')
+    expect(textOf(tree)).toContain('FAIL')
+    wellFormed(tree, 100)
+  })
+
+  test('DISPATCH: a row per role, the role name alone in its button; its press opens the role page', async ($, on) => {
+    native(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    await $.turn.complete(complete('agent-1'))
+    await pressOn($, 'desktop', 'tab-stats', 50, 100)
+    const tree = await drawOn($, 'desktop', 50, 100)
+    const btn = all(tree, x => x.type === 'Button' && x.props?.['key'] === 'role-Explore')[0]
+    expect(btn).toBeDefined()
+    // the engine echoes a lone Text child as the label; read the children alone
+    expect(((btn as Node).children ?? []).map(textOf).join('')).toContain('Explore')
+    expect(svgs(btn as Node)).toHaveLength(0)
+    const bars = svgs(tree).filter(s => /^(Explore|clerk|worker|verifier|fork) /.test(altOf(s)))
+    expect(bars.length).toBeGreaterThan(0)
+    expect(new Set(bars.map(s => s.props?.['width'])).size).toBe(1)
+    await pressOn($, 'desktop', 'role-Explore', 50, 100)
+    expect(textOf(await drawOn($, 'desktop', 50, 100))).toContain('返回')
+  })
+
+  test('a DISPATCH row never reaches past its card', async ($, on) => {
+    native(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    await pressOn($, 'desktop', 'tab-stats')
+    for (const cols of [50, 80, 100, 140]) {
+      const tree = await drawOn($, 'desktop', 50, cols)
+      const row = all(tree, x => x.type === 'Box' && x.props?.['flexDirection'] === 'row' && all(x, y => y.type === 'Button' && y.props?.['key'] === 'role-Explore').length > 0)
+      const inner = row.at(-1) as Node
+      const kids = (inner.children ?? []).filter((c): c is Node => typeof c !== 'string')
+      const widths = kids.map(k => (k.type === 'Svg' ? Number(k.props?.['width']) / cellPx(1) : Number(k.props?.['width'])))
+      expect(widths.every(w => Number.isFinite(w) && w > 0)).toBe(true)
+      const gap = Number(inner.props?.['gap'] ?? 0)
+      expect(widths.reduce((x, y) => x + y, 0) + gap * (kids.length - 1)).toBeLessThanOrEqual(cols - 4 - 6)
+    }
+  })
+
+  test('MODELS: one stacked bar and a Markdown table; SAVED and the cost line', async ($, on) => {
+    native(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    await $.turn.complete(complete('agent-1'))
+    await pressOn($, 'desktop', 'tab-stats', 50, 100)
+    const tree = await drawOn($, 'desktop', 50, 100)
+    expect(svgs(tree).filter(s => altOf(s) === 'MODELS')).toHaveLength(1)
+    const md = all(tree, x => x.type === 'Markdown').map(x => String(x.props?.['text'] ?? ''))
+    expect(md.some(t => t.startsWith('| 模型 |'))).toBe(true)
+    expect(textOf(tree)).toContain('SAVED')
+    expect(badProps(tree)).toEqual([])
+  })
+
+  test('50 columns and allowed props', async ($, on) => {
+    native(on)
+    await pressOn($, 'desktop', 'tab-stats', 50, 50)
+    const tree = await drawOn($, 'desktop', 50, 50)
+    wellFormed(tree, 50)
+    expect(badProps(tree)).toEqual([])
+  })
+})
