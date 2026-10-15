@@ -145,6 +145,51 @@ describe('desktop native: now page', () => {
     wellFormed(tree, 100)
   })
 
+  // a cell width of a drawn node: pictures by their width, text by its length, boxes by their children, gap and frame
+  const widthOf = (n: Node | string): number => {
+    if (typeof n === 'string') return n.length
+    if (n.type === 'Svg') return Number(n.props?.['width']) / cellPx(1)
+    if (n.type === 'Text') return textOf(n).length
+    const kids = (n.children ?? []).map(widthOf)
+    const gap = Number(n.props?.['gap'] ?? 0)
+    const framed = (n.props?.['borderStyle'] ? 2 : 0) + Number(n.props?.['paddingX'] ?? 0) * 2
+    const sum = kids.reduce((x, y) => x + y, 0)
+    return (n.props?.['flexDirection'] === 'row' ? sum + gap * Math.max(0, kids.length - 1) : Math.max(0, ...kids)) + framed
+  }
+  const suitRow = (tree: Node): Node =>
+    all(tree, x => x.type === 'Box' && (x.children ?? []).some(c => typeof c !== 'string' && c.type === 'Svg' && altOf(c) === 'MARK XLII')).at(-1) as Node
+  const tilesIn = (n: Node) => all(n, x => x.type === 'Box' && x.props?.['backgroundColor'] === DT.glassRaised)
+
+  test('the suit row by the room it needs: three across, then suit with the tiles stacked, then all stacked', async ($, on) => {
+    native(on)
+    for (const cols of [140, 100, 80, 71, 64, 63, 50]) {
+      const tree = await drawOn($, 'desktop', 50, cols)
+      const row = suitRow(tree)
+      const cardInner = cols - 4 - 6
+      const tiles = tilesIn(row)
+      expect(tiles).toHaveLength(2)
+      const kids = (row.children ?? []).filter((c): c is Node => typeof c !== 'string')
+      const dir = row.props?.['flexDirection']
+      if (cols >= 65) {
+        expect(dir).toBe('row')
+        expect(kids).toHaveLength(cols >= 84 ? 3 : 2)
+        if (cols >= 84) expect(kids[1]?.type).toBe('Svg')
+        else {
+          expect(kids[0]?.type).toBe('Svg')
+          const col = kids[1] as Node
+          expect(col.props?.['flexDirection']).toBe('column')
+          expect(col.props?.['gap']).toBe(1)
+          expect(tilesIn(col)).toHaveLength(2)
+        }
+      } else if (cols <= 64) {
+        expect(dir).toBe('column')
+        expect(kids.map(k => k.type)).toEqual(['Box', 'Svg', 'Box'])
+      }
+      expect(widthOf(row)).toBeLessThanOrEqual(cardInner)
+      expect(badProps(tree)).toEqual([])
+    }
+  })
+
   test('a subagent row: only MK-n in its button, the columns beside it; the press opens its detail', async ($, on) => {
     native(on)
     await $.agent.spawn(spawnInput('find the | files', 'Explore'))

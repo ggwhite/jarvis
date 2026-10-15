@@ -114,11 +114,16 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
   )
 
   // a raised tile inside a card
+  const TILE_PAD = 1
   const tile = (body: readonly RenderElement[]): RenderElement => (
-    <Box flexDirection="column" backgroundColor={DT.glassRaised} borderStyle="round" borderColor={DT.glassBorder} paddingX={1}>
+    <Box flexDirection="column" backgroundColor={DT.glassRaised} borderStyle="round" borderColor={DT.glassBorder} paddingX={TILE_PAD}>
       {body}
     </Box>
   )
+
+  // a tile's width: its longest reading line (label, meter and value one cell apart) plus its padding and frame
+  const readoutW = (x: Readout): number => [x.label === '' ? 0 : x.label.length, x.meter ? POWER_METER_W : 0, x.value.length].filter(n => n > 0).reduce((sum, n, i) => sum + n + (i > 0 ? 1 : 0), 0)
+  const tileWidth = (lines: readonly Readout[]): number => Math.max(0, ...lines.map(readoutW)) + TILE_PAD * 2 + 2
 
   const toneColor = (t: Readout['tone']): string =>
     t === 'error' ? DT.fail : t === 'bright' ? DT.orangeBright : t === 'frame' ? DT.textSub : DT.orange
@@ -216,14 +221,38 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
       SUIT_CANVAS_ROWS,
       !paused,
     )
+    // the suit row by the room it needs: tile | suit | tile, else suit | the two tiles stacked, else all stacked
+    const SUIT_GAP = 2
+    const suitW = SUIT_CANVAS_COLS + 4
+    const tileW = Math.max(tileWidth(r.left), tileWidth(r.right))
+    const suitLayout: 'three' | 'pair' | 'stack' =
+      cardInner >= tileW * 2 + suitW + SUIT_GAP * 2 ? 'three' : cardInner >= suitW + SUIT_GAP + tileW ? 'pair' : 'stack'
+    const leftTile = tile(r.left.map(readoutLine))
+    const rightTile = tile(r.right.map(readoutLine))
     const mark = `MARK XLII · ${paused ? 'PAUSED' : busy ? 'ACTIVE' : 'STANDBY'}`
     const suitCard = (
       <Box flexDirection="column" backgroundColor={DT.glass} borderStyle="round" borderColor={DT.orange} paddingX={2} paddingY={1} gap={1} alignItems="center">
-        <Box flexDirection={wide ? 'row' : 'column'} gap={2} alignItems="center">
-          {tile(r.left.map(readoutLine))}
-          {suitPic}
-          {tile(r.right.map(readoutLine))}
-        </Box>
+        {suitLayout === 'three' ? (
+          <Box flexDirection="row" gap={SUIT_GAP} alignItems="center">
+            {leftTile}
+            {suitPic}
+            {rightTile}
+          </Box>
+        ) : suitLayout === 'pair' ? (
+          <Box flexDirection="row" gap={SUIT_GAP} alignItems="center">
+            {suitPic}
+            <Box flexDirection="column" gap={1}>
+              {leftTile}
+              {rightTile}
+            </Box>
+          </Box>
+        ) : (
+          <Box flexDirection="column" gap={SUIT_GAP} alignItems="center">
+            {leftTile}
+            {suitPic}
+            {rightTile}
+          </Box>
+        )}
         {ctx.toggleSuit ? (
           <Button key="suit-mark" plain onPress={ctx.toggleSuit}>
             <Text color={DT.orange} bold>
