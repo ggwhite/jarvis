@@ -214,7 +214,24 @@ export function applyTask(board: JarvisTaskBoard, input: Readonly<Record<string,
           : op === 'remove'
             ? remove(board, input)
             : `op 只能是 ${OPS.join('、')}`
-  return typeof next === 'string' ? { error: next } : { board: next, text: boardText(next) }
+  if (typeof next === 'string') return { error: next }
+  const settled = planResults(board, next)
+  return { board: settled, text: boardText(settled) }
+}
+
+// A request item's plan that completes drops any older result and owes a new one; one that
+// opens again (a new or reopened subtask) drops both. Every other item is left as it is.
+function planResults(before: JarvisTaskBoard, after: JarvisTaskBoard): JarvisTaskBoard {
+  const settle = (i: JarvisTaskItem): JarvisTaskItem => {
+    const was = before.items.find(b => b.id === i.id)
+    if (!isRequest(i) || i.subtasks.length === 0 || !was) return i
+    const done = itemStatus(i) === 'completed'
+    if (done === (itemStatus(was) === 'completed')) return i
+    const { result: _r, resultDue: _d, ...rest } = i
+    return done ? { ...rest, resultDue: true as const } : rest
+  }
+  const items = after.items.map(settle)
+  return items.every((i, k) => i === after.items[k]) ? after : { ...after, items }
 }
 
 // An item with subtasks is done when all are, running when any is running or some (not all)
@@ -443,22 +460,44 @@ export function withSummaryTitle(board: JarvisTaskBoard, rid: string, title: str
   return replaceItem(board, { ...item, title, titleBy: 'haiku' })
 }
 
+// a request item with a plan not yet done: no result stands beside it
+const planOpen = (i: JarvisTaskItem): boolean => i.subtasks.length > 0 && itemStatus(i) !== 'completed'
+
 // The board with what a request item's turn came to, found by `rid`; unchanged when the item
-// is gone or the result blank.
+// is gone, the result blank, or its plan open again.
 export function withResult(board: JarvisTaskBoard, rid: string, result: string): JarvisTaskBoard {
   const item = board.items.find(i => i.rid === rid)
-  if (!item || result === '') return board
+  if (!item || result === '' || planOpen(item)) return board
   return replaceItem(board, { ...item, result })
 }
 
-// The request items a main-loop turn's end answers: tied to the turn, running by their own
-// status, not typed over it; each with its title, asked about when its prompt is gone.
-export function requestsEnding(board: JarvisTaskBoard, turnId: string): { rid: string; title: string }[] {
+// The request items a main-loop turn's end answers: without subtasks, tied to the turn,
+// running by their own status, not typed over it; with subtasks, those whose plan completed
+// and owe a result, wherever their turn. Each with its title, asked about when its prompt is
+// gone, and its subtasks' titles.
+export function requestsEnding(board: JarvisTaskBoard, turnId: string): { rid: string; title: string; subtasks: string[] }[] {
+  const answers = (i: JarvisTaskItem) =>
+    i.subtasks.length === 0
+      ? i.turnId === turnId && i.status === 'in_progress' && i.queued !== true
+      : i.resultDue === true
   return board.items.flatMap(i =>
-    isRequest(i) && i.turnId === turnId && i.status === 'in_progress' && i.queued !== true && i.rid !== undefined
-      ? [{ rid: i.rid, title: i.title }]
-      : [],
+    isRequest(i) && i.rid !== undefined && answers(i) ? [{ rid: i.rid, title: i.title, subtasks: i.subtasks.map(s => s.title) }] : [],
   )
+}
+
+// A main-loop turn ends: request items with an open plan lose any result; an answered end
+// (`answered`) takes the results owed, as it asks for them. The same board when nothing changes.
+export function closeResults(board: JarvisTaskBoard, answered: boolean): JarvisTaskBoard {
+  const closes = (i: JarvisTaskItem) => isRequest(i) && ((planOpen(i) && i.result !== undefined) || (answered && i.resultDue === true))
+  if (!board.items.some(closes)) return board
+  return {
+    ...board,
+    items: board.items.map(i => {
+      if (!closes(i)) return i
+      const { result, resultDue: _d, ...rest } = i
+      return planOpen(i) || result === undefined ? rest : { ...rest, result }
+    }),
+  }
 }
 
 // ---- the built-in task tools, mirrored when the session has them ----

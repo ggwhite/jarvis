@@ -112,8 +112,12 @@ export type JarvisTaskItem = {
   rid?: string
   // who set `title` when not the prompt: `haiku`, the summary; `model`, the model's update or plan
   titleBy?: 'haiku' | 'model'
-  // the summary of what its turn's answer came to
+  // the summary of what its turn's answer came to; for one with subtasks, of the turn its plan
+  // completed in
   result?: string
+  // a request item whose plan just completed: its result is asked at the next answered
+  // main-loop turn's end
+  resultDue?: true
   // its turn did work while it ran: a main-loop tool call other than the board's own
   worked?: true
 }

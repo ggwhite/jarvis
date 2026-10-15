@@ -45,7 +45,7 @@ import { commitFileDiff, commitFiles, commitTreeOf, findRepos, repoSummary } fro
 import type { CommitFile, CommitTree, RepoSummary } from './gitCommits'
 import { commitRepoName, repoRows } from './commitsView'
 import type { CommitsCtx, RepoList } from './commitsView'
-import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, boardLive, dropIdle, endTurn, fromTaskCreate, fromTaskUpdate, fromTodos, markWorked, openRequest, recordsRequest, requestContext, requestsEnding, startTurn, withResult, withSummaryTitle } from './tasks'
+import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, boardLive, closeResults, dropIdle, endTurn, fromTaskCreate, fromTaskUpdate, fromTodos, markWorked, openRequest, recordsRequest, requestContext, requestsEnding, startTurn, withResult, withSummaryTitle } from './tasks'
 import type { TaskReply } from './tasks'
 import { keptFolds } from './tasksView'
 import { RESULT_MAX, SUMMARY_TITLE_MAX, clipInput, resultAsk, summarize, titleAsk } from './summary'
@@ -121,9 +121,15 @@ async function titleLater($: Pick<EngineInterface, 'model' | 'state'>, rid: stri
   }
 }
 
-// What a request item's turn came to, summed up by the small model beside its title.
-async function resultLater($: Pick<EngineInterface, 'model' | 'state'>, rid: string, prompt: string, answer: string): Promise<void> {
-  const result = await summarize($, resultAsk(prompt, answer), RESULT_MAX)
+// What a request item's turn came to, or its plan's, summed up by the small model beside its title.
+async function resultLater(
+  $: Pick<EngineInterface, 'model' | 'state'>,
+  rid: string,
+  prompt: string,
+  answer: string,
+  subtasks: readonly string[],
+): Promise<void> {
+  const result = await summarize($, resultAsk(prompt, answer, subtasks), RESULT_MAX)
   if (result === '') return
   try {
     await update($, tasks, b => withResult(b, rid, result))
@@ -1380,28 +1386,29 @@ export const register: Register = on => {
       // bookkeeping only
     }
 
-    // a main-loop turn's end closes its requests; an answered one gets what it came to summed up
+    // a main-loop turn's end closes its requests; an answered one gets what it came to summed up,
+    // and so does each plan done since the last answered end
     if (e.agentId === undefined) {
       const now = await stampNow($)
-      const ending: { rid: string; title: string }[] = []
+      const answered = e.reason === 'answer' && e.answer.trim() !== ''
+      const ending: { rid: string; title: string; subtasks: string[] }[] = []
       try {
         const written = await update($, tasks, b => {
           // a request that did nothing (no tool call, no plan) leaves the board before the rest
           const kept = dropIdle(b, e.turnId)
           ending.length = 0
-          ending.push(...requestsEnding(kept, e.turnId))
-          return endTurn(kept, e.turnId, e.reason, now)
+          if (answered) ending.push(...requestsEnding(kept, e.turnId))
+          return closeResults(endTurn(kept, e.turnId, e.reason, now), answered)
         })
         // a prompt whose item is off the board has no result left to ask about
         for (const rid of [...asks.keys()]) if (!written.items.some(i => i.rid === rid)) asks.delete(rid)
       } catch {
         // bookkeeping only
       }
-      if (e.reason === 'answer' && e.answer.trim() !== '') {
-        for (const r of ending) {
-          void resultLater($, r.rid, asks.get(r.rid) ?? r.title, e.answer)
-          asks.delete(r.rid)
-        }
+      for (const r of ending) {
+        void resultLater($, r.rid, asks.get(r.rid) ?? r.title, e.answer, r.subtasks)
+        // a plan may open again and complete later: its prompt is kept for that result
+        if (r.subtasks.length === 0) asks.delete(r.rid)
       }
     }
 

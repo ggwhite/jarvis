@@ -23,9 +23,12 @@ export const clipInput = (text: string): string => [...text].slice(0, SUMMARY_IN
 export const titleAsk = (prompt: string): string =>
   `用不超過 ${SUMMARY_TITLE_MAX} 個字寫出這個請求要做什麼，動詞開頭，例如「計算 7*6」「解釋 CAS」「修 jarvis 的高亮」。\n\n請求：\n${clipInput(prompt)}`
 
-// What a request came to, from its prompt and its turn's answer.
-export const resultAsk = (prompt: string, answer: string): string =>
-  `用不超過 ${RESULT_MAX} 個字寫出這個請求的結果或結論，例如「42」「比較後交換的無鎖原子更新」「已合併進 master」。\n\n請求：\n${clipInput(prompt)}\n\n回答：\n${clipInput(answer)}`
+// What a request came to, from its prompt, its plan's subtasks when it has one, and the answer
+// of the turn it was done in.
+export const resultAsk = (prompt: string, answer: string, subtasks: readonly string[] = []): string =>
+  `用不超過 ${RESULT_MAX} 個字寫出這個請求的結果或結論，例如「42」「比較後交換的無鎖原子更新」「已合併進 master」。\n\n請求：\n${clipInput(prompt)}${
+    subtasks.length === 0 ? '' : `\n\n細項：\n${clipInput(subtasks.map(t => `- ${t}`).join('\n'))}`
+  }\n\n回答：\n${clipInput(answer)}`
 
 // quotes and brackets around a reply, and a full stop after it
 const WRAPS = /^["'「『“‘]+|["'」』”’]+$/g

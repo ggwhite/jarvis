@@ -43,6 +43,7 @@ import {
   requestTitle,
   requestsEnding,
   boardSections,
+  closeResults,
   startTurn,
   withResult,
   withSummaryTitle,
@@ -1459,7 +1460,7 @@ describe('request summaries', () => {
     b = startTurn(b, 't1', 'A')
     b = openRequest(b, 'B', 't1', 0, 'rb').board
     b = ok(applyTask(b, { op: 'add', item: '模型自己的' }))
-    expect(requestsEnding(b, 't1')).toEqual([{ rid: 'ra', title: 'A' }])
+    expect(requestsEnding(b, 't1')).toEqual([{ rid: 'ra', title: 'A', subtasks: [] }])
     expect(requestsEnding(b, 't9')).toEqual([])
   })
 
@@ -1617,6 +1618,188 @@ describe('request summaries wired', () => {
     expect(note).toContain('項目 7')
     expect(note).toContain('id=7')
     expect(note).toContain('記下結果')
+  })
+})
+
+describe('results of work over many turns', () => {
+  // a request sent, its turn t1 started, a plan of two subtasks hung on it
+  const planned = () => {
+    const b = startTurn(openRequest(EMPTY_BOARD, '做一件大事', undefined, 0, 'r1').board, 't1', '做一件大事')
+    return ok(applyTask(b, { op: 'add', subtasks: ['調查', '實作'] }))
+  }
+  const finish = (b: JarvisTaskBoard, ...ids: string[]) =>
+    ids.reduce((x, id) => ok(applyTask(x, { op: 'update', id, status: 'completed' })), b)
+
+  test('a request item with unfinished subtasks is not answered by its turn end', () => {
+    const b = finish(planned(), '1.1')
+    expect(requestsEnding(b, 't1')).toEqual([])
+  })
+
+  test('the plan completing marks the result due, wherever its turn is; the end answers it with the subtask titles', () => {
+    const b = endTurn(finish(planned(), '1.1'), 't1', 'answer', 5)
+    const done = finish(b, '1.2')
+    expect(done.items[0]?.resultDue).toBe(true)
+    expect(requestsEnding(done, 't2')).toEqual([{ rid: 'r1', title: '做一件大事', subtasks: ['調查', '實作'] }])
+  })
+
+  test('a plan done within its own turn is answered once', () => {
+    const b = finish(planned(), '1.1', '1.2')
+    expect(requestsEnding(b, 't1')).toEqual([{ rid: 'r1', title: '做一件大事', subtasks: ['調查', '實作'] }])
+  })
+
+  test('the item marked completed, or its last open subtask removed, completes the plan too', () => {
+    expect(ok(applyTask(planned(), { op: 'update', id: '1', status: 'completed' })).items[0]?.resultDue).toBe(true)
+    expect(ok(applyTask(finish(planned(), '1.1'), { op: 'remove', id: '1.2' })).items[0]?.resultDue).toBe(true)
+  })
+
+  test('a completion drops an older result; reopening clears both result and due', () => {
+    // an interim result left by the old rule, before plans waited for their completion
+    const ended = endTurn(planned(), 't1', 'answer', 5)
+    const stale: JarvisTaskBoard = { ...ended, items: ended.items.map(i => ({ ...i, result: '撰寫中' })) }
+    const done = finish(stale, '1.1', '1.2')
+    expect(done.items[0]?.result).toBeUndefined()
+    const answered = withResult(closeResults(done, true), 'r1', '做完了')
+    expect(answered.items[0]).toMatchObject({ result: '做完了' })
+    expect(answered.items[0]?.resultDue).toBeUndefined()
+    const reopened = ok(applyTask(answered, { op: 'add', to: '1', subtasks: ['補測試'] }))
+    expect(reopened.items[0]?.result).toBeUndefined()
+    expect(reopened.items[0]?.resultDue).toBeUndefined()
+    expect(finish(reopened, '1.3').items[0]?.resultDue).toBe(true)
+  })
+
+  test('a result that comes back onto an unfinished plan is dropped', () => {
+    const b = endTurn(finish(planned(), '1.1'), 't1', 'answer', 5)
+    expect(withResult(b, 'r1', '撰寫中')).toBe(b)
+  })
+
+  test('closeResults: an answered end takes the due marks; any end clears results of unfinished plans', () => {
+    const done = finish(endTurn(planned(), 't1', 'answer', 5), '1.1', '1.2')
+    expect(closeResults(done, false)).toBe(done)
+    expect(closeResults(done, true).items[0]?.resultDue).toBeUndefined()
+    const stale: JarvisTaskBoard = { ...planned(), items: planned().items.map(i => ({ ...i, result: '撰寫中' })) }
+    expect(closeResults(stale, false).items[0]?.result).toBeUndefined()
+  })
+
+  test("the model's own items and the mirrored lists are never due", () => {
+    const own = finish(ok(applyTask(EMPTY_BOARD, { op: 'add', item: '自己的', subtasks: ['a'] })), '1.1')
+    expect(own.items[0]?.resultDue).toBeUndefined()
+    expect(requestsEnding(own, 't1')).toEqual([])
+  })
+
+  test('the result ask carries the subtask titles, cut to SUMMARY_INPUT_MAX', () => {
+    const r = resultAsk('做一件大事', '都做完了', ['調查', '實作'])
+    expect(r).toContain('細項：\n- 調查\n- 實作')
+    expect(r).toContain('回答：\n都做完了')
+    expect(resultAsk('q', 'a', ['x'.repeat(SUMMARY_INPUT_MAX + 500)])).not.toContain('x'.repeat(SUMMARY_INPUT_MAX))
+    expect(resultAsk('q', 'a')).not.toContain('細項')
+  })
+})
+
+describe('results of work over many turns wired', () => {
+  const ends = ($: Engine, turnId: string, answer: string, reason = 'answer') =>
+    $.turn.complete({ answer, durationMs: 1, isAborted: reason === 'aborted', turnId, reason } as never)
+  const results = (asked: Asked[]) => asked.filter(a => a.prompt.includes('回答：'))
+  // Haiku: titles 做大事; a result 已合併進 master for an answer saying 全部完成, after `wait` ms
+  const haiku = (asked: Asked[], sleep: (ms: number) => Promise<void>, wait = 0) => async (e: Asked) => {
+    asked.push(e)
+    if (!e.prompt.includes('回答：')) return said('做大事')
+    if (wait > 0) await sleep(wait)
+    return said(e.prompt.includes('全部完成') ? '已合併進 master' : '撰寫中')
+  }
+
+  test('no interim result; the turn where the last subtask completes gets it, from prompt, subtasks and answer', async ($, on) => {
+    const asked: Asked[] = []
+    const { clock } = world(on, {}, e => haiku(asked, ms => clock.sleep(ms))(e))
+    await send($, '請把功能做完並合併')
+    await turnStarts($, 't1', '請把功能做完並合併')
+    await task($, { op: 'add', subtasks: ['寫 spec', '實作'] })
+    await task($, { op: 'update', id: '1.1', status: 'completed' })
+    await ends($, 't1', '先寫好 spec，接著實作')
+    await clock.settle()
+    expect(results(asked)).toHaveLength(0)
+    expect(await boardOf($)).not.toContain('→')
+    await turnStarts($, 't2', '')
+    await task($, { op: 'update', id: '1.2', status: 'completed' })
+    await ends($, 't2', '全部完成，已合併')
+    await clock.settle()
+    expect(results(asked)).toHaveLength(1)
+    const p = results(asked)[0]?.prompt ?? ''
+    expect(p).toContain('請把功能做完並合併')
+    expect(p).toContain('- 寫 spec\n- 實作')
+    expect(p).toContain('回答：\n全部完成，已合併')
+    expect(await boardOf($)).toContain('[x] 1 做大事 → 已合併進 master')
+    // one result per completion: a later turn asks nothing more
+    await turnStarts($, 't3', '')
+    await ends($, 't3', '全部完成')
+    await clock.settle()
+    expect(results(asked)).toHaveLength(1)
+  })
+
+  test('reopening clears the result until the plan completes again', async ($, on) => {
+    const asked: Asked[] = []
+    const { clock } = world(on, {}, e => haiku(asked, ms => clock.sleep(ms))(e))
+    await send($, '做功能')
+    await turnStarts($, 't1', '做功能')
+    await task($, { op: 'add', subtasks: ['實作'] })
+    await task($, { op: 'update', id: '1.1', status: 'completed' })
+    await ends($, 't1', '全部完成')
+    await clock.settle()
+    expect(await boardOf($)).toContain('→ 已合併進 master')
+    await turnStarts($, 't2', '')
+    await task($, { op: 'add', to: '1', subtasks: ['補測試'] })
+    expect(await boardOf($)).not.toContain('→')
+    await ends($, 't2', '補測試中')
+    await clock.settle()
+    expect(results(asked)).toHaveLength(1)
+    expect(await boardOf($)).not.toContain('→')
+    await turnStarts($, 't3', '')
+    await task($, { op: 'update', id: '1.2', status: 'completed' })
+    await ends($, 't3', '全部完成')
+    await clock.settle()
+    expect(results(asked)).toHaveLength(2)
+    expect(results(asked)[1]?.prompt).toContain('做功能')
+    expect(await boardOf($)).toContain('→ 已合併進 master')
+  })
+
+  test('a completion in an aborted turn waits for the next answered turn', async ($, on) => {
+    const asked: Asked[] = []
+    const { clock } = world(on, {}, e => haiku(asked, ms => clock.sleep(ms))(e))
+    await send($, '做功能')
+    await turnStarts($, 't1', '做功能')
+    await task($, { op: 'add', subtasks: ['實作'] })
+    await ends($, 't1', '開始實作')
+    await turnStarts($, 't2', '')
+    await task($, { op: 'update', id: '1.1', status: 'completed' })
+    await ends($, 't2', '全部完成', 'aborted')
+    await clock.settle()
+    expect(results(asked)).toHaveLength(0)
+    await turnStarts($, 't3', '')
+    await ends($, 't3', '全部完成')
+    await clock.settle()
+    expect(results(asked)).toHaveLength(1)
+    expect(await boardOf($)).toContain('→ 已合併進 master')
+  })
+
+  test('a completion result that comes back after /clear is dropped', async ($, on) => {
+    const asked: Asked[] = []
+    const { clock } = world(on, {}, e => haiku(asked, ms => clock.sleep(ms), 5000)(e))
+    await send($, '做功能')
+    await turnStarts($, 't1', '做功能')
+    await task($, { op: 'add', subtasks: ['實作'] })
+    await ends($, 't1', '開始實作')
+    await turnStarts($, 't2', '')
+    await task($, { op: 'update', id: '1.1', status: 'completed' })
+    await ends($, 't2', '全部完成')
+    await clock.settle()
+    expect(results(asked)).toHaveLength(1)
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    await send($, '做功能')
+    // the new item 1 has no plan: only its rid keeps the old result off it
+    await turnStarts($, 't3', '做功能')
+    await clock.advance(5000)
+    const text = await boardOf($)
+    expect(text).toContain('1 做大事')
+    expect(text).not.toContain('→')
   })
 })
 
