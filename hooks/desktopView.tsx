@@ -3,6 +3,7 @@ import type { ElementConstructor, MarkdownProps, RenderElement } from 'claude-co
 import { HEALTH_TEXT, TABS } from './cockpit'
 import type { Ctx, Ui } from './cockpit'
 import { A_PAGES, drawPageA, isPageA, shownPageA } from './desktopPagesA'
+import { B_PAGES, drawPageB, tabOfB } from './desktopPagesB'
 import { DT, GLASS, backdropSvg } from './desktopTheme'
 import { BIG_ROWS, bigWidth } from './fleetChart'
 import { ROLE_ICON, forDesktop } from './icons'
@@ -16,7 +17,7 @@ import type { JarvisAgent, JarvisPage } from '../types'
 export type DesktopUi = Ui & { Markdown?: ElementConstructor<MarkdownProps> }
 
 // The pages the native Desktop layout draws; every other page keeps drawCockpit.
-export const DESKTOP_PAGES: readonly JarvisPage[] = ['now', 'stats', ...A_PAGES]
+export const DESKTOP_PAGES: readonly JarvisPage[] = ['now', 'stats', ...A_PAGES, ...B_PAGES]
 
 // Whether the native layout draws this page: not while the boot screen plays.
 export const desktopPage = (page: JarvisPage, ctx: Pick<Ctx, 'boot'>): boolean => ctx.boot === undefined && DESKTOP_PAGES.includes(page)
@@ -84,7 +85,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
 
   const tabBar = (
     <Box flexDirection="row" gap={1} flexWrap="wrap">
-      {TABS.map(tab => pill(`tab-${tab.page}`, `${forDesktop(tab.icon)} ${tab.label}`, tab.page === shownPage || (shownPage === 'roleDetail' && tab.page === 'stats'), () => ctx.go(tab.page)))}
+      {TABS.map(tab => pill(`tab-${tab.page}`, `${forDesktop(tab.icon)} ${tab.label}`, tab.page === shownPage || (shownPage === 'roleDetail' && tab.page === 'stats') || tab.page === tabOfB(shownPage), () => ctx.go(tab.page)))}
     </Box>
   )
 
@@ -492,7 +493,9 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
       ? nowPage()
       : isPageA(shownPage)
         ? drawPageA({ ui, view, ctx, rows, cardInner, card, head, tile, pill, picture, actorName }, shownPage)
-        : statsPage()
+        : B_PAGES.includes(shownPage)
+          ? drawPageB({ ui, cardInner, wide, picture, pill, card, head, tile }, view, ctx)
+          : statsPage()
   if (shownPage !== 'now') ctx.onStandby?.(false)
 
   return (

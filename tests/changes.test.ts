@@ -333,7 +333,7 @@ let worldClock: { advance: (ms: number) => Promise<unknown> } | undefined
 // results by file path; what it was asked is logged in order.
 export function world(
   on: On,
-  opts: { dirs?: string[]; files?: Record<string, number>; texts?: Record<string, string>; git?: Git; results?: Record<string, unknown>; failWrites?: boolean; holdWrite?: (text: string) => Promise<void> | undefined; holdRun?: (argv: string[]) => Promise<void>; denied?: string[]; holdStat?: (path: string) => Promise<void> | undefined; shellCwd?: () => string } = {},
+  opts: { dirs?: string[]; files?: Record<string, number>; texts?: Record<string, string>; git?: Git; results?: Record<string, unknown>; failWrites?: boolean; holdWrite?: (text: string) => Promise<void> | undefined; holdRun?: (argv: string[]) => Promise<void>; denied?: string[]; holdStat?: (path: string) => Promise<void> | undefined; shellCwd?: () => string; native?: boolean } = {},
 ) {
   const log: string[] = []
   const writes = new Map<string, string>()
@@ -351,7 +351,8 @@ export function world(
     return git?.[argv.join(' ')] ?? { exitCode: 128, stdout: '' }
   }
   worldClock = mock.clock(on, { now: 0 })
-  mock.env(on, { HOME: '/Users/u', TMPDIR: '/tmp/t/' })
+  // the old desktop tests check the cell-grid layout; the native one is asked for by name
+  mock.env(on, { HOME: '/Users/u', TMPDIR: '/tmp/t/', ...(opts.native ? {} : { JARVIS_DESKTOP_LAYOUT: 'cells' }) })
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
   on('state.set', { plugin: 'jarvis', key: 'changes' }, async (_$, e, next) => {
     const out = await next(e)

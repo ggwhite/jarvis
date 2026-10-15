@@ -888,7 +888,8 @@ const press = async ($: Engine, key: string, rows = 40, cols = 80) => {
 // the world beneath the mod: herdr, the transcripts, the usagebar cache, all fake
 const fleetEngine = (on: On, w: World) => {
   const clock = mock.clock(on, { now: T0 })
-  mock.env(on, { HOME, HERDR_ENV: '1', HERDR_PANE_ID: 'w2:p9' })
+  // the desktop tests here check the cell-grid layout
+  mock.env(on, { HOME, HERDR_ENV: '1', HERDR_PANE_ID: 'w2:p9', JARVIS_DESKTOP_LAYOUT: 'cells' })
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
   on('process.run', async (_$, e) => {
     const out = (await fakeIo(w).run(e.argv)) ?? { exitCode: 1, stdout: '', stderr: '', truncated: false }
