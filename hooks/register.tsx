@@ -45,7 +45,7 @@ import { commitFileDiff, commitFiles, commitTreeOf, findRepos, repoSummary } fro
 import type { CommitFile, CommitTree, RepoSummary } from './gitCommits'
 import { commitRepoName, repoRows } from './commitsView'
 import type { CommitsCtx, RepoList } from './commitsView'
-import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, fromTaskCreate, fromTaskUpdate, fromTodos } from './tasks'
+import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, endTurn, fromTaskCreate, fromTaskUpdate, fromTodos, openRequest, recordsRequest, requestContext, startTurn } from './tasks'
 import type { TaskReply } from './tasks'
 import { FETCH_TIMEOUT_MS, branchesOf, fetchRepo, remotesOf, sameRepoPaths, stashFileDiff, stashFiles, stashesOf, worktreesOf } from './gitRepo'
 import type { StashFile } from './gitRepo'
@@ -1117,6 +1117,15 @@ export const register: Register = on => {
       // bookkeeping only
     }
 
+    // a main-loop turn takes up the requests waiting for it
+    if (e.agentId === undefined) {
+      try {
+        await update($, tasks, b => startTurn(b, e.turnId, e.text))
+      } catch {
+        // bookkeeping only
+      }
+    }
+
     return next(e)
   })
 
@@ -1297,6 +1306,15 @@ export const register: Register = on => {
       // bookkeeping only
     }
 
+    // a main-loop turn's end closes its requests
+    if (e.agentId === undefined) {
+      try {
+        await update($, tasks, b => endTurn(b, e.turnId, e.reason))
+      } catch {
+        // bookkeeping only
+      }
+    }
+
     return next(e)
   })
 
@@ -1307,7 +1325,30 @@ export const register: Register = on => {
       // bookkeeping only
     }
 
-    return next(e)
+    // Each request the person sends becomes a running item of the task board; the model reads
+    // the item's id beside the prompt. A prompt another hook drops takes its item with it.
+    if (!recordsRequest(e)) return next(e)
+    const box: { id?: string } = {}
+    try {
+      await update($, tasks, b => {
+        const made = openRequest(b, e.text, e.turnId)
+        box.id = made.id
+        return made.board
+      })
+    } catch {
+      // bookkeeping only
+    }
+    const id = box.id
+    if (id === undefined) return next(e)
+    const out = await next({ ...e, context: [...(e.context ?? []), requestContext(id)] })
+    if (out.drop !== undefined) {
+      try {
+        await update($, tasks, b => ({ ...b, items: b.items.filter(i => i.id !== id) }))
+      } catch {
+        // bookkeeping only
+      }
+    }
+    return out
   })
 
   // a new, cleared or resumed session starts the changes page empty; a compaction keeps it

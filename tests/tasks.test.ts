@@ -548,6 +548,11 @@ const world = (on: On, outcome: Record<string, unknown> = {}) => {
     return { value: { tool: `mcp__jarvis__${e.name}` } }
   })
   on('prompt.compose', async () => ({ sections: [{ id: 'intro', text: 'intro', scope: 'shared' as const }] }))
+  on('prompt.submit', async (_$, e) =>
+    e.text === '丟掉' ? { drop: 'no' } : { text: e.text, ...(e.context === undefined ? {} : { context: e.context }) },
+  )
+  on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', async (_$, e) => ({ text: e.answer }))
   on('tool.call', async (_$, e) =>
     'deny' in outcome
       ? (outcome as never)
@@ -576,6 +581,23 @@ const composeFor = (tools: string[]) => ({
   outputStyle: null,
   traits: [],
 })
+
+// the person sends a prompt; `over` sets what the engine stamps (origin, command, isMeta, turnId)
+const send = ($: Engine, text: string, over: Record<string, unknown> = {}) =>
+  $.prompt.submit({ text, wait: false, origin: { kind: 'composer' }, ...over } as never)
+
+const turnStarts = ($: Engine, turnId: string, text: string, agentId?: string) =>
+  $.turn.start({ text, turnId, ...(agentId === undefined ? {} : { agentId }) })
+
+const turnEnds = ($: Engine, turnId: string, reason = 'answer', agentId?: string) =>
+  $.turn.complete({
+    answer: 'ok',
+    durationMs: 1,
+    isAborted: reason === 'aborted',
+    turnId,
+    reason,
+    ...(agentId === undefined ? {} : { agentId }),
+  } as never)
 
 describe('task board tool', () => {
   test('session.start registers the board tool, its schema in the prompt', async ($, on) => {
@@ -725,6 +747,77 @@ const spawnWorker = ($: Engine) =>
     background: true,
     fork: false,
   })
+
+describe('task board requests wired', () => {
+  test('a sent request becomes a running item and its turn end completes it; the model reads its id beside the prompt', async ($, on) => {
+    world(on)
+    const out = await send($, '修 jarvis 的 bug\n細節在下面')
+    expect(out.context).toContain(requestContext('1'))
+    expect(await boardOf($)).toContain('[>] 1 修 jarvis 的 bug（本輪請求）')
+    await turnStarts($, 't1', '修 jarvis 的 bug\n細節在下面')
+    await turnEnds($, 't1')
+    expect(await boardOf($)).toContain('[x] 1 修 jarvis 的 bug')
+  })
+
+  test('slash commands, hidden prompts and other sources are not recorded', async ($, on) => {
+    world(on)
+    await send($, '/jarvis', { command: { name: 'jarvis', args: '' } })
+    await send($, '背景任務完成', { origin: { kind: 'task-notification' } })
+    await send($, '看不到的', { isMeta: true })
+    expect(await boardOf($)).toBe('任務看板是空的。')
+  })
+
+  test("an interrupted turn leaves its request pending; a subagent's turn closes nothing", async ($, on) => {
+    world(on)
+    await send($, 'A')
+    await turnStarts($, 't1', 'A')
+    await turnStarts($, 'ta', 'sub work', 'agent-7')
+    await turnEnds($, 'ta', 'answer', 'agent-7')
+    expect(await boardOf($)).toContain('[>] 1 A')
+    await turnEnds($, 't1', 'aborted')
+    expect(await boardOf($)).toContain('[ ] 1 A')
+  })
+
+  test("the model's own item across turns is left alone; its plan folds into the request", async ($, on) => {
+    world(on)
+    await send($, '1')
+    await turnStarts($, 't1', '1')
+    await task($, { op: 'add', item: '任務看板改版', subtasks: ['寫計畫', '實作'] })
+    await task($, { op: 'update', id: '1.1', status: 'in_progress' })
+    await turnEnds($, 't1')
+    let text = await boardOf($)
+    expect(text).toContain('[>] 1 任務看板改版')
+    expect(text).not.toContain('[x] 1')
+    await turnStarts($, 't2', '背景任務完成通知')
+    await turnEnds($, 't2')
+    await send($, '好')
+    await turnStarts($, 't3', '好')
+    await turnEnds($, 't3')
+    text = await boardOf($)
+    expect(text).toContain('[>] 1 任務看板改版')
+    expect(text).toContain('[x] 2 好')
+  })
+
+  test('a prompt typed while a turn runs closes with it, and runs again when it starts its own turn', async ($, on) => {
+    world(on)
+    await send($, 'A')
+    await turnStarts($, 't1', 'A')
+    await send($, 'B', { turnId: 't1' })
+    await turnEnds($, 't1')
+    expect(await boardOf($)).toContain('[x] 2 B')
+    await turnStarts($, 't2', 'B')
+    expect(await boardOf($)).toContain('[>] 2 B（本輪請求）')
+    await turnEnds($, 't2')
+    expect(await boardOf($)).toContain('[x] 2 B')
+  })
+
+  test('a dropped prompt leaves no item', async ($, on) => {
+    world(on)
+    const out = await send($, '丟掉')
+    expect(out.drop).toBe('no')
+    expect(await boardOf($)).toBe('任務看板是空的。')
+  })
+})
 
 describe('task board page', () => {
   test('the 任務 tab follows 異動 and opens on an empty board', async ($, on) => {
