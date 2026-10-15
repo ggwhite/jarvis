@@ -168,6 +168,30 @@ describe('desktop native: narrow panes', () => {
     }
   })
 
+  test('the in-flight rows at cols 10 to 30 and wider: every column fixed, all within the card', async ($, on) => {
+    let kept: unknown[] = []
+    on('state.set', { plugin: 'jarvis', key: 'inflight' }, async (_$, e, next) => {
+      if (e.value.length > 0) kept = [...e.value]
+      return next({ ...e, value: kept as typeof e.value })
+    })
+    native(on)
+    await $.tool.call({ tool: 'mcp__github__search_code', q: 'x' } as never)
+    for (const cols of [...NARROW, 50, 80, 100, 140]) {
+      const tree = await drawOn($, 'desktop', 50, cols)
+      const flightCard = all(tree, x => x.type === 'Box' && x.props?.['borderStyle'] === 'round' && textOf(((x.children ?? [])[0] ?? '') as Node).includes('進行中'))[0] as Node
+      const rows = fixedRows(flightCard)
+      expect(rows).toHaveLength(1)
+      const row = rows[0] as Node
+      // the flight card is half the pane beside the recent events when wide (gap 2)
+      const room = cols >= 90 ? Math.max(16, Math.floor((cols - 4 - 2) / 2) - 6) : cardInner(cols)
+      expect(rowWidth(row)).toBeLessThanOrEqual(room)
+      // who and the description always stay
+      expect((row.children ?? []).length).toBeGreaterThanOrEqual(2)
+      if (cols >= 50) expect(textOf(row)).toContain('mcp__github__search_code')
+      expect(badProps(tree)).toEqual([])
+    }
+  })
+
   test('the DISPATCH rows at cols 10 to 30', async ($, on) => {
     native(on)
     await $.agent.spawn(spawnInput('find files', 'Explore'))

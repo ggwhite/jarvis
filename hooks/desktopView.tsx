@@ -288,6 +288,16 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
       view.running.length > 0 ? DT.orangeEdge : undefined,
     )
 
+    // the in-flight and recent event cards: half the pane each when wide
+    const recentInner = wide ? Math.max(16, Math.floor((inner - 2) / 2) - 6) : cardInner
+
+    // fixed columns within the card; where it is too narrow the time, then the tool give way,
+    // leaving who and the description
+    const FCOL = { who: 6, tool: 10, took: 6 }
+    const fShown = new Set<keyof typeof FCOL>(['who', 'tool', 'took'])
+    const fFixedW = () => [...fShown].reduce((sum, k) => sum + FCOL[k], 0) + fShown.size
+    for (const k of ['took', 'tool'] as const) if (fFixedW() + DESC_MIN > recentInner) fShown.delete(k)
+    const fDescW = Math.max(1, recentInner - fFixedW())
     const flights = view.inflight.slice(-5)
     const flightCard = card(
       head('⚙️', '進行中', `${view.inflight.length} 個`),
@@ -295,30 +305,38 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
         ? [<Text color={DT.textSub}>目前沒有執行中的工具呼叫</Text>]
         : flights.map(f => (
             <Box flexDirection="row" gap={1} alignItems="center">
-              <Box width={6} flexShrink={0}>
-                <Text color={DT.orange}>{actorName(f.actor)}</Text>
-              </Box>
-              <Box width={10} flexShrink={0} overflow="hidden">
-                <Text color={DT.text} bold wrap="truncate">
-                  {f.tool}
+              <Box width={FCOL.who} flexShrink={0} overflow="hidden">
+                <Text color={DT.orange} wrap="truncate">
+                  {actorName(f.actor)}
                 </Text>
               </Box>
-              <Box flexGrow={1} flexShrink={1} overflow="hidden">
+              {fShown.has('tool') ? (
+                <Box width={FCOL.tool} flexShrink={0} overflow="hidden">
+                  <Text color={DT.text} bold wrap="truncate">
+                    {f.tool}
+                  </Text>
+                </Box>
+              ) : null}
+              <Box width={fDescW} flexShrink={0} overflow="hidden">
                 <Text color={DT.textSub} wrap="truncate">
                   {f.desc ?? ''}
                 </Text>
               </Box>
-              <Text color={DT.textSub}>{fmtDur(now - f.startedAt)}</Text>
+              {fShown.has('took') ? (
+                <Box width={FCOL.took} flexShrink={0} overflow="hidden" justifyContent="flex-end">
+                  <Text color={DT.textSub} wrap="truncate">
+                    {fmtDur(now - f.startedAt)}
+                  </Text>
+                </Box>
+              ) : null}
             </Box>
           )),
       undefined,
       true,
     )
 
-    // as the subagent rows: fixed columns within the card, which is half the pane when wide;
-    // where it is too narrow the time, the tool, the time taken and then who give way, leaving
-    // the description and the result
-    const recentInner = wide ? Math.max(16, Math.floor((inner - 2) / 2) - 6) : cardInner
+    // as the subagent rows: fixed columns within the card; where it is too narrow the time,
+    // the tool, the time taken and then who give way, leaving the description and the result
     const ECOL = { time: 8, who: 6, tool: 10, took: 6, mark: 4 }
     const eShown = new Set<keyof typeof ECOL>(['time', 'who', 'tool', 'took', 'mark'])
     const eFixedW = () => [...eShown].reduce((sum, k) => sum + ECOL[k], 0) + eShown.size
