@@ -58,11 +58,13 @@ const spaced = (parts: readonly Seg[]): Seg[] => parts.flatMap((p, k) => (k === 
 const time = (ms: number): Seg => ({ t: fmtReadout(ms), color: THEME.frame })
 
 // One row `width` cells wide: the indent, the icon, the title cut and padded, then the
-// roomiest right side of `rights` that leaves the title TITLE_MIN cells, else the last.
+// roomiest right side of `rights` that leaves the title TITLE_MIN cells (or its whole
+// width when shorter), else the last.
 function taskRow(indent: number, icon: Seg, title: string, style: TitleStyle, rights: readonly (readonly Seg[])[], width: number): Seg[] {
   const head = indent + cellWidth(icon.t)
   const room = (r: readonly Seg[]) => width - head - (r.length > 0 ? widthOf(r) + 1 : 0)
-  const right = rights.find(r => room(r) >= TITLE_MIN) ?? rights.at(-1) ?? []
+  const least = Math.min(TITLE_MIN, cellWidth(title))
+  const right = rights.find(r => room(r) >= least) ?? rights.at(-1) ?? []
   return [
     ...(indent > 0 ? [{ t: ' '.repeat(indent) }] : []),
     icon,
@@ -95,7 +97,7 @@ function subtaskRights(status: JarvisTaskStatus, startedAt: number | undefined, 
   }
   if (a.status === 'done' || a.status === 'failed') {
     const word: Seg = a.status === 'done' ? { t: '完成', color: THEME.success } : { t: '失敗', color: THEME.error }
-    return [spaced([word, took, mk]), spaced([word, mk]), [mk]]
+    return [spaced([word, took, mk]), spaced([word, mk])]
   }
   return [spaced([{ t: '失聯', color: THEME.error }, mk]), [mk]]
 }

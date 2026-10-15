@@ -41,7 +41,7 @@ import {
 } from '../hooks/tasks'
 import type { Seg } from '../hooks/cockpit'
 import { TASK_ICON, withIcon } from '../hooks/icons'
-import { ANIM_MS, IDLE_MS, SPINNER, THEME, cellWidth, fitCells, padCells } from '../hooks/jarvis'
+import { ANIM_MS, IDLE_MS, SPINNER, THEME, cellWidth, fitCells, fmtReadout, padCells } from '../hooks/jarvis'
 import type { TaskReply } from '../hooks/tasks'
 import { EMPTY_TEXT, SUB_INDENT, TITLE_MIN, TOOL_MAX, spinnerAt, taskRows } from '../hooks/tasksView'
 import type { AgentBadge, OwnerMark } from '../hooks/tasksView'
@@ -624,7 +624,7 @@ describe('task board motion', () => {
     expect(rows[1]?.endsWith(' 0/1 1:05')).toBe(true)
     expect(rows[2]?.endsWith(' 1:00')).toBe(true)
     // a narrow item row keeps its count and gives up its time
-    const narrow = taskRows(b, 18, 10, () => mk(), 65_000).map(text)
+    const narrow = taskRows(b, 15, 10, () => mk(), 65_000).map(text)
     expect(narrow[1]?.endsWith(' 0/1')).toBe(true)
   })
 
@@ -693,6 +693,25 @@ describe('task board motion', () => {
     for (const w of [30, 28, 18]) expect(cellWidth(at(w))).toBe(w)
     const failed = text(taskRows(b, 24, 10, () => mk({ status: 'failed', ms: 65_000, tool: 'Bash' }), 0)[2] ?? [])
     expect(failed.endsWith(' 失敗 MK-1')).toBe(true)
+  })
+
+  test('a done or failed row keeps its word and MK-N past the time; the title shrinks instead', () => {
+    const b = ok(applyTask(running(0), { op: 'update', id: '1.1', agent: 'agent-7', title: '很長的細項標題很長' }))
+    const at = (width: number, status: 'done' | 'failed') =>
+      text(taskRows(b, width, 10, () => mk({ status, ms: 65_000, tool: 'Bash' }), 0)[2] ?? [])
+    // 17: the title down to its last cell
+    for (const w of [18, 17]) {
+      expect(at(w, 'failed').endsWith(' 失敗 MK-1')).toBe(true)
+      expect(at(w, 'done').endsWith(' 完成 MK-1')).toBe(true)
+      expect(cellWidth(at(w, 'failed'))).toBe(w)
+    }
+  })
+
+  test('a title shorter than TITLE_MIN gives up nothing while it fits whole', () => {
+    const b = ok(applyTask(running(0), { op: 'update', id: '1.1', agent: 'agent-7', title: 's1' }))
+    const row = text(taskRows(b, 26, 10, () => mk({ status: 'running', ms: 3_725_000, tool: 'Bash' }), 0)[2] ?? [])
+    expect(row.endsWith(` s1 Bash ${fmtReadout(3_725_000)} MK-1`)).toBe(true)
+    expect(cellWidth(row)).toBe(26)
   })
 })
 
