@@ -150,6 +150,62 @@ describe('desktop native: subagent page', () => {
   })
 })
 
+describe('desktop native: role page', () => {
+  const openRole = async ($: Engine, cols = 100) => {
+    await pressOn($, 'desktop', 'tab-stats', 50, cols)
+    await pressOn($, 'desktop', 'role-Explore', 50, cols)
+  }
+
+  test('返回, the models as bars, then each run with its mark the press that opens it', async ($, on) => {
+    native(on)
+    await $.agent.spawn(spawnInput('find the files', 'Explore'))
+    await $.turn.complete(complete('agent-1'))
+    await openRole($)
+    const tree = await drawOn($, 'desktop', 50, 100)
+    expect(isNative(tree)).toBe(true)
+    const text = textOf(tree)
+    for (const word of ['返回', 'Explore', '1 次', '派工紀錄', 'find the files', 'MK-1']) expect(text).toContain(word)
+    expect(all(tree, x => x.type === 'Svg' && String(x.props?.['alt']).endsWith('1 次')).length).toBe(1)
+    // the role page is the stats tab's
+    const statsLabel = all(tree, x => x.type === 'Button' && x.props?.['key'] === 'tab-stats')[0]
+    expect(all(statsLabel as Node, x => x.type === 'Text')[0]?.props?.['bold']).toBe(true)
+    expect(badProps(tree)).toEqual([])
+    wellFormed(tree, 100)
+    await pressOn($, 'desktop', 'role-run-1', 50, 100)
+    const detail = textOf(await drawOn($, 'desktop', 50, 100))
+    expect(detail).toContain('類型')
+    // the detail page opened here goes back here
+    await pressOn($, 'desktop', 'back', 50, 100)
+    expect(textOf(await drawOn($, 'desktop', 50, 100))).toContain('派工紀錄')
+    await pressOn($, 'desktop', 'back', 50, 100)
+    expect(textOf(await drawOn($, 'desktop', 50, 100))).toContain('MAIN LINE')
+  })
+
+  test('empty: a role never dispatched says so', async ($, on) => {
+    native(on)
+    await openRole($)
+    const tree = await drawOn($, 'desktop', 50, 100)
+    expect(textOf(tree)).toContain('這個角色還沒有派工')
+    expect(all(tree, x => x.type === 'Button' && x.props?.['key'] === 'back')).toHaveLength(1)
+    expect(badProps(tree)).toEqual([])
+  })
+
+  test('the model and run rows never reach past their card', async ($, on) => {
+    native(on)
+    await $.agent.spawn(spawnInput('a description long enough to need cutting short in a narrow card '.repeat(3), 'Explore'))
+    await $.turn.complete(complete('agent-1', { reason: 'error' }))
+    await openRole($)
+    for (const cols of COLS) {
+      const tree = await drawOn($, 'desktop', 50, cols)
+      const rows = fixedRows(tree)
+      expect(rows.length).toBeGreaterThanOrEqual(2)
+      for (const row of rows) expect(rowWidth(row)).toBeLessThanOrEqual(cardInner(cols))
+      expect(badProps(tree)).toEqual([])
+      wellFormed(tree, cols)
+    }
+  })
+})
+
 const task = ($: Engine, input: Record<string, unknown>) => $.tool.call({ tool: TASK_TOOL, ...input } as never)
 const withTasks = (on: Parameters<typeof engine>[0]) => {
   on('tool.register', async (_$, e) => ({ value: { tool: `mcp__jarvis__${e.name}` } }))

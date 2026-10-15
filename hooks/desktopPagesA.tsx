@@ -2,10 +2,35 @@ import type { RenderElement } from 'claude-code'
 
 import { MIN_EVENT_ROWS } from './cockpit'
 import type { Ctx } from './cockpit'
-import { DT } from './desktopTheme'
+import { DT, GLASS } from './desktopTheme'
 import type { DesktopUi } from './desktopView'
-import { MAX_EVENTS, ROLES, WORKFLOW_TYPE, elapsedMs, eventRows, fitCells, fmtClock, fmtDate, fmtDur, fmtK, fmtMs, fmtReadout, phaseOf, shortModel } from './jarvis'
-import type { Cockpit, EventRow, Phase } from './jarvis'
+import { ROLE_ICON } from './icons'
+import {
+  FAMILY_NAME,
+  MAX_EVENTS,
+  ROLES,
+  ROLE_LABEL,
+  WORKFLOW_TYPE,
+  dispatchRoleOf,
+  elapsedMs,
+  eventRows,
+  familyOf,
+  fitCells,
+  fmtClock,
+  fmtDate,
+  fmtDur,
+  fmtK,
+  fmtMs,
+  fmtReadout,
+  fmtUsd,
+  phaseOf,
+  roleBreakdown,
+  shortModel,
+  tokenTotal,
+  tokensOf,
+} from './jarvis'
+import type { Cockpit, EventRow, Phase, RoleModelStat } from './jarvis'
+import { rampBarSvg } from './svgArt'
 import { EMPTY_BOARD, boardCounts, boardGroups, countsText, groupStatus, isFresh, itemFresh, itemRunning, itemStartedAt, itemStatus } from './tasks'
 import type { TaskGroup } from './tasks'
 import { EMPTY_TEXT, TOOL_MAX, isFolded, topicFolded, topicKey } from './tasksView'
@@ -28,7 +53,7 @@ export type KitA = {
 }
 
 // The pages drawn here: the event log, the task board, a subagent's and a role's page.
-export const A_PAGES: readonly JarvisPage[] = ['log', 'tasks', 'detail']
+export const A_PAGES: readonly JarvisPage[] = ['log', 'tasks', 'detail', 'roleDetail']
 
 export const isPageA = (page: JarvisPage): boolean => A_PAGES.includes(page)
 
@@ -271,6 +296,114 @@ function detailPage(kit: KitA): RenderElement {
   )
 }
 
+// ---- 角色 ----
+
+// a model's name as the dispatch card keys it: the family where it has one
+const modelName = (model: string): string => {
+  const family = familyOf(model)
+  return family ? FAMILY_NAME[family] : shortModel(model)
+}
+
+// One role: 返回 (to the stats page), its runs by model, most first, as bars beside their
+// count, tokens, cost, mean time and failures; then each run, newest first, its mark the press
+// that opens its page.
+function rolePage(kit: KitA): RenderElement {
+  const { Box, Text, Button } = kit.ui
+  const { view, ctx } = kit
+  const back = () => ctx.go('stats')
+  const role = ROLES.find(r => r === ctx.role)
+  if (role === undefined) return actionsRow(kit, back)
+  const inner = kit.cardInner
+  const listed = [...view.running, ...view.stale, ...view.finished]
+  const memberOf = (a: JarvisAgent) => view.roster.get(a.id) ?? { n: 0, color: DT.orange }
+  const runs = listed
+    .map((a, i) => ({ a, i }))
+    .filter(x => dispatchRoleOf(x.a) === role)
+    .sort((x, y) => memberOf(y.a).n - memberOf(x.a).n || y.a.runStartedAt - x.a.runStartedAt || x.i - y.i)
+    .map(x => x.a)
+  const cell = (w: number, body: RenderElement, end = false): RenderElement => (
+    <Box width={w} flexShrink={0} overflow="hidden" {...(end ? { justifyContent: 'flex-end' } : {})}>
+      {body}
+    </Box>
+  )
+  const say = (t: string, color: string = DT.textSub, bold = false): RenderElement => (
+    <Text color={color} bold={bold} wrap="truncate">
+      {t}
+    </Text>
+  )
+  const title = `${ROLE_ICON[role]} ${ROLE_LABEL[role]}`
+  if (runs.length === 0)
+    return (
+      <Box flexDirection="column" gap={1}>
+        {actionsRow(kit, back)}
+        {kit.card(kit.head(ROLE_ICON[role], ROLE_LABEL[role], '0 次'), [<Text color={DT.textSub}>這個角色還沒有派工</Text>], DT.orangeEdge)}
+      </Box>
+    )
+
+  // the models: where the card is narrow the mean time and then the cost give way to the bar
+  const groups = roleBreakdown(listed, role, view.now)
+  const MCOL = { label: 8, count: 6, tok: 6, cost: 8, avg: 10, fail: 7 }
+  const BAR_MIN = 6
+  const mShown = new Set<keyof typeof MCOL>(['label', 'count', 'tok', 'cost', 'avg', ...(groups.some(g => g.failed > 0) ? (['fail'] as const) : [])])
+  const mFixed = () => [...mShown].reduce((sum, k) => sum + MCOL[k] + 1, 0)
+  for (const k of ['avg', 'cost'] as const) if (inner - mFixed() < BAR_MIN) mShown.delete(k)
+  const barW = Math.max(1, inner - mFixed())
+  const modelRow = (g: RoleModelStat): RenderElement => (
+    <Box flexDirection="row" gap={1} alignItems="center">
+      {cell(MCOL.label, say(g.label, DT.text, true))}
+      {kit.picture(rampBarSvg(barW, g.count / runs.length, g.failed > 0 ? [DT.orangeBright, DT.orange, DT.fail] : [DT.orangeBright, DT.orange], GLASS), `${g.label} ${g.count} 次`, barW, 1)}
+      {cell(MCOL.count, say(`${g.count} 次`, DT.orangeBright, true), true)}
+      {cell(MCOL.tok, say(fmtK(g.tokens), DT.data), true)}
+      {mShown.has('cost') ? cell(MCOL.cost, say(g.cost === undefined ? '未計價' : `≈${fmtUsd(g.cost)}`, g.cost === undefined ? DT.textFaint : DT.text), true) : null}
+      {mShown.has('avg') ? cell(MCOL.avg, say(`平均 ${fmtReadout(g.avgMs)}`), true) : null}
+      {mShown.has('fail') ? cell(MCOL.fail, say(g.failed > 0 ? `FAIL ${g.failed}` : '', DT.fail), true) : null}
+    </Box>
+  )
+  const modelsCard = kit.card(kit.head(ROLE_ICON[role], ROLE_LABEL[role], `${runs.length} 次`), groups.map(modelRow), DT.orangeEdge)
+
+  // the runs: where the card is narrow the model and then the tokens give way
+  const RCOL = { mk: 8, icon: 2, model: 8, dur: 7, tok: 6 }
+  const rShown = new Set<keyof typeof RCOL>(['mk', 'icon', 'model', 'dur', 'tok'])
+  const rFixed = () => [...rShown].reduce((sum, k) => sum + RCOL[k] + 1, 0)
+  for (const k of ['model', 'tok'] as const) if (inner - rFixed() < DESC_MIN) rShown.delete(k)
+  const descW = Math.max(1, inner - rFixed())
+  const RUN_ICON: Record<Phase, string> = { init: '◌', active: ctx.frame, waiting: '⏳', complete: '✅', failed: '❌', lost: '?' }
+  const runRow = (a: JarvisAgent): RenderElement => {
+    const p = phaseOf(a, view.now)
+    const live = p === 'init' || p === 'active' || p === 'waiting'
+    const { n, color } = memberOf(a)
+    const tok = tokenTotal(tokensOf(a))
+    return (
+      <Box flexDirection="row" gap={1} alignItems="center">
+        <Box width={RCOL.mk} flexShrink={0}>
+          <Button key={`role-run-${n}`} plain onPress={() => ctx.open(a.id, 'roleDetail')}>
+            <Text color={live ? color : DT.textSub} bold={live}>
+              {markOf(a, n)}
+            </Text>
+          </Button>
+        </Box>
+        {cell(RCOL.icon, say(RUN_ICON[p], phaseColor(p)))}
+        {rShown.has('model') ? cell(RCOL.model, say(modelName(a.model))) : null}
+        {cell(descW, say(a.description, live ? DT.text : DT.textSub))}
+        {cell(RCOL.dur, say(fmtReadout(elapsedMs(a, view.now)), live ? DT.orangeBright : DT.textSub, live), true)}
+        {rShown.has('tok') ? cell(RCOL.tok, say(a.status === 'running' && tok === 0 ? '' : fmtK(tok), DT.textFaint), true) : null}
+      </Box>
+    )
+  }
+  const fit = Math.max(3, kit.rows - 16 - groups.length)
+  const runsBody =
+    runs.length > fit ? [...runs.slice(0, fit - 1).map(runRow), <Text color={DT.textSub}>{`… 還有 ${runs.length - fit + 1} 個`}</Text>] : runs.map(runRow)
+  const runsCard = kit.card(kit.head('📋', '派工紀錄', title), runsBody, undefined, true)
+
+  return (
+    <Box flexDirection="column" gap={1}>
+      {actionsRow(kit, back)}
+      {modelsCard}
+      {runsCard}
+    </Box>
+  )
+}
+
 // ---- 任務 ----
 
 // a task row's column past its title: its width, and when it gives way (higher first)
@@ -480,5 +613,5 @@ function tasksPage(kit: KitA): RenderElement {
 
 // One of A_PAGES as `page` (from shownPageA).
 export function drawPageA(kit: KitA, page: JarvisPage): RenderElement {
-  return page === 'tasks' ? tasksPage(kit) : page === 'detail' ? detailPage(kit) : logPage(kit)
+  return page === 'tasks' ? tasksPage(kit) : page === 'detail' ? detailPage(kit) : page === 'roleDetail' ? rolePage(kit) : logPage(kit)
 }
