@@ -1245,8 +1245,9 @@ export const register: Register = on => {
       // bookkeeping only
     }
 
-    // a main-loop turn takes up the requests waiting for it
-    if (e.agentId === undefined) {
+    // a main-loop turn takes up the requests waiting for it; 2.1.295 raises turn.start for the
+    // main loop alone and its input has no agentId, 2.1.300 raises it for subagents too, with one
+    if ((e as { agentId?: string }).agentId === undefined) {
       try {
         await updateBoard($, b => startTurn(b, e.turnId, e.text, now))
       } catch {
