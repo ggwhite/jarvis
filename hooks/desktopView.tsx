@@ -427,8 +427,8 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
           {picture(backdropSvg(cols, rows), '背景', cols, rows)}
         </Box>
       ) : null}
-      {/* positioned after the backdrop, so the content paints over it */}
-      <Box position="relative" flexDirection="column" gap={1}>
+      {/* Desktop paints an absolute backdrop over in-flow content, so the content is absolute too, as the later sibling */}
+      <Box position="absolute" top={1} left={2} width={Math.max(1, cols - 4)} flexDirection="column" gap={1}>
         {titleBar}
         {tabBar}
         {page}

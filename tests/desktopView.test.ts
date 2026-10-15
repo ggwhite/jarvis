@@ -43,12 +43,16 @@ describe('desktop native: frame', () => {
     expect(bd?.props?.['height']).toBe(rowPx(45))
   })
 
-  test('the title bar, tabs and page sit in a positioned box after the backdrop, painted over it', async ($, on) => {
+  test('the title bar, tabs and page sit in an absolute box after the absolute backdrop, painted over it', async ($, on) => {
     native(on)
     const tree = await drawOn($, 'desktop', 45, 80)
     const [layer, content] = (tree.children ?? []) as Node[]
     expect(layer?.props?.['position']).toBe('absolute')
-    expect(content?.props?.['position']).toBe('relative')
+    expect(tree.props?.['position']).toBe('relative')
+    expect(content?.props?.['position']).toBe('absolute')
+    expect(content?.props?.['top']).toBe(1)
+    expect(content?.props?.['left']).toBe(2)
+    expect(content?.props?.['width']).toBe(76)
     expect(content?.props?.['flexDirection']).toBe('column')
     expect(content?.props?.['gap']).toBe(1)
     expect(textOf(content as Node)).toContain('J.A.R.V.I.S.')
