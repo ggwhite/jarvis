@@ -2266,9 +2266,25 @@ describe('request topic asks', () => {
     expect(parseClassify('「確認送出」。\n\n 1 ', cands)).toEqual({ title: '確認送出', choice: { kind: 'join', id: '1', title: '客服 issue 留言' } })
   })
 
+  test('a number copied with its topic title, or written full-width, still joins', () => {
+    const jamie = { kind: 'join', id: '3', title: 'Jamie 七日簽到累計充值' }
+    expect(parseClassify('確認送出\n3 Jamie 七日簽到', cands).choice).toEqual(jamie)
+    expect(parseClassify('確認送出\n3（Jamie 七日簽到）', cands).choice).toEqual(jamie)
+    expect(parseClassify('確認送出\n3: Jamie', cands).choice).toEqual(jamie)
+    expect(parseClassify('確認送出\n３', cands).choice).toEqual(jamie)
+    expect(parseClassify('確認送出\n話題３', cands).choice).toEqual(jamie)
+  })
+
+  test('a longer number is not read as an offered one', () => {
+    expect(parseClassify('確認送出\n30', [cands[0]!]).choice).toEqual({ kind: 'new', title: '確認送出' })
+    expect(parseClassify('確認送出\n3a', [cands[0]!]).choice).toEqual({ kind: 'new', title: '確認送出' })
+  })
+
   test('a reply naming a new topic opens it, cut to TOPIC_TITLE_MAX', () => {
     expect(parseClassify('查看 Andy 問題\n新 Andy 大樂透門檻', cands).choice).toEqual({ kind: 'new', title: 'Andy 大樂透門檻' })
     expect(parseClassify('查看\n新：Andy', cands).choice).toEqual({ kind: 'new', title: 'Andy' })
+    expect(parseClassify('查看\n新話題：Andy', cands).choice).toEqual({ kind: 'new', title: 'Andy' })
+    expect(parseClassify('查看\n新 話題討論', cands).choice).toEqual({ kind: 'new', title: '話題討論' })
     expect([...(parseClassify('查看\n新 ' + '字'.repeat(30), cands).choice.title)]).toHaveLength(TOPIC_TITLE_MAX)
   })
 

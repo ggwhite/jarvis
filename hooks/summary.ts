@@ -82,10 +82,12 @@ export const classifyAsk = (prompt: string, candidates: readonly TopicCandidate[
   ].join('\n')
 }
 
-// a topic number as the small model may write it
-const TOPIC_NO = /^(?:話題\s*)?(\d+)$/
+// a topic number as the small model may write it, alone or ahead of the topic's title
+const TOPIC_NO = /^(?:話題\s*)?(\d+)(?:$|[\s（(:：])/
 // the word that opens a new topic, and what may sit between it and the title
-const NEW_TOPIC = /^新[\s:：]*/
+const NEW_TOPIC = /^新(?:話題)?[\s:：]*/
+// full-width digits as their ASCII ones
+const asciiDigits = (text: string): string => text.replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0) - 0xfee0))
 
 // The small model's two lines: the request's title, and the offered topic it names or the new
 // one it titles; a new topic with no usable title takes the request's ('' when that is blank too).
@@ -93,7 +95,7 @@ export function parseClassify(reply: string, candidates: readonly TopicCandidate
   const lines = reply.split('\n').filter(l => l.trim() !== '')
   const title = cleanSummary(lines[0] ?? '', SUMMARY_TITLE_MAX)
   const second = cleanSummary(lines[1] ?? '', Number.MAX_SAFE_INTEGER)
-  const no = TOPIC_NO.exec(second)?.[1]
+  const no = TOPIC_NO.exec(asciiDigits(second))?.[1]
   const hit = no === undefined ? undefined : candidates.find(c => c.id === no)
   if (hit) return { title, choice: { kind: 'join', id: hit.id, title: hit.title } }
   const named = NEW_TOPIC.test(second) ? cleanSummary(second.replace(NEW_TOPIC, ''), TOPIC_TITLE_MAX) : ''
