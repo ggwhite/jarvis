@@ -23,7 +23,7 @@ import type { FleetQuota, FleetSession, FleetStatus, JarvisPage, QuotaWindow } f
 
 // The native Desktop pages of the fleet and the changes: the fleet, one session, the changes,
 // one file's diff, a repo's tree, a commit's and a stash's diff.
-export const B_PAGES: readonly JarvisPage[] = ['fleet', 'fleetDetail', 'changes']
+export const B_PAGES: readonly JarvisPage[] = ['fleet', 'fleetDetail', 'changes', 'changeDiff']
 
 // the tab a sub-page lights: the session page the fleet's, the diff and tree pages the changes'
 export const tabOfB = (page: JarvisPage): JarvisPage | undefined =>
@@ -69,6 +69,9 @@ const CHANGE_MODES: { mode: ChangeMode; label: string }[] = [
   { mode: 'unpushed', label: '未推送' },
   { mode: 'commits', label: '提交' },
 ]
+
+type NumberedRow = Extract<DiffRow, { kind: 'add' | 'del' | 'ctx' }>
+const numbered = (r: DiffRow): r is NumberedRow => r.kind !== 'hunk' && r.kind !== 'note'
 
 export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
   const { Box, Text, Button } = kit.ui
@@ -477,10 +480,75 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
     )
   }
 
+  // ---- diff -------------------------------------------------------------
+
+  // a diff's rows close together: old and new line numbers, then the sign and text, added in
+  // green, removed in red, hunk headers in ice blue, notes faint; a long line cut at the card
+  const diffBody = (rows: readonly DiffRow[]): RenderElement => {
+    const shown = rows.slice(0, MAX_DIFF_ROWS)
+    const top = shown.reduce((m, r) => (numbered(r) ? Math.max(m, r.old ?? 0, r.new ?? 0) : m), 0)
+    const numW = String(Math.max(1, top)).length
+    const textW = Math.max(1, cardInner - 2 * (numW + 1))
+    const text = (t: string) => t.replace(/\r$/, '').replace(/\t/g, '    ')
+    const out = shown.map(r => {
+      if (!numbered(r)) return row([{ w: cardInner, node: say(text(r.text), r.kind === 'hunk' ? DT.data : DT.textSub) }])
+      const sign = r.kind === 'add' ? '+' : r.kind === 'del' ? '-' : ' '
+      const color = r.kind === 'add' ? DT.ok : r.kind === 'del' ? DT.fail : DT.text
+      return row([
+        { w: numW, node: say(r.old === undefined ? '' : String(r.old), DT.textFaint), end: true },
+        { w: numW, node: say(r.new === undefined ? '' : String(r.new), DT.textFaint), end: true },
+        { w: textW, node: say(`${sign}${text(r.text)}`, color) },
+      ])
+    })
+    if (rows.length > MAX_DIFF_ROWS) out.push(say(`… 還有 ${rows.length - MAX_DIFF_ROWS} 行`))
+    return list(out)
+  }
+
+  const diffOf = (rows: readonly DiffRow[] | Failed | undefined): RenderElement =>
+    rows === undefined ? say('計算中…') : isFailed(rows) ? say(rows.error) : rows.length === 0 ? say('沒有差異') : diffBody(rows)
+
+  // ‹ i / n › over a set of files
+  const stepper = (keys: { prev: string; next: string }, at: number, total: number, open: (i: number) => void): RenderElement[] => [
+    pill(keys.prev, '‹', false, () => open(at - 1)),
+    <Text color={DT.textSub}>{`${at + 1} / ${total}`}</Text>,
+    pill(keys.next, '›', false, () => open(at + 1)),
+  ]
+
+  const changeDiffPage = (): RenderElement => {
+    const { g, e } = diffOrder[diffAt] ?? { g: undefined, e: undefined }
+    if (!g || !e) return changesPage()
+    const mode = CHANGE_MODES.find(m => m.mode === cv.mode)?.label ?? ''
+    const a = actorOf(e.actors)
+    const c = entryCounts(e)
+    const open = (i: number) => {
+      const next = diffOrder[i]
+      if (next) ctx.openDiff?.(next.e.key)
+    }
+    return (
+      <Box flexDirection="column" gap={1}>
+        {actions([pill('back', '返回', false, () => ctx.go('changes')), ...stepper({ prev: 'diff-prev', next: 'diff-next' }, diffAt, diffOrder.length, open)])}
+        {card(
+          <Box flexDirection="column">
+            <Box overflow="hidden">{sayStart(`${g.name}/${e.label}`, DT.orange, true)}</Box>
+            <Box flexDirection="row" gap={2}>
+              <Text color={a.color} bold={a.bold === true}>
+                {a.t}
+              </Text>
+              {c.node}
+              <Text color={DT.textSub}>{mode}</Text>
+            </Box>
+          </Box>,
+          [diffOf(ctx.diff?.rows)],
+        )}
+      </Box>
+    )
+  }
+
   // ---- 分流 -------------------------------------------------------------
 
   // a sub-page whose session, file, repo, commit or stash left is the page above it
   if (ctx.page === 'fleetDetail') return fleetSelected ? fleetDetailPage(fleetSelected) : fleetPage()
   if (ctx.page === 'fleet') return fleetPage()
+  if (ctx.page === 'changeDiff') return changeDiffPage()
   return changesPage()
 }

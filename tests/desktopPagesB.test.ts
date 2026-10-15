@@ -361,6 +361,43 @@ describe('desktop native B: commits mode', () => {
   })
 })
 
+const DIFF: DiffRow[] = [
+  { kind: 'hunk', text: '@@ -1,3 +1,3 @@ func main' },
+  { kind: 'ctx', old: 1, new: 1, text: 'package main' },
+  { kind: 'del', old: 2, text: 'old line' },
+  { kind: 'add', new: 2, text: `new line ${'that is very long '.repeat(20)}` },
+  { kind: 'note', text: '\\ No newline at end of file' },
+]
+
+describe('desktop native B: diff pages', () => {
+  test('a file diff: back, ‹ i / n ›, its path and counts, + green, - red, @@ ice blue, long lines cut', () => {
+    const calls: Calls = []
+    const tree = draw(baseCtx(calls, { page: 'changeDiff', changes: CHANGES, diff: { key: 's:/w/r/a.go', rows: DIFF } }))
+    const t = textOf(tree)
+    for (const word of ['r/a.go', '主線', '1 / 3', '本 session']) expect(t).toContain(word)
+    expect(texts(tree, DT.data)).toContain('@@ -1,3 +1,3 @@ func main')
+    expect(texts(tree, DT.fail)).toContain('-old line')
+    const added = all(tree, x => x.type === 'Text' && x.props?.['color'] === DT.ok && textOf(x).startsWith('+new line'))[0]
+    expect(added?.props?.['wrap']).toBe('truncate')
+    press(tree, 'diff-next')
+    press(tree, 'diff-prev')
+    press(tree, 'back')
+    // the first file has none before it
+    expect(calls).toEqual(['openDiff:s:/w/r/deep/nested/very/long/path/to/some/file/that/goes/on.go', 'go:changes'])
+    expect(badProps(tree)).toEqual([])
+    for (const cols of WIDTHS) expect(fixedRowsFit(draw(baseCtx([], { page: 'changeDiff', cols, changes: CHANGES, diff: { key: 's:/w/r/a.go', rows: DIFF } })), cols)).toBeGreaterThan(0)
+  })
+
+  test('while git works, when it fails, and a file that left the list', () => {
+    expect(textOf(draw(baseCtx([], { page: 'changeDiff', changes: CHANGES, diff: { key: 's:/w/r/a.go', rows: undefined } })))).toContain('計算中…')
+    expect(textOf(draw(baseCtx([], { page: 'changeDiff', changes: CHANGES, diff: { key: 's:/w/r/a.go', rows: { error: 'git broke' } } })))).toContain('git broke')
+    const gone = draw(baseCtx([], { page: 'changeDiff', changes: CHANGES, diff: { key: 'nope', rows: DIFF } }))
+    expect(button(gone, 'diff-prev')).toBeUndefined()
+    expect(button(gone, 'chg-s:/w/r/a.go')).toBeDefined()
+  })
+
+})
+
 describe('desktop native B: through the engine', () => {
   const native = (on: Parameters<typeof engine>[0]) => engine(on, 'agent-1', 'native')
 
