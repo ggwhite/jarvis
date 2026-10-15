@@ -93,6 +93,7 @@ const fixedRowsFit = (tree: Node, cols: number): number => {
   const rows = all(tree, x => x.type === 'Box' && x.props?.['flexDirection'] === 'row' && kids(x).length > 0 && kids(x).every(k => k.type === 'Box' && Number.isFinite(Number(k.props?.['width']))))
   for (const r of rows) {
     const ks = kids(r)
+    expect(ks.every(k => Number(k.props?.['width']) > 0)).toBe(true)
     const sum = ks.reduce((n, k) => n + Number(k.props?.['width']), 0) + Number(r.props?.['gap'] ?? 0) * (ks.length - 1)
     expect(sum).toBeLessThanOrEqual(cardInner(cols))
   }
@@ -492,6 +493,46 @@ describe('desktop native B: diff pages', () => {
     const gone = draw(baseCtx([], { page: 'stashDiff', commits: commits([], { repo: repoPage({ view: 'stash' }) }) }))
     expect(button(gone, 'cm-stash-s1')).toBeDefined()
   })
+})
+
+describe('desktop native B: narrow panes', () => {
+  const NARROW = [10, 16, 20, 24, 30] as const
+  const fleet: FleetView = {
+    at: T0,
+    sessions: [
+      suit({ paneId: 'w1:p1', title: 'Idle one', status: 'idle', lastAt: T0 - 30 * MIN, hourly: Array.from({ length: 24 }, (_, i) => i * 10) }),
+      suit({ paneId: 'w1:p2', sessionId: 'sess-self', title: 'Busy one with a long title', status: 'working', model: 'claude-opus-5-5', tool: 'Bash', runSince: T0 - 5 * MIN, contextPct: 75, stamps: [T0 - MIN], todayTokens: 120_000, todayCost: 1.5 }),
+      suit({ paneId: 'w1:p3', title: 'Blocked one', status: 'blocked', contextPct: 95, lastUser: 'ask', lastReply: 'reply' }),
+    ],
+    quota: { fiveHour: { usedPct: 40, resetsAt: T0 + 60 * MIN, windowMin: 300 }, sevenDay: { usedPct: 10, resetsAt: T0 + 3 * 24 * 60 * MIN, windowMin: 10080 }, fetchedAt: T0 },
+    linkLost: false,
+    scanning: false,
+    hourly: Array.from({ length: 24 }, (_, i) => (i < 15 ? i * 100 : 0)),
+    jumpError: { paneId: 'w1:p3', text: 'no such pane' },
+  }
+  const cm = (over: Partial<CommitsCtx> = {}) => commits([], over)
+  const fileDiff = { commit: { sha: 'c2aaaaaaaaaa', parents: [], author: 'a', time: T0, refs: [], subject: 'merge the feature' }, files: [{ path: 'a.go', add: 3, del: 1, binary: false }], file: { path: 'a.go', add: 3, del: 1, binary: false }, rows: DIFF }
+  const stashDiff = { stash: { sha: 's1', name: 'stash@{0}', time: T0, branch: 'main', message: 'WIP on main' }, files: [{ path: 'n.go', add: 1, del: 0, binary: false, untracked: true }], file: { path: 'n.go', add: 1, del: 0, binary: false, untracked: true }, rows: DIFF }
+  const pages: [string, Partial<Ctx>][] = [
+    ['fleet', { herdr: true, fleet }],
+    ['fleetDetail', { herdr: true, fleet, page: 'fleetDetail', paneId: 'w1:p3' }],
+    ['changes', { page: 'changes', changes: CHANGES }],
+    ['commits list', { page: 'changes', changes: { mode: 'commits', groups: [], pending: false, total: 0 }, commits: cm() }],
+    ...(['log', 'branches', 'stash', 'worktrees'] as const).map((view): [string, Partial<Ctx>] => [`commitTree ${view}`, { page: 'commitTree', commits: cm({ repo: repoPage({ view, remoteOpen: true, goneOpen: true }) }) }]),
+    ['changeDiff', { page: 'changeDiff', changes: CHANGES, diff: { key: 's:/w/r/a.go', rows: DIFF } }],
+    ['commitDiff', { page: 'commitDiff', commits: cm({ repo: repoPage(), diff: fileDiff }) }],
+    ['stashDiff', { page: 'stashDiff', commits: cm({ repo: repoPage({ view: 'stash' }), stashDiff }) }],
+  ]
+
+  for (const [name, over] of pages) {
+    test(`${name}: every fixed-column row stays within the card, no column under one cell, at cols 10 to 30`, () => {
+      for (const cols of NARROW) {
+        const tree = draw(baseCtx([], { ...over, cols }))
+        expect(fixedRowsFit(tree, cols)).toBeGreaterThan(0)
+        expect(badProps(tree)).toEqual([])
+      }
+    })
+  }
 })
 
 describe('desktop native B: through the engine', () => {

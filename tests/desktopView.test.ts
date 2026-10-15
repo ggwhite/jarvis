@@ -130,6 +130,61 @@ describe('desktop native: frame', () => {
   })
 })
 
+describe('desktop native: narrow panes', () => {
+  const NARROW = [10, 16, 20, 24, 30]
+  // the card never narrower than 16 cells inside, however narrow the pane
+  const cardInner = (cols: number) => Math.max(16, cols - 4 - 6)
+  const LONG = 'a description long enough to need cutting short in a narrow card '.repeat(3)
+  // a row of fixed columns: each child's width (a picture's in cells), all at least a cell, and the gaps
+  const rowWidth = (row: Node): number => {
+    const kids = (row.children ?? []).filter((c): c is Node => typeof c !== 'string')
+    const widths = kids.map(k => (k.type === 'Svg' ? Number(k.props?.['width']) / cellPx(1) : Number(k.props?.['width'])))
+    expect(widths.every(w => Number.isFinite(w) && w >= 1)).toBe(true)
+    return widths.reduce((x, y) => x + y, 0) + Number(row.props?.['gap'] ?? 0) * (kids.length - 1)
+  }
+  const fixedRows = (tree: Node): Node[] =>
+    all(tree, x => {
+      if (x.type !== 'Box' || x.props?.['flexDirection'] !== 'row') return false
+      const kids = (x.children ?? []).filter((c): c is Node => typeof c !== 'string')
+      return kids.length > 0 && kids.every(k => (k.type === 'Box' || k.type === 'Svg') && k.props?.['width'] !== undefined)
+    })
+
+  test('the subagent and recent event rows at cols 10 to 30: columns give way down to the essentials', async ($, on) => {
+    native(on)
+    await $.agent.spawn(spawnInput(LONG, 'Explore'))
+    await $.tool.call({ tool: 'Bash', command: LONG } as never)
+    for (const cols of NARROW) {
+      const tree = await drawOn($, 'desktop', 50, cols)
+      const agent = all(tree, x => x.type === 'Box' && x.props?.['flexDirection'] === 'row' && all(x, y => y.type === 'Button' && y.props?.['key'] === 'agent-agent-1').length > 0).at(-1) as Node
+      expect(rowWidth(agent)).toBeLessThanOrEqual(cardInner(cols))
+      // MK-n and its phase are always there
+      expect(textOf(agent)).toContain('MK-1')
+      expect(textOf(agent)).toMatch(/INIT|ACTIVE|WAITING/)
+      const events = all(tree, x => x.type === 'Box' && x.props?.['flexDirection'] === 'row' && textOf(x).includes('結果'))
+      const header = events.at(-1) as Node
+      expect(textOf(header)).toContain('描述')
+      for (const row of fixedRows(tree)) expect(rowWidth(row)).toBeLessThanOrEqual(cardInner(cols))
+      expect(badProps(tree)).toEqual([])
+    }
+  })
+
+  test('the DISPATCH rows at cols 10 to 30', async ($, on) => {
+    native(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    await pressOn($, 'desktop', 'tab-stats')
+    for (const cols of NARROW) {
+      const tree = await drawOn($, 'desktop', 50, cols)
+      const rows = all(tree, x => x.type === 'Box' && x.props?.['flexDirection'] === 'row' && (x.children ?? []).some(c => typeof c !== 'string' && all(c, y => y.type === 'Button' && String(y.props?.['key']).startsWith('role-')).length > 0))
+      expect(rows.length).toBeGreaterThan(0)
+      for (const row of rows) {
+        expect(rowWidth(row)).toBeLessThanOrEqual(cardInner(cols))
+        expect(textOf(row)).toMatch(/\d/)
+      }
+      expect(badProps(tree)).toEqual([])
+    }
+  })
+})
+
 describe('desktop layout switch: JARVIS_DESKTOP_LAYOUT', () => {
   const TAB_PAGES = ['now', 'log', 'stats', 'fleet', 'changes', 'tasks'] as const
   const LABELS: Record<(typeof TAB_PAGES)[number], string> = { now: '現況', log: '事件流', stats: '統計', fleet: '艦隊', changes: '異動', tasks: '任務' }

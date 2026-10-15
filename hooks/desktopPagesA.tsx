@@ -84,15 +84,15 @@ function topLine(ui: DesktopUi, left: readonly RenderElement[], right?: RenderEl
 }
 
 // A card of events, oldest first, the newest `limit` rows (dated rules count), as the now
-// page's recent events: fixed columns under a header, the time and then the tool giving way
-// where the card is narrow. `withActor` false leaves out who ran each call.
+// page's recent events: fixed columns under a header, the time, the tool, the time taken and
+// then who giving way where the card is narrow. `withActor` false leaves out who ran each call.
 function eventsCard(kit: KitA, top: RenderElement, list: readonly JarvisEvent[], limit: number, empty: string, withActor: boolean): RenderElement {
   const { Box, Text } = kit.ui
   const inner = kit.cardInner
   const ECOL = { time: 8, who: 6, tool: 10, took: 6, mark: 4 }
   const shown = new Set<keyof typeof ECOL>(['time', 'tool', 'took', 'mark', ...(withActor ? (['who'] as const) : [])])
   const fixedW = () => [...shown].reduce((sum, k) => sum + ECOL[k], 0) + shown.size
-  for (const k of ['time', 'tool'] as const) if (fixedW() + DESC_MIN > inner) shown.delete(k)
+  for (const k of ['time', 'tool', 'took', 'who'] as const) if (fixedW() + DESC_MIN > inner) shown.delete(k)
   const descW = Math.max(1, inner - fixedW())
   const cell = (w: number, body: RenderElement, end = false): RenderElement => (
     <Box width={w} flexShrink={0} overflow="hidden" {...(end ? { justifyContent: 'flex-end' } : {})}>
@@ -110,7 +110,7 @@ function eventsCard(kit: KitA, top: RenderElement, list: readonly JarvisEvent[],
       {shown.has('who') ? cell(ECOL.who, c.who) : null}
       {shown.has('tool') ? cell(ECOL.tool, c.tool) : null}
       {cell(descW, c.desc)}
-      {cell(ECOL.took, c.took, true)}
+      {shown.has('took') ? cell(ECOL.took, c.took, true) : null}
       {cell(ECOL.mark, c.mark, true)}
     </Box>
   )
@@ -340,20 +340,24 @@ function rolePage(kit: KitA): RenderElement {
       </Box>
     )
 
-  // the models: where the card is narrow the mean time and then the cost give way to the bar
+  // the models: where the card is narrow the mean time, the cost and the tokens give way to the
+  // bar; with no cell left for the bar the failures go, then the bar: the label and count stay
   const groups = roleBreakdown(listed, role, view.now)
   const MCOL = { label: 8, count: 6, tok: 6, cost: 8, avg: 10, fail: 7 }
   const BAR_MIN = 6
   const mShown = new Set<keyof typeof MCOL>(['label', 'count', 'tok', 'cost', 'avg', ...(groups.some(g => g.failed > 0) ? (['fail'] as const) : [])])
   const mFixed = () => [...mShown].reduce((sum, k) => sum + MCOL[k] + 1, 0)
-  for (const k of ['avg', 'cost'] as const) if (inner - mFixed() < BAR_MIN) mShown.delete(k)
-  const barW = Math.max(1, inner - mFixed())
+  for (const k of ['avg', 'cost', 'tok'] as const) if (inner - mFixed() < BAR_MIN) mShown.delete(k)
+  if (inner - mFixed() < 1) mShown.delete('fail')
+  const barW = inner - mFixed()
   const modelRow = (g: RoleModelStat): RenderElement => (
     <Box flexDirection="row" gap={1} alignItems="center">
       {cell(MCOL.label, say(g.label, DT.text, true))}
-      {kit.picture(rampBarSvg(barW, g.count / runs.length, g.failed > 0 ? [DT.orangeBright, DT.orange, DT.fail] : [DT.orangeBright, DT.orange], GLASS), `${g.label} ${g.count} 次`, barW, 1)}
+      {barW >= 1
+        ? kit.picture(rampBarSvg(barW, g.count / runs.length, g.failed > 0 ? [DT.orangeBright, DT.orange, DT.fail] : [DT.orangeBright, DT.orange], GLASS), `${g.label} ${g.count} 次`, barW, 1)
+        : null}
       {cell(MCOL.count, say(`${g.count} 次`, DT.orangeBright, true), true)}
-      {cell(MCOL.tok, say(fmtK(g.tokens), DT.data), true)}
+      {mShown.has('tok') ? cell(MCOL.tok, say(fmtK(g.tokens), DT.data), true) : null}
       {mShown.has('cost') ? cell(MCOL.cost, say(g.cost === undefined ? '未計價' : `≈${fmtUsd(g.cost)}`, g.cost === undefined ? DT.textFaint : DT.text), true) : null}
       {mShown.has('avg') ? cell(MCOL.avg, say(`平均 ${fmtReadout(g.avgMs)}`), true) : null}
       {mShown.has('fail') ? cell(MCOL.fail, say(g.failed > 0 ? `FAIL ${g.failed}` : '', DT.fail), true) : null}
@@ -361,11 +365,13 @@ function rolePage(kit: KitA): RenderElement {
   )
   const modelsCard = kit.card(kit.head(ROLE_ICON[role], ROLE_LABEL[role], `${runs.length} 次`), groups.map(modelRow), DT.orangeEdge)
 
-  // the runs: where the card is narrow the model and then the tokens give way
+  // the runs: where the card is narrow the model, the tokens, the time and last the description
+  // give way: the mark and its icon stay
   const RCOL = { mk: 8, icon: 2, model: 8, dur: 7, tok: 6 }
   const rShown = new Set<keyof typeof RCOL>(['mk', 'icon', 'model', 'dur', 'tok'])
   const rFixed = () => [...rShown].reduce((sum, k) => sum + RCOL[k] + 1, 0)
-  for (const k of ['model', 'tok'] as const) if (inner - rFixed() < DESC_MIN) rShown.delete(k)
+  for (const k of ['model', 'tok', 'dur'] as const) if (inner - rFixed() < DESC_MIN) rShown.delete(k)
+  const showDesc = inner - rFixed() >= DESC_MIN
   const descW = Math.max(1, inner - rFixed())
   const RUN_ICON: Record<Phase, string> = { init: '◌', active: ctx.frame, waiting: '⏳', complete: '✅', failed: '❌', lost: '?' }
   const runRow = (a: JarvisAgent): RenderElement => {
@@ -384,8 +390,8 @@ function rolePage(kit: KitA): RenderElement {
         </Box>
         {cell(RCOL.icon, say(RUN_ICON[p], phaseColor(p)))}
         {rShown.has('model') ? cell(RCOL.model, say(modelName(a.model))) : null}
-        {cell(descW, say(a.description, live ? DT.text : DT.textSub))}
-        {cell(RCOL.dur, say(fmtReadout(elapsedMs(a, view.now)), live ? DT.orangeBright : DT.textSub, live), true)}
+        {showDesc ? cell(descW, say(a.description, live ? DT.text : DT.textSub)) : null}
+        {rShown.has('dur') ? cell(RCOL.dur, say(fmtReadout(elapsedMs(a, view.now)), live ? DT.orangeBright : DT.textSub, live), true) : null}
         {rShown.has('tok') ? cell(RCOL.tok, say(a.status === 'running' && tok === 0 ? '' : fmtK(tok), DT.textFaint), true) : null}
       </Box>
     )

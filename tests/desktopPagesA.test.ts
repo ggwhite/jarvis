@@ -275,3 +275,57 @@ describe('desktop native: task board', () => {
     }
   })
 })
+
+describe('desktop native: narrow panes', () => {
+  const NARROW = [10, 16, 20, 24, 30]
+  // the card never narrower than 16 cells inside, however narrow the pane
+  const narrowInner = (cols: number) => Math.max(16, cardInner(cols))
+  const LONG = 'a description long enough to need cutting short in a narrow card '.repeat(3)
+  const crew = async ($: Engine) => {
+    await $.agent.spawn(spawnInput(LONG, 'Explore'))
+    await $.tool.call({ tool: 'Bash', command: LONG, agentId: 'agent-1' } as never)
+    await $.tool.call({ tool: 'Bash', command: LONG } as never)
+  }
+  const fitsAt = async ($: Engine, least: number, room = narrowInner) => {
+    for (const cols of NARROW) {
+      const tree = await drawOn($, 'desktop', 50, cols)
+      expect(isNative(tree)).toBe(true)
+      const rows = fixedRows(tree)
+      expect(rows.length).toBeGreaterThanOrEqual(least)
+      for (const row of rows) expect(rowWidth(row)).toBeLessThanOrEqual(room(cols))
+      expect(badProps(tree)).toEqual([])
+    }
+  }
+
+  test('the event log at cols 10 to 30', async ($, on) => {
+    native(on)
+    await crew($)
+    await pressOn($, 'desktop', 'tab-log')
+    await fitsAt($, 2)
+  })
+
+  test('the subagent page at cols 10 to 30', async ($, on) => {
+    native(on)
+    await crew($)
+    await pressOn($, 'desktop', 'agent-agent-1')
+    await fitsAt($, 5)
+  })
+
+  test('the role page at cols 10 to 30', async ($, on) => {
+    native(on)
+    await crew($)
+    await $.turn.complete(complete('agent-1', { reason: 'error' }))
+    await pressOn($, 'desktop', 'tab-stats', 50, 100)
+    await pressOn($, 'desktop', 'role-Explore', 50, 100)
+    await fitsAt($, 2)
+  })
+
+  test('the task board at cols 10 to 30, within the tile', async ($, on) => {
+    withTasks(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    await task($, { op: 'add', item: LONG, subtasks: [LONG] })
+    await task($, { op: 'update', id: '1.1', status: 'in_progress', agent: 'agent-1' })
+    await pressOn($, 'desktop', 'tab-tasks')
+    await fitsAt($, 2, cols => narrowInner(cols) - 4)
+  })
+})

@@ -147,12 +147,14 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
   const PHASE_TEXT: Record<Phase, string> = { init: 'INIT', active: 'ACTIVE', waiting: 'WAITING', complete: 'COMPLETE', failed: 'FAILED', lost: 'LOST' }
   const phaseColor = (p: Phase): string => (p === 'failed' || p === 'lost' ? DT.fail : p === 'complete' ? DT.ok : DT.data)
   // a row's columns in fixed widths, one cell apart; where the card is too narrow the model,
-  // the tokens and then the role give way, so the row never reaches past the card
+  // the tokens, the role, the time and last the description give way, so the row never
+  // reaches past the card: MK-n and the phase stay
   const COL = { mk: 6, role: 12, model: 8, phase: 9, time: 6, tok: 6 }
   const DESC_MIN = 8
   const shown = new Set<keyof typeof COL>(['mk', 'role', 'model', 'phase', 'time', 'tok'])
   const fixedW = () => [...shown].reduce((sum, k) => sum + COL[k], 0) + shown.size
-  for (const k of ['model', 'tok', 'role'] as const) if (fixedW() + DESC_MIN > cardInner) shown.delete(k)
+  for (const k of ['model', 'tok', 'role', 'time'] as const) if (fixedW() + DESC_MIN > cardInner) shown.delete(k)
+  const showDesc = fixedW() + DESC_MIN <= cardInner
   const descW = Math.max(1, cardInner - fixedW())
 
   const agentRow = (a: JarvisAgent): RenderElement => {
@@ -178,19 +180,23 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
             </Text>
           </Box>
         ) : null}
-        <Box width={descW} flexShrink={0} overflow="hidden">
-          <Text color={DT.text} wrap="truncate">
-            {a.description}
-          </Text>
-        </Box>
+        {showDesc ? (
+          <Box width={descW} flexShrink={0} overflow="hidden">
+            <Text color={DT.text} wrap="truncate">
+              {a.description}
+            </Text>
+          </Box>
+        ) : null}
         <Box width={COL.phase} flexShrink={0}>
           <Text color={phaseColor(p)} bold>
             {PHASE_TEXT[p]}
           </Text>
         </Box>
-        <Box width={COL.time} flexShrink={0} justifyContent="flex-end">
-          <Text color={DT.textSub}>{fmtDur(elapsedMs(a, view.now))}</Text>
-        </Box>
+        {shown.has('time') ? (
+          <Box width={COL.time} flexShrink={0} justifyContent="flex-end">
+            <Text color={DT.textSub}>{fmtDur(elapsedMs(a, view.now))}</Text>
+          </Box>
+        ) : null}
         {shown.has('tok') ? (
           <Box width={COL.tok} flexShrink={0} justifyContent="flex-end">
             <Text color={DT.textFaint}>{fmtK(tokenTotal(tokensOf(a)))}</Text>
@@ -310,12 +316,13 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     )
 
     // as the subagent rows: fixed columns within the card, which is half the pane when wide;
-    // where it is too narrow the time and then the tool give way
+    // where it is too narrow the time, the tool, the time taken and then who give way, leaving
+    // the description and the result
     const recentInner = wide ? Math.max(16, Math.floor((inner - 2) / 2) - 6) : cardInner
     const ECOL = { time: 8, who: 6, tool: 10, took: 6, mark: 4 }
     const eShown = new Set<keyof typeof ECOL>(['time', 'who', 'tool', 'took', 'mark'])
     const eFixedW = () => [...eShown].reduce((sum, k) => sum + ECOL[k], 0) + eShown.size
-    for (const k of ['time', 'tool'] as const) if (eFixedW() + DESC_MIN > recentInner) eShown.delete(k)
+    for (const k of ['time', 'tool', 'took', 'who'] as const) if (eFixedW() + DESC_MIN > recentInner) eShown.delete(k)
     const eDescW = Math.max(1, recentInner - eFixedW())
     const cell = (w: number, body: RenderElement, end = false): RenderElement => (
       <Box width={w} flexShrink={0} overflow="hidden" {...(end ? { justifyContent: 'flex-end' } : {})}>
@@ -325,10 +332,10 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     const eventRow = (c: Record<keyof typeof ECOL | 'desc', RenderElement>): RenderElement => (
       <Box flexDirection="row" gap={1} alignItems="center">
         {eShown.has('time') ? cell(ECOL.time, c.time) : null}
-        {cell(ECOL.who, c.who)}
+        {eShown.has('who') ? cell(ECOL.who, c.who) : null}
         {eShown.has('tool') ? cell(ECOL.tool, c.tool) : null}
         {cell(eDescW, c.desc)}
-        {cell(ECOL.took, c.took, true)}
+        {eShown.has('took') ? cell(ECOL.took, c.took, true) : null}
         {cell(ECOL.mark, c.mark, true)}
       </Box>
     )
@@ -423,12 +430,14 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     const counts = view.dispatch.map(d => d.running + d.done + d.failed)
     const dmax = Math.max(1, ...counts)
     const models = roleModels([...view.running, ...view.stale, ...view.finished])
-    // as the subagent rows: where the card is too narrow the model gives way, so the row
-    // never reaches past the card
+    // as the subagent rows: where the card is too narrow the model gives way, then the bar, then
+    // the name is cut, so the row never reaches past the card
     const DCOL = { name: 14, model: 8, count: 4 }
     const BAR_MIN = 6
     const showModel = DCOL.name + DCOL.model + DCOL.count + 3 + BAR_MIN <= cardInner
-    const barW = Math.max(1, cardInner - DCOL.name - DCOL.count - 2 - (showModel ? DCOL.model + 1 : 0))
+    const barW = cardInner - DCOL.name - DCOL.count - 2 - (showModel ? DCOL.model + 1 : 0)
+    const showBar = barW >= 1
+    const nameW = Math.min(DCOL.name, cardInner - DCOL.count - 1)
     const shownRoles = view.dispatch.filter((d, i) => (d.role !== 'workflow' && d.role !== 'other') || (counts[i] ?? 0) > 0)
     const dispatchCard = card(
       head('📨', 'DISPATCH', `${counts.reduce((sum, n) => sum + n, 0)} 次派工`),
@@ -436,9 +445,9 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
         const n = d.running + d.done + d.failed
         return (
           <Box flexDirection="row" gap={1} alignItems="center">
-            <Box width={DCOL.name} flexShrink={0}>
+            <Box width={nameW} flexShrink={0} overflow="hidden">
               <Button key={`role-${d.role}`} plain onPress={() => ctx.openRole?.(d.role)}>
-                <Text color={DT.orange} bold>{`${ROLE_ICON[d.role]} ${d.label}`}</Text>
+                <Text color={DT.orange} bold wrap="truncate">{`${ROLE_ICON[d.role]} ${d.label}`}</Text>
               </Button>
             </Box>
             {showModel ? (
@@ -448,7 +457,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
                 </Text>
               </Box>
             ) : null}
-            {picture(rampBarSvg(barW, n / dmax, d.failed > 0 ? [DT.orangeBright, DT.orange, DT.fail] : [DT.orangeBright, DT.orange], GLASS), `${d.label} ${n}`, barW, 1)}
+            {showBar ? picture(rampBarSvg(barW, n / dmax, d.failed > 0 ? [DT.orangeBright, DT.orange, DT.fail] : [DT.orangeBright, DT.orange], GLASS), `${d.label} ${n}`, barW, 1) : null}
             <Box width={DCOL.count} flexShrink={0} justifyContent="flex-end">
               <Text color={n > 0 ? DT.text : DT.textFaint} bold={n > 0}>
                 {String(n)}

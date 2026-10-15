@@ -175,8 +175,10 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
     const st = FLEET_STATUS[s.status]
     const self = ctx.sessionId !== '' && s.sessionId === ctx.sessionId
     const badge = s.status === 'idle' ? idleText(s) : st.label
-    const badgeW = cellWidth(badge)
-    const titleW = Math.max(1, cardInner - badgeW - 1 - (self ? SELF_W + 1 : 0))
+    // when narrow THIS gives way, then the badge is cut, so the title keeps at least a cell
+    const badgeW = Math.min(cellWidth(badge), cardInner - 2)
+    const showSelf = self && cardInner - badgeW - 1 - (SELF_W + 1) >= DESC_MIN
+    const titleW = Math.max(1, cardInner - badgeW - 1 - (showSelf ? SELF_W + 1 : 0))
     const top = row([
       {
         w: titleW,
@@ -186,7 +188,7 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
           <Text color={s.status === 'idle' ? DT.text : DT.orangeBright} bold wrap="truncate">{`${st.icon} ${s.title}`}</Text>,
         ),
       },
-      self ? { w: SELF_W, node: say('THIS', DT.data, true) } : null,
+      showSelf ? { w: SELF_W, node: say('THIS', DT.data, true) } : null,
       { w: badgeW, node: say(badge, st.color, true), end: true },
     ])
     const today = `TODAY ${fmtBig(s.todayTokens)} · ${fmtUsd(s.todayCost)}`
