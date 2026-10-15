@@ -118,6 +118,36 @@ describe('desktop svg: pipeline', () => {
     expect(out.children?.[1]).toBe(svg)
   })
 
+  test('desktopTree sets every Text in the monospaced face, keeping a mono already set', () => {
+    const tree: Node = {
+      type: 'Box',
+      props: {},
+      children: [
+        { type: 'Text', props: { color: 'red' }, children: ['a', { type: 'Text', children: ['b'] }] },
+        { type: 'Text', props: { mono: false }, children: ['c'] },
+      ],
+    }
+    const out = desktopTree(tree)
+    const ts = all(out, x => x.type === 'Text')
+    expect(ts.map(t => t.props?.['mono'])).toEqual([true, true, false])
+    expect(ts[0]?.props?.['color']).toBe('red')
+    expect(out.props?.['mono']).toBeUndefined()
+  })
+
+  for (const key of ['tab-now', 'tab-stats', 'tab-fleet']) {
+    test(`${key}: every Text on Desktop is mono, none on the terminal`, async ($, on) => {
+      engine(on)
+      await $.agent.spawn(spawnInput('find files', 'Explore'))
+      await pressOn($, 'desktop', key)
+      const desk = all(await drawOn($, 'desktop'), x => x.type === 'Text')
+      expect(desk.length).toBeGreaterThan(0)
+      for (const t of desk) expect(t.props?.['mono']).toBe(true)
+      const term = all(await drawOn($, 'terminal'), x => x.type === 'Text')
+      expect(term.length).toBeGreaterThan(0)
+      for (const t of term) expect(t.props?.['mono']).toBeUndefined()
+    })
+  }
+
   test('desktop stats page: the CHAIN meter is an Svg, no ▰▱ left', async ($, on) => {
     engine(on)
     await pressOn($, 'desktop', 'tab-stats')

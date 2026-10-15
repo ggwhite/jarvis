@@ -113,14 +113,21 @@ const PUA = /[-]/g
 export const forDesktop = (s: string): string => s.replace(PUA, ch => EMOJI_OF[ch] ?? '•')
 
 // A drawn tree for a surface without Nerd Font: every string converted but the keys and the
-// press handles; an Svg is left whole, its source and words already plain.
+// press handles; an Svg is left whole, its source and words already plain. Every Text is set in
+// the monospaced face (a mono already set is kept): the pane's columns are its cells, so the
+// padding lines up as on the terminal.
 export function desktopTree<T>(n: T): T {
   if (typeof n === 'string') return forDesktop(n) as T
   if (Array.isArray(n)) return n.map(x => desktopTree(x)) as T
   if (n !== null && typeof n === 'object') {
-    if ((n as { type?: unknown }).type === 'Svg') return n
+    const type = (n as { type?: unknown }).type
+    if (type === 'Svg') return n
     const out: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(n)) out[k] = k === 'key' || k === 'press' ? v : desktopTree(v)
+    if (type === 'Text') {
+      const props = (out['props'] ?? {}) as Record<string, unknown>
+      out['props'] = 'mono' in props ? props : { ...props, mono: true }
+    }
     return out as T
   }
   return n
