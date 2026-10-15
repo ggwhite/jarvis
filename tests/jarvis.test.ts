@@ -5655,7 +5655,7 @@ describe('opened at session start', () => {
     await start($)
     placedNow = false
     const out = await runBridge($)
-    expect(out.text).toContain('還沒放上畫面：no-surface')
+    expect(out.text).toContain('還沒放上畫面：畫面暫時放不下面板，條件滿足後會自動顯示（引擎原因：no-surface）')
     expect(out.text).toContain('Remote Control')
   })
 

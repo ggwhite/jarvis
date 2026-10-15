@@ -779,7 +779,7 @@ export function jarvisOpenText(opened: PaneOpened | false, origin: string | unde
   if (origin !== 'bridge') return 'Jarvis 面板已開啟'
   const remote = surfaces.some(s => s !== 'terminal')
   if (opened.isPlaced) return remote ? 'Jarvis 面板已開啟' : `Jarvis 面板已在終端機開啟（${RC_NOTE}）`
-  const why = opened.reason === undefined || opened.reason === '' ? '沒有可放面板的畫面' : opened.reason
+  const why = opened.reason === undefined || opened.reason === '' ? '沒有可放面板的畫面' : `畫面暫時放不下面板，條件滿足後會自動顯示（引擎原因：${opened.reason}）`
   return remote ? `Jarvis 面板已開啟，但還沒放上畫面：${why}` : `Jarvis 面板已開啟，但還沒放上畫面：${why}（${RC_NOTE}）`
 }
 
