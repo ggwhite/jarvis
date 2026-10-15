@@ -217,19 +217,22 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     const busy = view.inflight.some(f => f.actor === MAIN_ACTOR) || view.running.some(a => a.waiting !== true)
     const paused = ctx.suitPaused === true
     const crew = crewDeployed(now, ctx.deployedAt)
+    const SUIT_GAP = 2
+    const SUIT_MIN = 24
+    const suitW = SUIT_CANVAS_COLS + 4
+    const tileW = Math.max(tileWidth(r.left), tileWidth(r.right))
+    // the suit row by the room it needs: tile | suit | tile, else suit | the two tiles stacked (the suit shrunk to fit), else all stacked
+    const suitLayout: 'three' | 'pair' | 'stack' =
+      cardInner >= tileW * 2 + suitW + SUIT_GAP * 2 ? 'three' : cardInner >= SUIT_MIN + SUIT_GAP + tileW ? 'pair' : 'stack'
+    const shownW = suitLayout === 'pair' ? Math.min(suitW, cardInner - SUIT_GAP - tileW) : suitW
+    const shownH = Math.max(1, Math.round((SUIT_CANVAS_ROWS * shownW) / suitW))
     const suitPic = picture(
       suitSvg(framePixels(0, { busy, now, still: true }).px, { busy, crewFlash: crew, paused, sights: true }, GLASS),
       'MARK XLII',
-      SUIT_CANVAS_COLS + 4,
-      SUIT_CANVAS_ROWS,
+      shownW,
+      shownH,
       !paused,
     )
-    // the suit row by the room it needs: tile | suit | tile, else suit | the two tiles stacked, else all stacked
-    const SUIT_GAP = 2
-    const suitW = SUIT_CANVAS_COLS + 4
-    const tileW = Math.max(tileWidth(r.left), tileWidth(r.right))
-    const suitLayout: 'three' | 'pair' | 'stack' =
-      cardInner >= tileW * 2 + suitW + SUIT_GAP * 2 ? 'three' : cardInner >= suitW + SUIT_GAP + tileW ? 'pair' : 'stack'
     const leftTile = tile(r.left.map(readoutLine))
     const rightTile = tile(r.right.map(readoutLine))
     const mark = `MARK XLII · ${paused ? 'PAUSED' : busy ? 'ACTIVE' : 'STANDBY'}`

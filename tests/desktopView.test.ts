@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { DT } from '../hooks/desktopTheme'
 import { mdCell } from '../hooks/desktopView'
-import { SUIT_TICK_MS } from '../hooks/suit'
+import { SUIT_CANVAS_COLS, SUIT_CANVAS_ROWS, SUIT_TICK_MS } from '../hooks/suit'
 import { cellPx, rowPx } from '../hooks/svgArt'
 import { all, altOf, complete, drawOn, engine, pressOn, sourceOf, spawnInput, svgs, textOf, wellFormed } from './helpers'
 import type { Node } from './helpers'
@@ -157,30 +157,43 @@ describe('desktop native: now page', () => {
     all(tree, x => x.type === 'Box' && (x.children ?? []).some(c => typeof c !== 'string' && c.type === 'Svg' && altOf(c) === 'MARK XLII')).at(-1) as Node
   const tilesIn = (n: Node) => all(n, x => x.type === 'Box' && x.props?.['backgroundColor'] === DT.glassRaised)
 
-  test('the suit row by the room it needs: three across, then suit with the tiles stacked, then all stacked', async ($, on) => {
+  test('the suit row by the room it needs: three across, then a shrunk suit with the tiles stacked, then all stacked', async ($, on) => {
     native(on)
-    for (const cols of [140, 100, 80, 71, 64, 63, 50]) {
+    const full = SUIT_CANVAS_COLS + 4
+    const ratio = SUIT_CANVAS_ROWS / full
+    for (const cols of [140, 100, 80, 71, 66, 60, 50]) {
       const tree = await drawOn($, 'desktop', 50, cols)
       const row = suitRow(tree)
       const cardInner = cols - 4 - 6
-      const tiles = tilesIn(row)
-      expect(tiles).toHaveLength(2)
+      expect(tilesIn(row)).toHaveLength(2)
       const kids = (row.children ?? []).filter((c): c is Node => typeof c !== 'string')
       const dir = row.props?.['flexDirection']
-      if (cols >= 65) {
+      const suit = svgs(row).find(s => altOf(s) === 'MARK XLII') as Node
+      const w = Number(suit.props?.['width']) / cellPx(1)
+      const h = Number(suit.props?.['height']) / rowPx(1)
+      if (cols >= 84) {
         expect(dir).toBe('row')
-        expect(kids).toHaveLength(cols >= 84 ? 3 : 2)
-        if (cols >= 84) expect(kids[1]?.type).toBe('Svg')
-        else {
-          expect(kids[0]?.type).toBe('Svg')
-          const col = kids[1] as Node
-          expect(col.props?.['flexDirection']).toBe('column')
-          expect(col.props?.['gap']).toBe(1)
-          expect(tilesIn(col)).toHaveLength(2)
-        }
-      } else if (cols <= 64) {
+        expect(kids).toHaveLength(3)
+        expect(kids[1]?.type).toBe('Svg')
+        expect(w).toBe(full)
+        expect(h).toBe(SUIT_CANVAS_ROWS)
+      } else if (cols >= 60) {
+        expect(dir).toBe('row')
+        expect(kids).toHaveLength(2)
+        expect(kids[0]?.type).toBe('Svg')
+        const col = kids[1] as Node
+        expect(col.props?.['flexDirection']).toBe('column')
+        expect(col.props?.['gap']).toBe(1)
+        expect(tilesIn(col)).toHaveLength(2)
+        expect(w).toBeGreaterThanOrEqual(24)
+        expect(Math.abs(h - w * ratio)).toBeLessThanOrEqual(1)
+        expect(w).toBe(Math.min(full, cardInner - 2 - widthOf(col)))
+        if (cols <= 60) expect(w).toBeLessThan(full)
+      } else {
         expect(dir).toBe('column')
         expect(kids.map(k => k.type)).toEqual(['Box', 'Svg', 'Box'])
+        expect(w).toBe(full)
+        expect(h).toBe(SUIT_CANVAS_ROWS)
       }
       expect(widthOf(row)).toBeLessThanOrEqual(cardInner)
       expect(badProps(tree)).toEqual([])
