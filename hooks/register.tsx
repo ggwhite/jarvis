@@ -45,7 +45,7 @@ import { commitFileDiff, commitFiles, commitTreeOf, findRepos, repoSummary } fro
 import type { CommitFile, CommitTree, RepoSummary } from './gitCommits'
 import { commitRepoName, repoRows } from './commitsView'
 import type { CommitsCtx, RepoList } from './commitsView'
-import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, boardLive, endTurn, fromTaskCreate, fromTaskUpdate, fromTodos, openRequest, recordsRequest, requestContext, requestsEnding, startTurn, withResult, withSummaryTitle } from './tasks'
+import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, boardLive, dropIdle, endTurn, fromTaskCreate, fromTaskUpdate, fromTodos, markWorked, openRequest, recordsRequest, requestContext, requestsEnding, startTurn, withResult, withSummaryTitle } from './tasks'
 import type { TaskReply } from './tasks'
 import { keptFolds } from './tasksView'
 import { RESULT_MAX, SUMMARY_TITLE_MAX, clipInput, resultAsk, summarize, titleAsk } from './summary'
@@ -1213,6 +1213,16 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     const id = e.agentId
     const tool = e.tool
+    // a main-loop call is work done for the request its turn runs; a subagent's calls are its
+    // Agent call's, and the board's own tool is not work. Written only the first time.
+    if (id === undefined && tool !== TASK_TOOL) {
+      try {
+        const board = await read($, tasks)
+        if (markWorked(board) !== board) await update($, tasks, markWorked)
+      } catch {
+        // bookkeeping only
+      }
+    }
     let startedAt: number | undefined
     let source = MAIN_SOURCE
     let desc = ''
@@ -1375,11 +1385,15 @@ export const register: Register = on => {
       const now = await stampNow($)
       const ending: { rid: string; title: string }[] = []
       try {
-        await update($, tasks, b => {
+        const written = await update($, tasks, b => {
+          // a request that did nothing (no tool call, no plan) leaves the board before the rest
+          const kept = dropIdle(b, e.turnId)
           ending.length = 0
-          ending.push(...requestsEnding(b, e.turnId))
-          return endTurn(b, e.turnId, e.reason, now)
+          ending.push(...requestsEnding(kept, e.turnId))
+          return endTurn(kept, e.turnId, e.reason, now)
         })
+        // a prompt whose item is off the board has no result left to ask about
+        for (const rid of [...asks.keys()]) if (!written.items.some(i => i.rid === rid)) asks.delete(rid)
       } catch {
         // bookkeeping only
       }

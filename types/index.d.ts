@@ -114,6 +114,8 @@ export type JarvisTaskItem = {
   titleBy?: 'haiku' | 'model'
   // the summary of what its turn's answer came to
   result?: string
+  // its turn did work while it ran: a main-loop tool call other than the board's own
+  worked?: true
 }
 
 // The session's task board; `nextItem` numbers the next item, ids are never reused.

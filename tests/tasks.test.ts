@@ -24,6 +24,9 @@ import {
   boardText,
   countsText,
   currentRequest,
+  dropIdle,
+  itemWorked,
+  markWorked,
   endTurn,
   fromTaskCreate,
   fromTaskUpdate,
@@ -915,6 +918,9 @@ const turnEnds = ($: Engine, turnId: string, reason = 'answer', agentId?: string
     ...(agentId === undefined ? {} : { agentId }),
   } as never)
 
+// a main-loop tool call, as the model doing something for the request its turn runs
+const work = ($: Engine) => $.tool.call({ tool: 'Read', file_path: '/tmp/a.md' } as never)
+
 describe('task board tool', () => {
   test('session.start registers the board tool, its schema in the prompt', async ($, on) => {
     const w = world(on)
@@ -1094,6 +1100,7 @@ describe('task board requests wired', () => {
     expect(out.context).toContain(requestContext('1'))
     expect(await boardOf($)).toContain('[>] 1 修 jarvis 的 bug（本輪請求）')
     await turnStarts($, 't1', '修 jarvis 的 bug\n細節在下面')
+    await work($)
     await turnEnds($, 't1')
     expect(await boardOf($)).toContain('[x] 1 修 jarvis 的 bug')
   })
@@ -1113,6 +1120,7 @@ describe('task board requests wired', () => {
     await turnEnds($, 'ts', 'answer', 'agent-7')
     expect(await boardOf($)).toContain('[>] 1 A（本輪請求）')
     await turnStarts($, 't1', 'A')
+    await work($)
     await turnStarts($, 'ta', 'sub work', 'agent-7')
     await turnEnds($, 'ta', 'answer', 'agent-7')
     expect(await boardOf($)).toContain('[>] 1 A')
@@ -1137,7 +1145,7 @@ describe('task board requests wired', () => {
     await turnEnds($, 't3')
     text = await boardOf($)
     expect(text).toContain('[>] 1 任務看板改版')
-    expect(text).toContain('[x] 2 好')
+    expect(text).not.toContain('好')
   })
 
   test('a prompt typed mid-turn leaves the plan to the request the turn runs', async ($, on) => {
@@ -1161,6 +1169,7 @@ describe('task board requests wired', () => {
     expect(await boardOf($)).toContain('[x] 2 B')
     await turnStarts($, 't2', 'B')
     expect(await boardOf($)).toContain('[>] 2 B（本輪請求）')
+    await work($)
     await turnEnds($, 't2')
     expect(await boardOf($)).toContain('[x] 2 B')
   })
@@ -1257,6 +1266,7 @@ describe('task board page', () => {
     await startSession($)
     await send($, 'A')
     await turnStarts($, 't1', 'A')
+    await work($)
     await openTasks($)
     await draw($)
     await clock.advance(1000)
@@ -1284,6 +1294,7 @@ describe('task board page', () => {
     await startSession($)
     await send($, 'A')
     await turnStarts($, 't1', 'A')
+    await work($)
     await openTasks($)
     await draw($)
     await clock.advance(1000)
@@ -1477,6 +1488,7 @@ describe('request summaries wired', () => {
     await clock.settle()
     expect(await boardOf($)).toContain('[>] 1 計算 7*6（本輪請求）')
     await turnStarts($, 't1', '幫我算一下 7*6 等於多少，只回數字')
+    await work($)
     await $.turn.complete({ answer: '42', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as never)
     await clock.settle()
     expect(await boardOf($)).toContain('[x] 1 計算 7*6 → 42')
@@ -1513,6 +1525,7 @@ describe('request summaries wired', () => {
     await send($, '算 1+1')
     await clock.settle()
     await turnStarts($, 't1', '算 1+1')
+    await work($)
     await turnEnds($, 't1')
     await clock.settle()
     const text = await boardOf($)
@@ -1570,6 +1583,7 @@ describe('request summaries wired', () => {
     expect(asked).toHaveLength(1)
     await send($, 'C')
     await turnStarts($, 't2', 'C')
+    await work($)
     await send($, 'D', { turnId: 't2' })
     await clock.settle()
     await turnEnds($, 't2')
@@ -1603,5 +1617,142 @@ describe('request summaries wired', () => {
     expect(note).toContain('項目 7')
     expect(note).toContain('id=7')
     expect(note).toContain('記下結果')
+  })
+})
+
+describe('requests that did nothing', () => {
+  test('itemWorked: a request that called a tool or holds a plan', () => {
+    const b = startTurn(openRequest(EMPTY_BOARD, 'A').board, 't1', 'A')
+    const item = b.items[0]!
+    expect(itemWorked(item)).toBe(false)
+    expect(itemWorked({ ...item, worked: true })).toBe(true)
+    expect(itemWorked(ok(applyTask(b, { op: 'add', subtasks: ['s1'] })).items[0]!)).toBe(true)
+  })
+
+  test("markWorked marks the request the running turn runs; not one waiting, typed over it, or the model's own", () => {
+    let b = openRequest(EMPTY_BOARD, 'W').board
+    expect(markWorked(b)).toBe(b)
+    b = startTurn(b, 't1', 'W')
+    b = openRequest(b, 'Q', 't1').board
+    b = ok(applyTask(b, { op: 'add', item: '模型自己的' }))
+    const marked = markWorked(b)
+    expect(marked.items.map(i => [i.title, i.worked])).toEqual([
+      ['W', true],
+      ['Q', undefined],
+      ['模型自己的', undefined],
+    ])
+    expect(markWorked(marked)).toBe(marked)
+  })
+
+  test("dropIdle takes off the turn's requests that did nothing; keeps worked, planned, typed-over, other turns' and the model's", () => {
+    let b = openRequest(EMPTY_BOARD, 'idle').board
+    b = openRequest(b, 'did').board
+    b = openRequest(b, 'plan').board
+    b = startTurn(b, 't1', 'idle')
+    b = { ...b, items: b.items.map(i => (i.title === 'did' ? { ...i, worked: true as const } : i)) }
+    b = ok(applyTask(b, { op: 'add', to: '3', subtasks: ['s'] }))
+    b = openRequest(b, 'typed', 't1').board
+    b = ok(applyTask(b, { op: 'add', item: '模型自己的' }))
+    b = openRequest(b, 'later').board
+    const after = dropIdle(b, 't1')
+    expect(after.items.map(i => i.title)).toEqual(['did', 'plan', 'typed', '模型自己的', 'later'])
+    expect(dropIdle(after, 't1')).toBe(after)
+    expect(dropIdle(b, 't9')).toBe(b)
+  })
+
+  test('the prompt and the note tell the model a request that did nothing is taken off', () => {
+    expect(TASK_PROMPT).toContain('自動移除')
+    expect(requestContext('7')).toContain('自動移除')
+  })
+})
+
+describe('requests that did nothing wired', () => {
+  test('a question answered with no tool call leaves the board', async ($, on) => {
+    world(on)
+    await send($, 'CAS 是什麼')
+    await turnStarts($, 't1', 'CAS 是什麼')
+    expect(await boardOf($)).toContain('[>] 1 CAS 是什麼（本輪請求）')
+    await turnEnds($, 't1')
+    expect(await boardOf($)).toBe('任務看板是空的。')
+  })
+
+  test("a main-loop tool call keeps the request; the board's own tool does not count", async ($, on) => {
+    world(on)
+    await send($, '改標題就好')
+    await turnStarts($, 't1', '改標題就好')
+    await task($, { op: 'update', id: '1', title: '只改標題' })
+    await task($, { op: 'update', id: '1', status: 'in_progress' })
+    await turnEnds($, 't1')
+    expect(await boardOf($)).toBe('任務看板是空的。')
+    await send($, '讀檔')
+    await turnStarts($, 't2', '讀檔')
+    await work($)
+    await turnEnds($, 't2')
+    expect(await boardOf($)).toContain('[x] 2 讀檔')
+  })
+
+  test("a plan keeps the request; an Agent call keeps it; a subagent's own calls do not", async ($, on) => {
+    world(on)
+    await send($, '計畫')
+    await turnStarts($, 't1', '計畫')
+    await task($, { op: 'add', subtasks: ['s1'] })
+    await turnEnds($, 't1')
+    expect(await boardOf($)).toContain('1 計畫')
+    await send($, '派人')
+    await turnStarts($, 't2', '派人')
+    await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'p', subagent_type: 'worker' } as never)
+    await turnEnds($, 't2')
+    expect(await boardOf($)).toContain('[x] 2 派人')
+    await send($, '問一下')
+    await turnStarts($, 't3', '問一下')
+    await $.tool.call({ tool: 'Read', file_path: '/tmp/a.md', agentId: 'agent-7' } as never)
+    await turnEnds($, 't3')
+    expect(await boardOf($)).not.toContain('問一下')
+  })
+
+  test('an interrupted question leaves the board; an interrupted request that did something waits in 預計', async ($, on) => {
+    world(on)
+    await send($, 'A')
+    await turnStarts($, 't1', 'A')
+    await turnEnds($, 't1', 'aborted')
+    expect(await boardOf($)).toBe('任務看板是空的。')
+    await send($, 'B')
+    await turnStarts($, 't2', 'B')
+    await work($)
+    await turnEnds($, 't2', 'aborted')
+    expect(await boardOf($)).toContain('[ ] 2 B')
+  })
+
+  test('a prompt typed over a turn stays when that turn ends; its own turn decides', async ($, on) => {
+    world(on)
+    await send($, 'A')
+    await turnStarts($, 't1', 'A')
+    await work($)
+    await send($, 'B', { turnId: 't1' })
+    await turnEnds($, 't1')
+    let text = await boardOf($)
+    expect(text).toContain('[x] 1 A')
+    expect(text).toContain('[x] 2 B')
+    await turnStarts($, 't2', 'B')
+    await turnEnds($, 't2')
+    text = await boardOf($)
+    expect(text).toContain('[x] 1 A')
+    expect(text).not.toContain('2 B')
+  })
+
+  test('a request that did nothing gets no result; its late title summary writes nothing', async ($, on) => {
+    const asked: Asked[] = []
+    const { clock } = world(on, {}, async e => {
+      asked.push(e)
+      await clock.sleep(1000)
+      return said('解釋 CAS')
+    })
+    await send($, 'CAS 是什麼')
+    await turnStarts($, 't1', 'CAS 是什麼')
+    await $.turn.complete({ answer: '比較後交換', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as never)
+    await clock.advance(1000)
+    await clock.settle()
+    expect(asked).toHaveLength(1)
+    expect(await boardOf($)).toBe('任務看板是空的。')
   })
 })
