@@ -63,4 +63,11 @@ describe('desktop theme: allowed props', () => {
     expect(badProps({ type: 'Markdown', props: { key: 'k', onLinkPress: () => undefined } })).toEqual([])
     expect(badProps({ type: 'Markdown', props: { onPress: () => undefined } })).toEqual(['Markdown.onPress'])
   })
+
+  test('weight passes only as the engine echo of bold', () => {
+    expect(badProps({ type: 'Text', props: { bold: true, weight: 'semibold' } })).toEqual([])
+    expect(badProps({ type: 'Text', props: { weight: 'bold' } })).toEqual(['Text.weight'])
+    expect(badProps({ type: 'Text', props: { bold: true, weight: 'bold' } })).toEqual(['Text.weight'])
+    expect(badProps({ type: 'Text', props: { weight: 'semibold' } })).toEqual(['Text.weight'])
+  })
 })

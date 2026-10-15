@@ -14,8 +14,7 @@ export const ALLOWED: Record<string, readonly string[]> = {
     'borderStyle', 'borderColor', 'borderDimColor', 'backgroundColor', 'overflow', 'display',
     'position', 'top', 'left', 'right', 'bottom',
   ],
-  // weight: the engine adds it to a bold Text; no source of ours writes it
-  Text: ['weight', 'color', 'backgroundColor', 'dimColor', 'bold', 'italic', 'underline', 'strikethrough', 'inverse', 'wrap'],
+  Text: ['color', 'backgroundColor', 'dimColor', 'bold', 'italic', 'underline', 'strikethrough', 'inverse', 'wrap'],
   Button: ['key', 'onPress', 'label', 'hotkey', 'action', 'plain', 'dimColor', 'variant', 'role', 'autoFocus'],
   Markdown: ['key', 'onLinkPress', 'text', 'dimColor', 'pressableLinks'],
   Svg: ['source', 'alt', 'width', 'height', 'isInteractive'],
@@ -30,7 +29,10 @@ export function badProps(n: Node | string, out: string[] = []): string[] {
     out.push(type)
   } else {
     for (const k of Object.keys(n.props ?? {})) {
-      if (!COMMON.includes(k) && !allowed.includes(k) && n.props?.[k] !== undefined) out.push(`${type}.${k}`)
+      if (COMMON.includes(k) || allowed.includes(k) || n.props?.[k] === undefined) continue
+      // the engine echoes a bold Text as weight 'semibold'; any other weight is ours and refused
+      if (type === 'Text' && k === 'weight' && n.props?.['bold'] === true && n.props?.['weight'] === 'semibold') continue
+      out.push(`${type}.${k}`)
     }
   }
   for (const c of n.children ?? []) badProps(c, out)
