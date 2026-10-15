@@ -2,6 +2,12 @@ import { BIG_ROWS, BURN_RAMP, GAUGE_RAMP, bigPixels, bigWidth, pick } from './fl
 import type { Pixels, RingSpec, StackPart } from './fleetChart'
 import { THEME } from './jarvis'
 
+// The tones a picture's quiet parts take: the track and unlit cells, the sights' frame, the
+// scan line, the reactor's core. DARK is the terminal's and the cell-grid Desktop's; the
+// native Desktop layout passes its light one.
+export type Palette = { muted: string; frame: string; bright: string; accent: string }
+export const DARK: Palette = { muted: THEME.muted, frame: THEME.frame, bright: THEME.bright, accent: THEME.accent }
+
 // One cell of the Desktop pane in CSS px, measured with svgprobe on 2026-10-15: bodyColumns
 // 49 over 392pt, rows 19pt apart.
 export const CELL_PX_W = 8
@@ -43,36 +49,36 @@ export const BAR_Y = 5
 export const BAR_H = CELL_PX_H - 2 * BAR_Y
 
 // `total` cells of meter, the first `lit` in `color`, the rest muted: what `▰▱` draw.
-export function meterSvg(lit: number, total: number, color: string): string {
+export function meterSvg(lit: number, total: number, color: string, pal: Palette = DARK): string {
   const n = whole(total)
   const k = Math.min(n, whole(lit))
   let body = ''
   for (let i = 0; i < n; i += 1) {
-    body += `<rect x="${i * CELL_PX_W + 1}" y="${BAR_Y}" width="${CELL_PX_W - 2}" height="${BAR_H}" rx="1.5" fill="${i < k ? color : THEME.muted}"/>`
+    body += `<rect x="${i * CELL_PX_W + 1}" y="${BAR_Y}" width="${CELL_PX_W - 2}" height="${BAR_H}" rx="1.5" fill="${i < k ? color : pal.muted}"/>`
   }
   return svgDoc(n, 1, body)
 }
 
 // A gradient across the fill's own box, `colors` evenly from its start to its end.
-const gradient = (id: string, colors: readonly string[]): string => {
-  const cs = colors.length === 0 ? [THEME.frame] : colors
+const gradient = (id: string, colors: readonly string[], pal: Palette = DARK): string => {
+  const cs = colors.length === 0 ? [pal.frame] : colors
   const stops = cs.map((c, i) => `<stop offset="${num(cs.length > 1 ? i / (cs.length - 1) : 0)}" stop-color="${c}"/>`).join('')
   return `<linearGradient id="${id}" x1="0" x2="1" y1="0" y2="0">${stops}</linearGradient>`
 }
 
-const track = (w: number): string => `<rect x="0" y="${BAR_Y}" width="${w}" height="${BAR_H}" rx="2" fill="${THEME.muted}"/>`
+const track = (w: number, pal: Palette = DARK): string => `<rect x="0" y="${BAR_Y}" width="${w}" height="${BAR_H}" rx="2" fill="${pal.muted}"/>`
 
 // A bar `width` cells long filled to `pct`, the fill shaded along `colors`; the rest a muted track.
-export function rampBarSvg(width: number, pct: number, colors: readonly string[]): string {
+export function rampBarSvg(width: number, pct: number, colors: readonly string[], pal: Palette = DARK): string {
   const n = whole(width)
   const w = cellPx(n)
   const fill = w * clamp01(pct)
   const id = `g-${colors.join('').replace(/[^0-9a-zA-Z]/g, '')}`
   const bar =
     fill > 0
-      ? `<defs>${gradient(id, colors)}</defs><rect class="fill" x="0" y="${BAR_Y}" width="${num(fill)}" height="${BAR_H}" rx="2" fill="url(#${id})"/>`
+      ? `<defs>${gradient(id, colors, pal)}</defs><rect class="fill" x="0" y="${BAR_Y}" width="${num(fill)}" height="${BAR_H}" rx="2" fill="url(#${id})"/>`
       : ''
-  return svgDoc(n, 1, track(w) + bar)
+  return svgDoc(n, 1, track(w, pal) + bar)
 }
 
 // The arc reactor as a bar: dark gold to warm white, red when depleted.
@@ -82,12 +88,12 @@ export function gaugeBarSvg(width: number, pct: number, depleted: boolean): stri
 
 // One bar the width, its parts side by side by share in their colors; nothing to show, a
 // muted track.
-export function stackedBarSvg(width: number, parts: readonly StackPart[]): string {
+export function stackedBarSvg(width: number, parts: readonly StackPart[], pal: Palette = DARK): string {
   const n = whole(width)
   const w = cellPx(n)
   const live = parts.filter(p => Number.isFinite(p.share) && p.share > 0)
   const total = live.reduce((s, p) => s + p.share, 0)
-  if (total <= 0) return svgDoc(n, 1, track(w))
+  if (total <= 0) return svgDoc(n, 1, track(w, pal))
   let x = 0
   const body = live
     .map(p => {
@@ -102,14 +108,14 @@ export function stackedBarSvg(width: number, parts: readonly StackPart[]): strin
 
 // `vals` as a line `width` cells long, scaled to `top` when given (a value past it drawn at
 // the top), else to its own highest; one value a flat line, none a muted floor.
-export function sparkSvg(vals: readonly number[], width: number, top: number | undefined, color: string): string {
+export function sparkSvg(vals: readonly number[], width: number, top: number | undefined, color: string, pal: Palette = DARK): string {
   const n = whole(width)
   const w = cellPx(n)
   const pad = 3
   const floor = CELL_PX_H - pad
   const vs = vals.map(v => (Number.isFinite(v) ? Math.max(0, v) : 0))
   if (vs.length === 0 || w === 0) {
-    return svgDoc(n, 1, `<line x1="0" y1="${floor}" x2="${w}" y2="${floor}" stroke="${THEME.muted}" stroke-width="1"/>`)
+    return svgDoc(n, 1, `<line x1="0" y1="${floor}" x2="${w}" y2="${floor}" stroke="${pal.muted}" stroke-width="1"/>`)
   }
   const max = top !== undefined && Number.isFinite(top) && top > 0 ? top : Math.max(0, ...vs)
   const ys = vs.map(v => floor - (max > 0 ? Math.min(1, v / max) : 0) * (CELL_PX_H - 2 * pad))
@@ -150,7 +156,7 @@ export function pixelRects(px: Pixels, x0 = 0, y0 = 0, keep?: (color: string) =>
 export type SuitLook = { busy?: boolean; crewFlash?: boolean; paused?: boolean; still?: boolean; sights?: boolean }
 
 // the sights' four corners round a `w` by `h` picture
-const corners = (w: number, h: number): string => {
+const corners = (w: number, h: number, pal: Palette = DARK): string => {
   const a = 8
   const i = 2
   const d = [
@@ -159,12 +165,12 @@ const corners = (w: number, h: number): string => {
     `M${i} ${h - i - a}V${h - i}H${i + a}`,
     `M${w - i - a} ${h - i}H${w - i}V${h - i - a}`,
   ]
-  return `<path d="${d.join('')}" fill="none" stroke="${THEME.frame}" stroke-width="1.5"/>`
+  return `<path d="${d.join('')}" fill="none" stroke="${pal.frame}" stroke-width="1.5"/>`
 }
 
 // The suit as one picture: its breath, its eyes' glow and the scan line its own animations,
 // so nothing but the look decides the source.
-export function suitSvg(px: Pixels, look: SuitLook): string {
+export function suitSvg(px: Pixels, look: SuitLook, pal: Palette = DARK): string {
   const cols = Math.max(0, ...px.map(r => r.length))
   const rows = Math.ceil(px.length / 2)
   const pad = look.sights ? 2 : 0
@@ -181,22 +187,22 @@ export function suitSvg(px: Pixels, look: SuitLook): string {
     : ''
   const scan =
     moving && h > CELL_PX_H
-      ? `<rect class="scan" x="${x0}" y="0" width="${cellPx(cols)}" height="${CELL_PX_H}" fill="${THEME.bright}" opacity="0.18"><animate attributeName="y" values="0;${h - CELL_PX_H};0" dur="2s" repeatCount="indefinite"/></rect>`
+      ? `<rect class="scan" x="${x0}" y="0" width="${cellPx(cols)}" height="${CELL_PX_H}" fill="${pal.bright}" opacity="0.18"><animate attributeName="y" values="0;${h - CELL_PX_H};0" dur="2s" repeatCount="indefinite"/></rect>`
       : ''
   const body = `<g>${breath}${pixelRects(px, x0, 0, c => !glows(c))}<g>${glow}${pixelRects(px, x0, 0, glows)}</g></g>`
-  return svgDoc(cols + 2 * pad, rows, `${look.sights ? corners(w, h) : ''}${body}${scan}`)
+  return svgDoc(cols + 2 * pad, rows, `${look.sights ? corners(w, h, pal) : ''}${body}${scan}`)
 }
 
 // The arc reactor beside the title, a cell: an ice-blue core pulsing while a squad member
 // runs, a dark one at rest.
-export function reactorSvg(live: boolean): string {
+export function reactorSvg(live: boolean, pal: Palette = DARK): string {
   const cx = CELL_PX_W / 2
   const cy = num(CELL_PX_H / 2)
-  if (!live) return svgDoc(1, 1, `<circle cx="${cx}" cy="${cy}" r="3" fill="${THEME.muted}"/>`)
+  if (!live) return svgDoc(1, 1, `<circle cx="${cx}" cy="${cy}" r="3" fill="${pal.muted}"/>`)
   return svgDoc(
     1,
     1,
-    `<circle cx="${cx}" cy="${cy}" r="3.5" fill="${THEME.accent}"><animate attributeName="r" values="2;3.8;2" dur="1.2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.6;1;0.6" dur="1.2s" repeatCount="indefinite"/></circle>`,
+    `<circle cx="${cx}" cy="${cy}" r="3.5" fill="${pal.accent}"><animate attributeName="r" values="2;3.8;2" dur="1.2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.6;1;0.6" dur="1.2s" repeatCount="indefinite"/></circle>`,
   )
 }
 
