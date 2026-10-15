@@ -1,18 +1,20 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { BIG_ROWS, BURN_RAMP, GAUGE_RAMP, bigWidth } from '../hooks/fleetChart'
+import { BIG_ROWS, BURN_RAMP, GAUGE_RAMP, RING_BIG, RING_SMALL, bigWidth } from '../hooks/fleetChart'
 import { THEME, cellWidth } from '../hooks/jarvis'
 import {
   CELL_PX_H,
   CELL_PX_W,
   SVG_MAX,
   bigTextSvg,
+  burnSvg,
   cellPx,
   gaugeBarSvg,
   meterSvg,
   pixelRects,
   rampBarSvg,
   reactorSvg,
+  ringSvg,
   rowPx,
   sparkSvg,
   stackedBarSvg,
@@ -192,5 +194,51 @@ describe('svgArt reactor and digits', () => {
     expect(count(s, /<rect /g)).toBeGreaterThan(5)
     expect(count(s, new RegExp(`fill="(?!${THEME.primary})[^"]*"`, 'g'))).toBe(0)
     expect(svgSafe(bigTextSvg('', THEME.error))).toBe(true)
+  })
+})
+
+describe('svgArt rings and burn', () => {
+  const dash = (s: string) => s.match(/class="arc"[^>]* stroke-dasharray="([\d.]+) ([\d.]+)"/)
+
+  test('ringSvg: the ring in cells; no arc at 0%, a whole turn at 100%', () => {
+    const s = ringSvg(RING_SMALL, 0.5, false, [])
+    expect(attr(s, 'width')).toBe(String(cellPx(RING_SMALL.w)))
+    expect(attr(s, 'height')).toBe(String(rowPx(RING_SMALL.h / 2)))
+    expect(count(ringSvg(RING_BIG, 0, false, []), /class="arc"/g)).toBe(0)
+    const full = dash(ringSvg(RING_BIG, 1, false, []))
+    expect(full?.[1]).toBe(full?.[2])
+    const half = dash(ringSvg(RING_BIG, 0.5, false, []))
+    expect(Math.abs(Number(half?.[1]) - Number(half?.[2]) / 2)).toBeLessThan(0.05)
+  })
+
+  test('ringSvg: red when depleted; labels on their rows; a box keeps the ring at its top', () => {
+    expect(ringSvg(RING_BIG, 0.3, true, [])).toContain(`stroke="${THEME.error}"`)
+    const s = ringSvg(RING_BIG, 0.3, false, [{ row: 7, text: 'RESET 15:00 <x>', color: THEME.frame, bold: true }], { cols: 30, rows: 8 })
+    expect(attr(s, 'width')).toBe(String(cellPx(30)))
+    expect(attr(s, 'height')).toBe(String(rowPx(8)))
+    expect(s).toContain('RESET 15:00 &lt;x&gt;')
+    expect(s).toContain('font-weight="bold"')
+  })
+
+  test('burnSvg: a bar an hour with tokens, the hour now bright, axis and ticks', () => {
+    const hours = Array.from({ length: 24 }, (_, h) => (h === 3 || h === 9 || h === 15 ? h * 10 : 0))
+    const s = burnSvg(hours, 48, 4, 15, [0, 6, 12, 18])
+    expect(attr(s, 'width')).toBe(String(cellPx(48)))
+    expect(attr(s, 'height')).toBe(String(rowPx(4 + 2)))
+    expect(count(s, /class="bar"/g)).toBe(3)
+    expect(count(s, /class="floor"/g)).toBe(21)
+    expect(s).toMatch(new RegExp(`class="bar"[^>]* fill="${THEME.bright}"`))
+    expect(count(s, /class="now"/g)).toBe(1)
+    expect(s).toContain('>18</text>')
+  })
+
+  test('rings and burn take odd input without throwing', () => {
+    const cases = [
+      ringSvg(RING_SMALL, Number.NaN, false, []),
+      ringSvg(RING_BIG, 7, false, [], { cols: Number.NaN, rows: -1 }),
+      burnSvg([], 24, 3, Number.NaN, []),
+      burnSvg([Number.NaN, -5, Number.POSITIVE_INFINITY], 0, 0, 30, [0, 12]),
+    ]
+    for (const s of cases) expect(svgSafe(s)).toBe(true)
   })
 })

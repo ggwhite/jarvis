@@ -1,5 +1,5 @@
-import { BIG_ROWS, GAUGE_RAMP, bigPixels, bigWidth } from './fleetChart'
-import type { Pixels, StackPart } from './fleetChart'
+import { BIG_ROWS, BURN_RAMP, GAUGE_RAMP, bigPixels, bigWidth, pick } from './fleetChart'
+import type { Pixels, RingSpec, StackPart } from './fleetChart'
 import { THEME } from './jarvis'
 
 // One cell of the Desktop pane in CSS px, measured with svgprobe on 2026-10-15: bodyColumns
@@ -202,4 +202,80 @@ export function reactorSvg(live: boolean): string {
 // `text` in the pixel font, one color, BIG_ROWS rows tall.
 export function bigTextSvg(text: string, color: string): string {
   return svgDoc(bigWidth(text), BIG_ROWS, pixelRects(bigPixels(text, color)))
+}
+
+const MONO = 'ui-monospace,Menlo,monospace'
+
+// words centered on a cell row: what an overlay on a ring sets
+export type RingLabel = { row: number; text: string; color: string; bold?: boolean }
+
+// A ring lit clockwise from twelve o'clock as far as `pct` (red when depleted), the rest a
+// muted track; `labels` centered on their rows. `box`: a larger canvas, the ring at its top
+// center (a big gauge with its foot under it).
+export function ringSvg(spec: RingSpec, pct: number, depleted: boolean, labels: readonly RingLabel[], box?: { cols: number; rows: number }): string {
+  const ringCols = whole(spec.w)
+  const ringRows = Math.ceil(whole(spec.h) / 2)
+  const cols = box ? Math.max(whole(box.cols), ringCols) : ringCols
+  const rows = box ? Math.max(whole(box.rows), ringRows) : ringRows
+  const cx = cellPx(cols) / 2
+  const cy = rowPx(ringRows) / 2
+  const half = Math.min(cellPx(ringCols), rowPx(ringRows)) / 2
+  const k = spec.w > 0 ? half / (spec.w / 2) : 0
+  const r = ((spec.rOut + spec.rIn) / 2) * k
+  const sw = Math.max(1, (spec.rOut - spec.rIn) * k)
+  const p = clamp01(pct)
+  const len = 2 * Math.PI * r
+  const color = depleted ? THEME.error : pick(GAUGE_RAMP, p)
+  const at = `cx="${num(cx)}" cy="${num(cy)}" r="${num(r)}" fill="none" stroke-width="${num(sw)}"`
+  const trackRing = `<circle ${at} stroke="${THEME.muted}"/>`
+  const arc = p > 0 ? `<circle class="arc" ${at} stroke="${color}" stroke-dasharray="${num(len * p)} ${num(len)}" transform="rotate(-90 ${num(cx)} ${num(cy)})"/>` : ''
+  const words = labels
+    .map(
+      l =>
+        `<text x="${num(cx)}" y="${num(rowPx(l.row) + CELL_PX_H * 0.72)}" text-anchor="middle" font-family="${MONO}" font-size="13" fill="${l.color}"${l.bold ? ' font-weight="bold"' : ''}>${esc(l.text)}</text>`,
+    )
+    .join('')
+  return svgDoc(cols, rows, trackRing + arc + words)
+}
+
+// Today's tokens by hour as bars `rows` rows tall and `width` cells wide, heat by height, the
+// hour now bright, an hour of nothing a muted floor; then the axis with its ticks and the hour
+// now marked, then the tick hours: `rows + 2` rows in all.
+export function burnSvg(hours: readonly number[], width: number, rows: number, nowHour: number, ticks: readonly number[]): string {
+  const n = whole(width)
+  const R = whole(rows)
+  const w = cellPx(n)
+  const h = rowPx(R)
+  const vs = Array.from({ length: 24 }, (_, i) => {
+    const v = hours[i] ?? 0
+    return Number.isFinite(v) && v > 0 ? v : 0
+  })
+  const max = Math.max(0, ...vs)
+  const per = w / 24
+  const gap = per >= 6 ? 1.5 : 0.5
+  const bw = Math.max(0, per - gap)
+  let body = ''
+  vs.forEach((v, i) => {
+    const x = num(i * per)
+    const lit = i === nowHour
+    if (v > 0 && max > 0) {
+      const bh = Math.max(2, (v / max) * h)
+      body += `<rect class="bar" x="${x}" y="${num(h - bh)}" width="${num(bw)}" height="${num(bh)}" fill="${lit ? THEME.bright : pick(BURN_RAMP, v / max)}"/>`
+    } else {
+      body += `<rect class="floor" x="${x}" y="${num(h - 2)}" width="${num(bw)}" height="2" fill="${lit ? THEME.bright : THEME.muted}"/>`
+    }
+  })
+  const axisY = h + CELL_PX_H / 2
+  body += `<line x1="0" y1="${num(axisY)}" x2="${w}" y2="${num(axisY)}" stroke="${THEME.muted}" stroke-width="1"/>`
+  for (const t of ticks) {
+    const x = t * per
+    if (!Number.isFinite(x) || x >= w) continue
+    body += `<line x1="${num(x)}" y1="${num(axisY - 3)}" x2="${num(x)}" y2="${num(axisY + 3)}" stroke="${THEME.muted}" stroke-width="1"/>`
+    body += `<text x="${num(x)}" y="${num(h + CELL_PX_H + CELL_PX_H * 0.72)}" font-family="${MONO}" font-size="11" fill="${THEME.frame}">${String(t).padStart(2, '0')}</text>`
+  }
+  if (Number.isInteger(nowHour) && nowHour >= 0 && nowHour < 24 && w > 0) {
+    const nx = nowHour * per + bw / 2
+    body += `<path class="now" d="M${num(nx - 4)} ${num(axisY + 6)}L${num(nx)} ${num(axisY)}L${num(nx + 4)} ${num(axisY + 6)}Z" fill="${THEME.bright}"/>`
+  }
+  return svgDoc(n, R + 2, body)
 }

@@ -18,6 +18,7 @@ import {
   windowFoot,
 } from '../hooks/fleetCards'
 import type { CardLines } from '../hooks/fleetCards'
+import type { ReactorBlock } from '../hooks/fleetCards'
 
 const T0 = new Date(2026, 9, 11, 15, 0, 0).getTime()
 const MIN = 60_000
@@ -245,5 +246,42 @@ describe('svg form: lines', () => {
   test('no svg: no card carries a picture', () => {
     const c = wideCard(suit(), 60, { now: T0, self: false })
     expect([...c.body.flat(), ...c.top].some(s => s.svg !== undefined)).toBe(false)
+  })
+})
+
+describe('svg form: arc reactor', () => {
+  const g = [
+    { label: '5H', used: 30, foot: { t: 'RESET 15:00', color: THEME.frame, depleted: false } },
+    { label: '7D', used: 92, foot: { t: 'DEPLETED IN ~2h', color: THEME.error, depleted: true } },
+  ]
+
+  test('big: one block of two halves, each a ring with its words, as tall as the glyph form', () => {
+    const rows = reactorRows('big', g, 120, true)
+    expect(rows).toHaveLength(1)
+    const b = rows[0] as ReactorBlock
+    expect(b.h).toBe(reactorRows('big', g, 120).length)
+    expect(b.halves.map(h => h.w)).toEqual([60, 60])
+    expect(b.halves[1]?.svg).toContain(`stroke="${THEME.error}"`)
+    expect(b.halves[0]?.alt).toBe('5H 30% RESET 15:00')
+  })
+
+  test('small: the ring beside its label and foot', () => {
+    const b = reactorRows('small', g, 65, true)[0] as ReactorBlock
+    expect(b.h).toBe(3)
+    expect(b.halves[0]?.svgW).toBe(7)
+    expect(b.halves[0]?.side.map(r => textOf(r)).join('|')).toContain('5H')
+  })
+
+  test('bar: a row a window, its gauge one seg carrying the picture, the width kept', () => {
+    const rows = reactorRows('bar', g, 50, true) as { t: string; svg?: string; alt?: string }[][]
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.find(s => s.svg !== undefined)?.alt).toBe('5H 30%')
+    expect(segsWidth(rows[0] ?? [])).toBe(segsWidth(reactorRows('bar', g, 50)[0] ?? []))
+  })
+
+  test('a missing window is a blank half', () => {
+    const b = reactorRows('big', [g[0]!], 120, true)[0] as ReactorBlock
+    expect(b.halves).toHaveLength(2)
+    expect(b.halves[1]?.svg).toBeUndefined()
   })
 })

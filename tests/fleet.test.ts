@@ -39,6 +39,7 @@ import {
 } from '../hooks/fleet'
 import { EMPTY_FLEET, FLEET_MS, LIMITS_PATH, MAX_READS, PANE_LIST, TAIL_BYTES, focusArgv, refreshFleet, withJump } from '../hooks/fleetSource'
 import type { FleetIo, RunOut } from '../hooks/fleetSource'
+import { CELL_PX_H, cellPx, rowPx, svgSafe } from '../hooks/svgArt'
 
 // ---- fixtures：結構照 herdr 0.9.1 與 Claude Code 的真實輸出，內容全是假的 ----
 
@@ -1576,5 +1577,96 @@ describe('fleet dashboard data', () => {
     const next = await refreshFleet(io, first.view, first.cursor, T0)
     expect(next.cursor[a]?.hourly).toEqual(emptyHours())
     expect(next.view.hourly).toEqual(emptyHours())
+  })
+})
+
+// ---- Desktop：圖改用 Svg -------------------------------------------------
+
+const drawDesk = async ($: Engine, rows = 40, cols = 80): Promise<Node> =>
+  (await $.ui.render({
+    surface: 'desktop',
+    component: 'Pane',
+    requestId: 'jarvis',
+    viewport: { columns: cols + 20, rows: rows + 10 },
+    props: { title: 'Jarvis', isFocused: false, bodyColumns: cols, placement: 'dock', scroll: { offset: 0, bodyRows: rows }, view: {} },
+  })) as RenderElement as Node
+
+const pressDesk = async ($: Engine, key: string, rows = 40, cols = 80) => {
+  const ui = await $.ui.mount({
+    plugin: 'jarvis',
+    surface: 'desktop',
+    component: 'Pane',
+    requestId: 'jarvis',
+    props: { title: 'Jarvis', isFocused: true, bodyColumns: cols, placement: 'dock' as const, scroll: { offset: 0, bodyRows: rows }, view: {} },
+    viewport: { columns: cols + 20, rows: rows + 10 },
+  })
+  await ui.press({ key })
+  await ui.unmount()
+}
+
+const openFleetDesk = async ($: Engine, clock: { advance: (ms: number) => Promise<void> }, rows = 40, cols = 80) => {
+  await start($)
+  await pressDesk($, 'tab-fleet', rows, cols)
+  await drawDesk($, rows, cols)
+  await clock.advance(10)
+  return drawDesk($, rows, cols)
+}
+
+const svgsOf = (n: Node | string, out: Node[] = []): Node[] => {
+  if (typeof n === 'string') return out
+  if (n.type === 'Svg') out.push(n)
+  for (const k of n.children ?? []) svgsOf(k, out)
+  return out
+}
+const altOfSvg = (n: Node) => String(n.props?.['alt'] ?? '')
+
+describe('fleet page on Desktop', () => {
+  test('wide: two rings with their words, the burn chart a picture, no half blocks', async ($, on) => {
+    const clock = fleetEngine(on, sampleWorld())
+    const tree = await openFleetDesk($, clock, 60, 120)
+    const all = svgsOf(tree)
+    const ring5 = all.find(s => altOfSvg(s).startsWith('5H '))
+    expect(ring5?.props?.['height']).toBe(rowPx(8))
+    expect(all.some(s => altOfSvg(s).startsWith('7D 92%'))).toBe(true)
+    const burn = all.find(s => altOfSvg(s).startsWith('TODAY BURN'))
+    expect(Number(burn?.props?.['height']) % CELL_PX_H).toBe(0)
+    expect(Number(burn?.props?.['height'])).toBeGreaterThanOrEqual(rowPx(3 + 2))
+    expect(all.some(s => altOfSvg(s).startsWith('CTX '))).toBe(true)
+    expect(all.some(s => altOfSvg(s) === '最近一小時' || altOfSvg(s) === '今日每小時')).toBe(true)
+    const text = linesOf(tree).join('\n')
+    expect(/[▀▄▰▱]/.test(text)).toBe(false)
+    for (const s of all) {
+      expect(svgSafe(String(s.props?.['source'] ?? ''))).toBe(true)
+      expect(Number(s.props?.['width'])).toBeLessThanOrEqual(cellPx(120))
+    }
+  })
+
+  test('mid: small rings, three rows each', async ($, on) => {
+    const clock = fleetEngine(on, sampleWorld())
+    const tree = await openFleetDesk($, clock, 60, 80)
+    expect(svgsOf(tree).find(s => altOfSvg(s).startsWith('5H '))?.props?.['height']).toBe(rowPx(3))
+  })
+
+  test('narrow: the gauges are bars on one row each', async ($, on) => {
+    const clock = fleetEngine(on, sampleWorld())
+    const tree = await openFleetDesk($, clock, 60, 50)
+    const bar = svgsOf(tree).find(s => altOfSvg(s).startsWith('5H '))
+    expect(bar?.props?.['height']).toBe(CELL_PX_H)
+  })
+
+  test('the tick never changes the rings or the burn chart', async ($, on) => {
+    const clock = fleetEngine(on, sampleWorld())
+    await openFleetDesk($, clock, 60, 120)
+    const pick = (t: Node) => svgsOf(t).filter(s => /^(5H|7D|TODAY BURN)/.test(altOfSvg(s))).map(s => String(s.props?.['source']))
+    const before = pick(await drawDesk($, 60, 120))
+    await clock.advance(500)
+    const after = pick(await drawDesk($, 60, 120))
+    expect(before.length).toBe(3)
+    expect(after).toEqual(before)
+  })
+
+  test('terminal fleet page: no Svg', async ($, on) => {
+    const clock = fleetEngine(on, sampleWorld())
+    expect(svgsOf(await openFleet($, clock, 60, 120))).toHaveLength(0)
   })
 })

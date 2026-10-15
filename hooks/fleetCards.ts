@@ -13,7 +13,7 @@ import {
 } from './fleet'
 import { RING_BIG, RING_SMALL, brailleLine, cellsToSegs, gaugeBar, gaugeCells } from './fleetChart'
 import type { ChartSeg } from './fleetChart'
-import { meterSvg, sparkSvg } from './svgArt'
+import { gaugeBarSvg, meterSvg, ringSvg, sparkSvg } from './svgArt'
 import { THEME, cellWidth, fitCells, fmtClock, fmtDate, fmtUsd, padCells, shortModel } from './jarvis'
 
 // A suit as drawn: `chip` the label of its number Button, `top` what follows it on its
@@ -108,19 +108,25 @@ const BAR_FIXED = 12
 
 const shortFoot = (t: string): string => t.replace(/^RESET /, '').replace(/^DEPLETED (IN )?/, '')
 
-const barRows = (gauges: readonly GaugeIn[], w: number): ChartSeg[][] => {
+const barRows = (gauges: readonly GaugeIn[], w: number, svg = false): ChartSeg[][] => {
   let feet = gauges.map(g => g.foot.t)
   let bar = w - BAR_FIXED - Math.max(0, ...feet.map(cellWidth))
   if (bar < 8) {
     feet = feet.map(shortFoot)
     bar = Math.max(4, w - BAR_FIXED - Math.max(0, ...feet.map(cellWidth)))
   }
+  const gauge = (g: GaugeIn): ChartSeg[] => {
+    const cells = gaugeBar(bar, g.used / 100, g.foot.depleted)
+    return svg
+      ? [{ t: cells.map(c => c.ch).join(''), svg: gaugeBarSvg(bar, g.used / 100, g.foot.depleted), alt: `${g.label} ${pctText(g.used)}` }]
+      : cellsToSegs(cells)
+  }
   return gauges.map((g, i) => [
     sp(1),
     { t: g.label, color: F, bold: true },
     sp(1),
     { t: '▕', color: F },
-    ...cellsToSegs(gaugeBar(bar, g.used / 100, g.foot.depleted)),
+    ...gauge(g),
     { t: '▏', color: F },
     sp(1),
     { t: padCells(pctText(g.used), 4, 'right'), color: B, bold: true },
@@ -129,11 +135,69 @@ const barRows = (gauges: readonly GaugeIn[], w: number): ChartSeg[][] => {
   ])
 }
 
+// Desktop's arc reactor: a half of the section, `pad` blank cells then the ring picture
+// `svgW` by `svgH`, the text rows `side` to its right; no `svg`, a blank half.
+export type ReactorHalf = { w: number; pad: number; svg?: string; svgW: number; svgH: number; alt: string; side: ChartSeg[][] }
+export type ReactorBlock = { h: number; halves: ReactorHalf[] }
+export type ReactorRow = ChartSeg[] | ReactorBlock
+
+const bigHalf = (g: GaugeIn, hw: number): ReactorHalf => ({
+  w: hw,
+  pad: 0,
+  svgW: hw,
+  svgH: 8,
+  svg: ringSvg(
+    RING_BIG,
+    g.used / 100,
+    g.foot.depleted,
+    [
+      { row: 2, text: g.label, color: F, bold: true },
+      { row: 3, text: pctText(g.used), color: B, bold: true },
+      { row: 7, text: fitCells(g.foot.t, hw), color: g.foot.color, bold: true },
+    ],
+    { cols: hw, rows: 8 },
+  ),
+  alt: `${g.label} ${pctText(g.used)} ${g.foot.t}`,
+  side: [],
+})
+
+const smallHalf = (g: GaugeIn, hw: number): ReactorHalf => {
+  const tw = Math.max(0, hw - 1 - RING_SMALL.w - 2)
+  return {
+    w: hw,
+    pad: 1,
+    svgW: RING_SMALL.w,
+    svgH: 3,
+    svg: ringSvg(RING_SMALL, g.used / 100, g.foot.depleted, []),
+    alt: `${g.label} ${pctText(g.used)}`,
+    side: [
+      [sp(2), { t: g.label, color: F, bold: true }, sp(2), { t: pctText(g.used), color: B, bold: true }],
+      [sp(2), { t: fitCells(g.foot.t, tw), color: g.foot.color, bold: true }],
+      [],
+    ],
+  }
+}
+
 // The arc reactor section's rows: two rings side by side (big or small), or a bar a window.
-export function reactorRows(form: 'big' | 'small' | 'bar', gauges: readonly GaugeIn[], w: number): ChartSeg[][] {
-  if (form === 'bar') return barRows(gauges, w)
+// `svg`: Desktop, the rings one block of pictures, the bars carrying theirs.
+export function reactorRows(form: 'big' | 'small' | 'bar', gauges: readonly GaugeIn[], w: number): ChartSeg[][]
+export function reactorRows(form: 'big' | 'small' | 'bar', gauges: readonly GaugeIn[], w: number, svg: boolean): ReactorRow[]
+export function reactorRows(form: 'big' | 'small' | 'bar', gauges: readonly GaugeIn[], w: number, svg = false): ReactorRow[] {
+  if (form === 'bar') return barRows(gauges, w, svg)
   const halves = [Math.floor(w / 2), w - Math.floor(w / 2)]
   const height = form === 'big' ? 8 : 3
+  if (svg) {
+    return [
+      {
+        h: height,
+        halves: halves.map((hw, i) => {
+          const g = gauges[i]
+          if (!g) return { w: hw, pad: hw, svgW: 0, svgH: height, alt: '', side: [] }
+          return form === 'big' ? bigHalf(g, hw) : smallHalf(g, hw)
+        }),
+      },
+    ]
+  }
   const blocks = halves.map((hw, i) => {
     const g = gauges[i]
     if (!g) return Array.from({ length: height }, () => [sp(hw)])

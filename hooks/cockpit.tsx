@@ -52,11 +52,11 @@ import type { OwnerMark, TaskFolds, TaskLine } from './tasksView'
 import { commitRows, laneColor, relTime } from './commitsView'
 import type { CommitsCtx, RefLabel, RepoPage } from './commitsView'
 import { MAX_REMOTES } from './repoViews'
-import { CELL_PX_H, bigTextSvg, cellPx, meterSvg, rampBarSvg, reactorSvg, rowPx, sparkSvg, stackedBarSvg, suitSvg, svgSafe } from './svgArt'
+import { CELL_PX_H, bigTextSvg, burnSvg, cellPx, meterSvg, rampBarSvg, reactorSvg, rowPx, sparkSvg, stackedBarSvg, suitSvg, svgSafe } from './svgArt'
 import type { BranchList, BranchRow, RepoView, StashInfo, WorktreeRow } from './repoViews'
 import { graphWidth } from './commitGraph'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
-import type { CardLines } from './fleetCards'
+import type { CardLines, ReactorRow } from './fleetCards'
 import {
   CHAIN_WARN,
   FAMILY_COLOR,
@@ -1532,18 +1532,46 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const active = [...sec.blocked, ...sec.working]
     const plan = planFleet({ cols, room, windows: wins.length, active: active.length, idle: sec.idle.length })
     const line = (segs: Seg[]): Block => ({ h: 1, node: lineNode(clip(segs, cols)) })
+    // Desktop's arc reactor rows: a block of two ring halves, or a bar row
+    const reactorBlock = (r: ReactorRow): Block => {
+      if (Array.isArray(r)) return line(r)
+      return {
+        h: r.h,
+        node: (
+          <Box flexDirection="row">
+            {r.halves.map(half => {
+              const pic = half.svg === undefined ? undefined : svgNode(half.svg, half.alt, half.svgW, half.svgH)
+              return (
+                <Box flexDirection="row" width={half.w}>
+                  {texts([sp(half.pad)])}
+                  {pic ?? (half.svg === undefined ? null : texts([{ t: fitCells(half.alt, Math.max(0, half.w - half.pad)), color: FRAME }]))}
+                  <Box flexDirection="column">{half.side.map(s => lineNode(s))}</Box>
+                </Box>
+              )
+            })}
+          </Box>
+        ),
+      }
+    }
     const total = hourly.reduce((a, b) => a + b, 0)
     const sigma = fleetView.scanning ? 'Σ SCANNING…' : `Σ ${fmtBig(total)} TOK`
     const sections: Block[][] = []
     if (plan.gauge !== 'none' && q && wins.length > 0) {
       const gauges = wins.map(x => ({ label: x.label, used: x.w.usedPct, foot: windowFoot(x.w, q, now, plan.gauge === 'big') }))
-      sections.push([line(sectionHeader(withIcon(SECTION_ICON.reactor, 'ARC REACTOR'), cols)), ...reactorRows(plan.gauge, gauges, cols).map(line)])
+      sections.push([
+        line(sectionHeader(withIcon(SECTION_ICON.reactor, 'ARC REACTOR'), cols)),
+        ...(svgOn ? reactorRows(plan.gauge, gauges, cols, true).map(reactorBlock) : reactorRows(plan.gauge, gauges, cols).map(line)),
+      ])
     }
     if (plan.burnRows > 0) {
       const w = plan.mode === 'wide' ? cols - 4 : plan.mode === 'mid' ? BURN_MID_W : BURN_NARROW_W
       const ticks = plan.mode === 'narrow' ? [0, 12] : [0, 6, 12, 18]
-      const chart = burnChart(hourly, w, plan.burnRows, new Date(now).getHours(), ticks)
-      sections.push([line(sectionHeader(withIcon(SECTION_ICON.burn, 'TODAY BURN'), cols, sigma)), ...chart.map(r => line([sp(2), ...cellsToSegs(r)]))])
+      const nowHour = new Date(now).getHours()
+      const pic = svgOn ? svgNode(burnSvg(hourly, w, plan.burnRows, nowHour, ticks), `TODAY BURN ${sigma}`, w, plan.burnRows + 2) : undefined
+      const body: Block[] = pic
+        ? [{ h: plan.burnRows + 2, node: <Box flexDirection="row">{texts([sp(2)])}{pic}</Box> }]
+        : burnChart(hourly, w, plan.burnRows, nowHour, ticks).map(r => line([sp(2), ...cellsToSegs(r)]))
+      sections.push([line(sectionHeader(withIcon(SECTION_ICON.burn, 'TODAY BURN'), cols, sigma)), ...body])
     }
     sections.push([line(sectionHeader(withIcon(SECTION_ICON.legion, 'IRON LEGION'), cols, plan.burnRows === 0 ? sigma : undefined)), ...legionBlocks(plan, active, sec.idle)])
     return sections.flatMap((s, i) => (i > 0 && plan.blanks ? [line(BLANK), ...s] : s))
