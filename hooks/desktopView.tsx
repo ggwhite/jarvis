@@ -85,7 +85,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
 
   const tabBar = (
     <Box flexDirection="row" gap={1} flexWrap="wrap">
-      {TABS.map(tab => pill(`tab-${tab.page}`, `${forDesktop(tab.icon)} ${tab.label}`, tab.page === shownPage || (shownPage === 'roleDetail' && tab.page === 'stats') || tab.page === tabOfB(shownPage), () => ctx.go(tab.page)))}
+      {TABS.map(tab => pill(`tab-${tab.page}`, `${forDesktop(tab.icon)} ${tab.label}`, tab.page === shownPage || (shownPage === 'roleDetail' && tab.page === 'stats') || (shownPage === 'detail' && tab.page === (ctx.detailFrom === 'roleDetail' ? 'stats' : 'now')) || tab.page === tabOfB(shownPage), () => ctx.go(tab.page)))}
     </Box>
   )
 
