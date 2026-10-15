@@ -305,6 +305,17 @@ describe('task board requests', () => {
     expect(endTurn(b, 't3', 'answer').items[1]?.status).toBe('completed')
   })
 
+  test('a prompt typed over a running turn does not take over the current request; the plan folds into the one the turn runs', () => {
+    let b = startTurn(openRequest(EMPTY_BOARD, 'A').board, 't1', 'A')
+    b = openRequest(b, 'B', 't1').board
+    expect(currentRequest(b)?.id).toBe('1')
+    b = ok(applyTask(b, { op: 'add', item: '計畫', subtasks: ['s1'] }))
+    expect(b.items.map(i => [i.id, i.title, i.subtasks.length])).toEqual([
+      ['1', '計畫', 1],
+      ['2', 'B', 0],
+    ])
+  })
+
   test('a waiting request is tied to the turn even when a queued one has the same prompt', () => {
     let b = startTurn(openRequest(EMPTY_BOARD, 'A').board, 't1', 'A')
     b = openRequest(b, 'B', 't1').board
@@ -971,6 +982,17 @@ const pressKey = async ($: Engine, key: string, rows = 30, cols = 80) => {
 
 const openTasks = ($: Engine, rows = 30, cols = 80) => pressKey($, 'tab-tasks', rows, cols)
 
+// the color of the first drawn completed icon
+const iconColor = (n: Node | string): unknown => {
+  if (typeof n === 'string') return undefined
+  if (textOf(n) === withIcon(TASK_ICON.completed, '') && n.props?.['color'] !== undefined) return n.props['color']
+  for (const c of n.children ?? []) {
+    const found = iconColor(c)
+    if (found !== undefined) return found
+  }
+  return undefined
+}
+
 // how many times the mod has written its tick: counted beneath the mod, at the state bottom
 const tickWrites = (on: On) => {
   const count = { n: 0 }
@@ -1044,6 +1066,18 @@ describe('task board requests wired', () => {
     text = await boardOf($)
     expect(text).toContain('[>] 1 任務看板改版')
     expect(text).toContain('[x] 2 好')
+  })
+
+  test('a prompt typed mid-turn leaves the plan to the request the turn runs', async ($, on) => {
+    world(on)
+    await send($, 'A')
+    await turnStarts($, 't1', 'A')
+    await send($, 'B', { turnId: 't1' })
+    await task($, { op: 'add', item: '計畫', subtasks: ['s1'] })
+    const text = await boardOf($)
+    expect(text).toContain('[ ] 1 計畫（本輪請求）\n  [ ] 1.1 s1')
+    expect(text).toContain('[>] 2 B')
+    expect(text).not.toContain('2.1')
   })
 
   test('a prompt typed while a turn runs closes with it, and runs again when it starts its own turn', async ($, on) => {
@@ -1143,6 +1177,28 @@ describe('task board page', () => {
     base = count.n
     await clock.advance(IDLE_MS * 3)
     expect(count.n).toBe(base)
+  })
+
+  test('after a turn ends the page ticks once more past FRESH_MS to drop the highlight, then stops', async ($, on) => {
+    const { clock } = world(on)
+    const count = tickWrites(on)
+    await startSession($)
+    await send($, 'A')
+    await turnStarts($, 't1', 'A')
+    await openTasks($)
+    await draw($)
+    await clock.advance(1000)
+    await turnEnds($, 't1')
+    await draw($)
+    expect(iconColor(await draw($))).toBe(THEME.bright)
+    await clock.advance(FRESH_MS - 1)
+    const base = count.n
+    await clock.advance(ANIM_MS * 2)
+    expect(count.n).toBeGreaterThan(base)
+    expect(iconColor(await draw($))).toBe(THEME.success)
+    const after = count.n
+    await clock.advance(IDLE_MS * 3)
+    expect(count.n).toBe(after)
   })
 
   test('a /clear empties the page', async ($, on) => {

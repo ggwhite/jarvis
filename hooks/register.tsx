@@ -708,7 +708,8 @@ async function reconcile(
 async function tasksMoving($: Pick<EngineInterface, 'state'>, now: number, drawnAt: number): Promise<boolean> {
   if (now - drawnAt > SEEN_MS) return false
   try {
-    return (await read($, ui)).page === 'tasks' && boardLive(await read($, tasks), now)
+    // live for one ANIM_MS past FRESH_MS, so a tick lands after the highlight ends and repaints it
+    return (await read($, ui)).page === 'tasks' && boardLive(await read($, tasks), now - ANIM_MS)
   } catch {
     return false
   }
@@ -1361,15 +1362,16 @@ export const register: Register = on => {
 
     // Each request the person sends becomes a running item of the task board; the model reads
     // the item's id beside the prompt. A prompt another hook drops takes its item with it.
-    if (!recordsRequest(e)) return next(e)
     const box: { id?: string } = {}
     const now = await stampNow($)
     try {
-      await update($, tasks, b => {
-        const made = openRequest(b, e.text, e.turnId, now)
-        box.id = made.id
-        return made.board
-      })
+      if (recordsRequest(e)) {
+        await update($, tasks, b => {
+          const made = openRequest(b, e.text, e.turnId, now)
+          box.id = made.id
+          return made.board
+        })
+      }
     } catch {
       // bookkeeping only
     }

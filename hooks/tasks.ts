@@ -358,9 +358,11 @@ export function endTurn(board: JarvisTaskBoard, turnId: string, reason: string, 
   }
 }
 
-// The request being worked on: the newest request item running by its own status.
+// The request being worked on: the newest request item running by its own status that a
+// main-loop turn runs (not one typed over it), else the newest running by its own status.
 export function currentRequest(board: JarvisTaskBoard): JarvisTaskItem | undefined {
-  return board.items.findLast(i => isRequest(i) && i.status === 'in_progress')
+  const running = (i: JarvisTaskItem) => isRequest(i) && i.status === 'in_progress'
+  return board.items.findLast(i => running(i) && i.turnId !== undefined && i.queued !== true) ?? board.items.findLast(running)
 }
 
 // When an item began: its own start, else its earliest subtask's.
