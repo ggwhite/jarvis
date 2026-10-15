@@ -257,6 +257,9 @@ export type JarvisUi = {
   // /clear folds them
   goneOpen?: boolean
   remoteOpen?: boolean
+  // the 任務 page's fold choices by item id (true: its subtasks hidden); absent is each item's
+  // default; a /clear forgets them
+  taskFolds?: Record<string, boolean>
 }
 
 declare module 'claude-code' {

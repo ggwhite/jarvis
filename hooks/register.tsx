@@ -47,6 +47,7 @@ import { commitRepoName, repoRows } from './commitsView'
 import type { CommitsCtx, RepoList } from './commitsView'
 import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, boardLive, endTurn, fromTaskCreate, fromTaskUpdate, fromTodos, openRequest, recordsRequest, requestContext, startTurn } from './tasks'
 import type { TaskReply } from './tasks'
+import { keptFolds } from './tasksView'
 import { FETCH_TIMEOUT_MS, branchesOf, fetchRepo, remotesOf, sameRepoPaths, stashFileDiff, stashFiles, stashesOf, worktreesOf } from './gitRepo'
 import type { StashFile } from './gitRepo'
 import type { BranchList, Remotes, RepoView, StashInfo, WorktreeRow } from './repoViews'
@@ -1397,10 +1398,11 @@ export const register: Register = on => {
       try {
         await update($, changes, () => [])
         // the commit tree, commit diff and stash diff pages go back to the repo list, as a diff page
-        // does; the branches' gone and 只在遠端 groups fold
+        // does; the branches' gone and 只在遠端 groups fold; the 任務 page forgets its fold choices
         await update($, ui, (u): JarvisUi => {
-          const { goneOpen: _g, remoteOpen: _o, ...kept } = u
-          if (u.page !== 'commitTree' && u.page !== 'commitDiff' && u.page !== 'stashDiff') return u.goneOpen === undefined && u.remoteOpen === undefined ? u : kept
+          const { goneOpen: _g, remoteOpen: _o, taskFolds: _t, ...kept } = u
+          if (u.page !== 'commitTree' && u.page !== 'commitDiff' && u.page !== 'stashDiff')
+            return u.goneOpen === undefined && u.remoteOpen === undefined && u.taskFolds === undefined ? u : kept
           const { commitRef: _r, repoBack: _b, repoView: _v, stashSha: _s, ...rest } = kept
           return { ...rest, page: 'changes' }
         })
@@ -1701,7 +1703,14 @@ export const register: Register = on => {
         }
       },
       openDiff: (key: string) => setUi(u => ({ ...u, page: 'changeDiff', diffKey: key })),
-      ...(board === undefined ? {} : { tasks: board }),
+      ...(board === undefined
+        ? {}
+        : {
+            tasks: board,
+            taskFolds: shown.taskFolds ?? {},
+            toggleTask: (id: string, folded: boolean) =>
+              setUi(u => ({ ...u, taskFolds: { ...keptFolds(u.taskFolds, board), [id]: folded } })),
+          }),
       commits,
     })
   })

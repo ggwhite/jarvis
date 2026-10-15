@@ -44,8 +44,8 @@ import type { DiffRow, Failed, NumstatRow } from './gitDiff'
 import { tailCells } from './changes'
 import type { ChangeMode } from './changes'
 import { EMPTY_BOARD, boardCounts, countsText } from './tasks'
-import { taskRows } from './tasksView'
-import type { OwnerMark } from './tasksView'
+import { taskLines } from './tasksView'
+import type { OwnerMark, TaskFolds, TaskLine } from './tasksView'
 import { commitRows, laneColor, relTime } from './commitsView'
 import type { CommitsCtx, RefLabel, RepoPage } from './commitsView'
 import { MAX_REMOTES } from './repoViews'
@@ -209,6 +209,9 @@ export type Ctx = {
   commits?: CommitsCtx
   // the task page's board; read only while the page is drawn
   tasks?: JarvisTaskBoard
+  // the task page's fold choices, and the press that folds (true) or opens an item
+  taskFolds?: TaskFolds
+  toggleTask?: (id: string, folded: boolean) => void
 }
 
 const FRAME = THEME.frame
@@ -2286,12 +2289,34 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     }
   }
 
+  // An item's row with subtasks: its icon and title are the Button that folds or opens
+  // them, so a pointer over the row inverts them alone; other rows are plain.
+  const taskLine = (l: TaskLine): Line => {
+    const [icon, title, ...rest] = l.segs
+    const it = l.item
+    const toggle = ctx.toggleTask
+    if (it === undefined || toggle === undefined || icon === undefined || title === undefined) return l.segs
+    const name = title.t.trimEnd()
+    return {
+      h: 1,
+      node: (
+        <Box flexDirection="row">
+          <Button key={`task-${it.id}`} plain onPress={() => toggle(it.id, !it.folded)}>
+            {texts([icon, { ...title, t: name }])}
+          </Button>
+          {texts([{ ...title, t: title.t.slice(name.length) }, ...rest])}
+        </Box>
+      ),
+    }
+  }
+
   const tasksBlock = (room: number): Block => {
     const inner = cols - 4
     const board = ctx.tasks ?? EMPTY_BOARD
     const head = leftRight([title(TAB_ICON.tasks, '任務', PRIMARY)], [{ t: countsText(boardCounts(board)), color: FRAME }], inner)
     const h = Math.max(6, room)
-    return card({ w: cols, color: FRAME, lines: [head, ...taskRows(board, inner, h - 3, taskOwner, view.now)] }, h)
+    const lines = taskLines(board, inner, h - 3, taskOwner, view.now, ctx.taskFolds ?? {})
+    return card({ w: cols, color: FRAME, lines: [head, ...lines.map(taskLine)] }, h)
   }
 
   // ---- 組版 ---------------------------------------------------------------

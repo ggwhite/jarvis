@@ -40,6 +40,20 @@ export type AgentBadge = { status: JarvisStatus; waiting?: boolean; ms: number; 
 // who does a subtask: MK-N in the member's color, with its run when the member is listed
 export type OwnerMark = { t: string; color: string; agent?: AgentBadge }
 
+// The fold choices pressed so far, by item id: true hides an item's subtasks, false shows them.
+export type TaskFolds = Readonly<Record<string, boolean>>
+
+// A drawn row; an item's row with subtasks also carries the item its icon and title fold or
+// open, and whether it is folded now.
+export type TaskLine = { segs: Seg[]; item?: { id: string; folded: boolean } }
+
+// Whether an item's subtasks are hidden: the press's choice, else hidden once it is done.
+export const isFolded = (item: JarvisTaskItem, folds: TaskFolds): boolean => folds[item.id] ?? itemStatus(item) === 'completed'
+
+// The fold choices of the items still on the board.
+export const keptFolds = (folds: TaskFolds | undefined, board: JarvisTaskBoard): Record<string, boolean> =>
+  Object.fromEntries(Object.entries(folds ?? {}).filter(([id]) => board.items.some(i => i.id === id)))
+
 // The running icon: the spinner's frame at `now` and a space, as wide as a status icon.
 export const spinnerAt = (now: number): string => `${SPINNER[Math.floor(now / ANIM_MS) % SPINNER.length] ?? SPINNER[0]} `
 
@@ -105,40 +119,56 @@ function subtaskRights(status: JarvisTaskStatus, startedAt: number | undefined, 
 // A part's heading with its count, `width` cells.
 const headingRow = (label: string, n: number, width: number): Seg[] => [{ t: padCells(`${label} ${n}`, width), color: THEME.frame, bold: true }]
 
-// An item's row, its subtasks under it unless it is done.
-function itemRows(item: JarvisTaskItem, width: number, owner: (agentId: string) => OwnerMark, now: number): Seg[][] {
+// An item's row, then its subtasks unless it is folded; the item's row carries its fold
+// when it has subtasks to fold.
+function itemLines(item: JarvisTaskItem, width: number, owner: (agentId: string) => OwnerMark, now: number, folds: TaskFolds): TaskLine[] {
   const status = itemStatus(item)
   const head = look(status, itemFresh(item, now), now)
-  const rows = [taskRow(0, head.icon, item.title, head.style, itemRights(item, status, now), width)]
-  if (status === 'completed') return rows
+  const folded = isFolded(item, folds)
+  const segs = taskRow(0, head.icon, item.title, head.style, itemRights(item, status, now), width)
+  const lines: TaskLine[] = [item.subtasks.length > 0 ? { segs, item: { id: item.id, folded } } : { segs }]
+  if (folded) return lines
   for (const s of item.subtasks) {
     const l = look(s.status, isFresh(s, now), now)
     const who = s.agentId === undefined ? undefined : owner(s.agentId)
-    rows.push(taskRow(SUB_INDENT, l.icon, s.title, l.style, subtaskRights(s.status, s.startedAt, who, now), width))
+    lines.push({ segs: taskRow(SUB_INDENT, l.icon, s.title, l.style, subtaskRights(s.status, s.startedAt, who, now), width) })
   }
-  return rows
+  return lines
 }
 
-// The board as rows at `now` in three parts (進行中, 預計, 已完成), each under its heading,
-// an empty part left out; past `room` rows the last says how many are left out.
+// The board as lines at `now` in three parts (進行中, 預計, 已完成), each under its heading,
+// an empty part left out; past `room` lines the last says how many are left out.
+export function taskLines(
+  board: JarvisTaskBoard,
+  width: number,
+  room: number,
+  owner: (agentId: string) => OwnerMark,
+  now = 0,
+  folds: TaskFolds = {},
+): TaskLine[] {
+  if (room <= 0) return []
+  if (board.items.length === 0) return [{ segs: [{ t: fitCells(EMPTY_TEXT, width), color: THEME.frame }] }]
+  const parts = boardSections(board)
+  const lines: TaskLine[] = []
+  for (const [key, label] of SECTIONS) {
+    const items = parts[key]
+    if (items.length === 0) continue
+    lines.push({ segs: headingRow(label, items.length, width) })
+    for (const item of items) lines.push(...itemLines(item, width, owner, now, folds))
+  }
+  if (lines.length <= room) return lines
+  const kept = lines.slice(0, room - 1)
+  return [...kept, { segs: [{ t: fitCells(`還有 ${lines.length - kept.length} 列`, width), color: THEME.frame }] }]
+}
+
+// The board's lines as segments alone.
 export function taskRows(
   board: JarvisTaskBoard,
   width: number,
   room: number,
   owner: (agentId: string) => OwnerMark,
   now = 0,
+  folds: TaskFolds = {},
 ): Seg[][] {
-  if (room <= 0) return []
-  if (board.items.length === 0) return [[{ t: fitCells(EMPTY_TEXT, width), color: THEME.frame }]]
-  const parts = boardSections(board)
-  const rows: Seg[][] = []
-  for (const [key, label] of SECTIONS) {
-    const items = parts[key]
-    if (items.length === 0) continue
-    rows.push(headingRow(label, items.length, width))
-    for (const item of items) rows.push(...itemRows(item, width, owner, now))
-  }
-  if (rows.length <= room) return rows
-  const kept = rows.slice(0, room - 1)
-  return [...kept, [{ t: fitCells(`還有 ${rows.length - kept.length} 列`, width), color: THEME.frame }]]
+  return taskLines(board, width, room, owner, now, folds).map(l => l.segs)
 }

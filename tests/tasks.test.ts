@@ -43,7 +43,7 @@ import type { Seg } from '../hooks/cockpit'
 import { TASK_ICON, withIcon } from '../hooks/icons'
 import { ANIM_MS, IDLE_MS, SPINNER, THEME, cellWidth, fitCells, fmtReadout, padCells } from '../hooks/jarvis'
 import type { TaskReply } from '../hooks/tasks'
-import { EMPTY_TEXT, SUB_INDENT, TITLE_MIN, TOOL_MAX, spinnerAt, taskRows } from '../hooks/tasksView'
+import { EMPTY_TEXT, SUB_INDENT, TITLE_MIN, TOOL_MAX, isFolded, keptFolds, spinnerAt, taskLines, taskRows } from '../hooks/tasksView'
 import type { AgentBadge, OwnerMark } from '../hooks/tasksView'
 
 const ok = (r: TaskReply): JarvisTaskBoard => {
@@ -597,6 +597,57 @@ describe('task board rows', () => {
   })
 })
 
+describe('task board folds', () => {
+  const owner = () => ({ t: 'MK', color: THEME.frame })
+  const text = (segs: readonly Seg[]) => segs.map(s => s.t).join('')
+  const board = () =>
+    build(
+      { op: 'add', item: 'A', subtasks: ['a1', 'a2'] },
+      { op: 'add', item: 'B', subtasks: ['b1'] },
+      { op: 'add', item: 'C' },
+      { op: 'update', id: '1.1', status: 'in_progress' },
+      { op: 'update', id: '2.1', status: 'completed' },
+    )
+
+  test('a done item is folded and others open, unless a press chose otherwise', () => {
+    const b = board()
+    const [a, done] = [b.items[0]!, b.items[1]!]
+    expect(isFolded(a, {})).toBe(false)
+    expect(isFolded(done, {})).toBe(true)
+    expect(isFolded(a, { '1': true })).toBe(true)
+    expect(isFolded(done, { '2': false })).toBe(false)
+  })
+
+  test("an item's row carries its fold when it has subtasks; subtask and heading rows carry none", () => {
+    const lines = taskLines(board(), 40, 20, owner)
+    const items = lines.filter(l => l.item !== undefined)
+    expect(items.map(l => l.item)).toEqual([
+      { id: '1', folded: false },
+      { id: '2', folded: true },
+    ])
+    expect(lines.find(l => text(l.segs).includes('C'))?.item).toBeUndefined()
+    expect(lines.find(l => text(l.segs).includes('a1'))?.item).toBeUndefined()
+    expect(taskRows(board(), 40, 20, owner)).toEqual(lines.map(l => l.segs))
+  })
+
+  test('a fold choice hides a running item\'s subtasks and shows a done item\'s; done/total stays', () => {
+    const lines = taskLines(board(), 40, 20, owner, 0, { '1': true, '2': false })
+    const texts = lines.map(l => text(l.segs))
+    expect(texts.some(t => t.includes('a1'))).toBe(false)
+    expect(texts.find(t => t.includes('A'))?.trimEnd()).toMatch(/0\/2$/)
+    expect(texts.some(t => t.includes('b1'))).toBe(true)
+    expect(lines.find(l => l.item?.id === '1')?.item?.folded).toBe(true)
+    expect(lines.find(l => l.item?.id === '2')?.item?.folded).toBe(false)
+    for (const t of texts) expect(cellWidth(t)).toBe(40)
+  })
+
+  test('keptFolds drops the choices of items no longer on the board', () => {
+    const b = board()
+    expect(keptFolds({ '1': true, '9': false }, b)).toEqual({ '1': true })
+    expect(keptFolds(undefined, b)).toEqual({})
+  })
+})
+
 describe('task board motion', () => {
   const text = (row: readonly Seg[]) => row.map(s => s.t).join('')
   const mk = (agent?: AgentBadge): OwnerMark => ({ t: 'MK-1', color: '#E879F9', ...(agent ? { agent } : {}) })
@@ -1016,6 +1067,13 @@ describe('task board requests wired', () => {
   })
 })
 
+// every Button in a drawn tree
+const buttonsOf = (n: Node | string): Node[] =>
+  typeof n === 'string' ? [] : [...(n.type === 'Button' ? [n] : []), ...(n.children ?? []).flatMap(buttonsOf)]
+
+const taskButton = (root: Node, id: string): Node | undefined =>
+  buttonsOf(root).find(b => b.props?.['key'] === `task-${id}`)
+
 describe('task board page', () => {
   test('the 任務 tab follows 異動 and opens on an empty board', async ($, on) => {
     world(on)
@@ -1093,5 +1151,76 @@ describe('task board page', () => {
     await openTasks($)
     await $.classic.SessionStart({ source: 'clear' } as never)
     expect(linesOf(await draw($)).some(l => l.includes(EMPTY_TEXT))).toBe(true)
+  })
+
+  test("pressing an item's title folds its subtasks and pressing again opens them; done/total stays", async ($, on) => {
+    world(on)
+    await task($, { op: 'add', item: '加看板', subtasks: ['調查', '實作'] })
+    await openTasks($)
+    expect(linesOf(await draw($)).some(l => l.includes('調查'))).toBe(true)
+    await pressKey($, 'task-1')
+    let lines = linesOf(await draw($))
+    expect(lines.some(l => l.includes('調查'))).toBe(false)
+    expect(lines.find(l => l.includes('加看板'))?.trimEnd()).toMatch(/0\/2$/)
+    await pressKey($, 'task-1')
+    lines = linesOf(await draw($))
+    expect(lines.some(l => l.includes('調查'))).toBe(true)
+  })
+
+  test('a done item opens on a press and stays open while the board changes', async ($, on) => {
+    world(on)
+    await task($, { op: 'add', item: '加看板', subtasks: ['調查'] })
+    await task($, { op: 'update', id: '1', status: 'completed' })
+    await openTasks($)
+    expect(linesOf(await draw($)).some(l => l.includes('調查'))).toBe(false)
+    await pressKey($, 'task-1')
+    expect(linesOf(await draw($)).some(l => l.includes('調查'))).toBe(true)
+    await task($, { op: 'add', item: '下一件', subtasks: ['x'] })
+    expect(linesOf(await draw($)).some(l => l.includes('調查'))).toBe(true)
+  })
+
+  test('only the icon and title are the Button; items without subtasks and subtask rows have none', async ($, on) => {
+    world(on)
+    await task($, { op: 'add', item: '加看板', subtasks: ['調查'] })
+    await task($, { op: 'add', item: '沒細項' })
+    await openTasks($)
+    const root = await draw($)
+    const b = taskButton(root, '1')
+    expect(b).toBeDefined()
+    const t = textOf(b!)
+    expect(t).toContain('加看板')
+    expect(t).toBe(t.trimEnd())
+    expect(t).not.toContain('0/1')
+    expect(taskButton(root, '2')).toBeUndefined()
+    expect(buttonsOf(root).some(n => textOf(n).includes('調查'))).toBe(false)
+  })
+
+  test('a narrow pane keeps every row within the pane with a pressable title', async ($, on) => {
+    world(on)
+    await task($, { op: 'add', item: '很長的工作項目標題'.repeat(5), subtasks: ['細項'] })
+    await openTasks($, 30, 40)
+    const root = await draw($, 30, 40)
+    for (const l of linesOf(root)) expect(cellWidth(l)).toBeLessThanOrEqual(40)
+    expect(textOf(taskButton(root, '1')!)).toContain('…')
+  })
+
+  test('a /clear forgets the fold choices: the new item 1 opens', async ($, on) => {
+    world(on)
+    await task($, { op: 'add', item: '舊的', subtasks: ['舊細項'] })
+    await openTasks($)
+    await pressKey($, 'task-1')
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    await task($, { op: 'add', item: '新的', subtasks: ['新細項'] })
+    await openTasks($)
+    expect(linesOf(await draw($)).some(l => l.includes('新細項'))).toBe(true)
+  })
+
+  test('folding leaves the board the model reads unchanged', async ($, on) => {
+    world(on)
+    await task($, { op: 'add', item: '加看板', subtasks: ['調查'] })
+    const before = await boardOf($)
+    await openTasks($)
+    await pressKey($, 'task-1')
+    expect(await boardOf($)).toBe(before)
   })
 })
