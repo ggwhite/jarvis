@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { FleetJumpError, FleetQuota, JarvisAgent, JarvisPage, JarvisUi } from '../types'
+import type { FleetJumpError, FleetQuota, JarvisAgent, JarvisPage, JarvisTaskBoard, JarvisUi } from '../types'
 
 import {
   ANIM_MS,
@@ -45,21 +45,23 @@ import { commitFileDiff, commitFiles, commitTreeOf, findRepos, repoSummary } fro
 import type { CommitFile, CommitTree, RepoSummary } from './gitCommits'
 import { commitRepoName, repoRows } from './commitsView'
 import type { CommitsCtx, RepoList } from './commitsView'
-import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, boardLive, closeResults, dropIdle, endTurn, fromTaskCreate, fromTaskUpdate, fromTodos, markWorked, openRequest, recordsRequest, requestContext, requestsEnding, startTurn, withResult, withSummaryTitle } from './tasks'
-import type { TaskReply } from './tasks'
+import { EMPTY_BOARD, TASK_PROMPT, TASK_SECTION_ID, TASK_TOOL, TASK_TOOL_SPEC, applyTask, boardLive, closeResults, dropEmptyTopics, dropIdle, endTurn, fromTaskCreate, fromTaskUpdate, fromTodos, markWorked, openRequest, recordsRequest, requestContext, requestTitle, requestsEnding, startTurn, topicCandidates, withClassified, withResult } from './tasks'
+import type { TaskReply, TopicCandidate } from './tasks'
 import { keptFolds } from './tasksView'
 import {
+  CLASSIFY_SYSTEM,
   RESULT_MAX,
   SUMMARY_MODEL,
   SUMMARY_SYSTEM,
   SUMMARY_TIMEOUT_MS,
-  SUMMARY_TITLE_MAX,
   SUMMARY_TOKENS,
+  classifyAsk,
   cleanSummary,
   clipInput,
+  parseClassify,
   resultAsk,
-  titleAsk,
 } from './summary'
+import type { LastAsk } from './summary'
 import { FETCH_TIMEOUT_MS, branchesOf, fetchRepo, remotesOf, sameRepoPaths, stashFileDiff, stashFiles, stashesOf, worktreesOf } from './gitRepo'
 import type { StashFile } from './gitRepo'
 import type { BranchList, Remotes, RepoView, StashInfo, WorktreeRow } from './repoViews'
@@ -108,6 +110,10 @@ const suit = atom({ plugin: 'jarvis', key: 'suit' } as const, { n: 0 })
 const changes = atom({ plugin: 'jarvis', key: 'changes' } as const, [] as JarvisChange[])
 const tasks = atom({ plugin: 'jarvis', key: 'tasks' } as const, EMPTY_BOARD)
 
+// Every write of the board: topics no item points at any more go with it.
+const updateBoard = ($: Pick<EngineInterface, 'state'>, f: (b: JarvisTaskBoard) => JarvisTaskBoard): Promise<JarvisTaskBoard> =>
+  update($, tasks, b => dropEmptyTopics(f(b)))
+
 // the clock's time, or undefined where there is none: the board is then not stamped
 async function stampNow($: Pick<EngineInterface, 'clock'>): Promise<number | undefined> {
   try {
@@ -142,13 +148,21 @@ async function summarize($: Pick<EngineInterface, 'model'>, prompt: string, max:
 // how many recorded prompts are kept for their results' summaries
 const MAX_ASKS = 50
 
-// A request item's title, summed up by the small model; the prompt's own line stays when
-// there is no summary, and a title the model set is never replaced.
-async function titleLater($: Pick<EngineInterface, 'model' | 'state'>, rid: string, prompt: string): Promise<void> {
-  const title = await summarize($, titleAsk(prompt), SUMMARY_TITLE_MAX)
-  if (title === '') return
+// A request item's title and topic, from one call of the small model: with no reply its prompt
+// line stays and it gets a topic of its own. `placed` hears the topic it ended up under.
+async function classifyLater(
+  $: Pick<EngineInterface, 'model' | 'state'>,
+  rid: string,
+  prompt: string,
+  candidates: readonly TopicCandidate[],
+  last: LastAsk | undefined,
+  placed: (title: string, topic: string) => void,
+): Promise<void> {
+  const { title, choice } = parseClassify(await askSmall($, CLASSIFY_SYSTEM, classifyAsk(prompt, candidates, last)), candidates)
   try {
-    await update($, tasks, b => withSummaryTitle(b, rid, title))
+    const b = await updateBoard($, b => withClassified(b, rid, title, choice))
+    const item = b.items.find(i => i.rid === rid)
+    if (item?.topic !== undefined) placed(item.title, item.topic)
   } catch {
     // bookkeeping only
   }
@@ -165,7 +179,7 @@ async function resultLater(
   const result = await summarize($, resultAsk(prompt, answer, subtasks), RESULT_MAX)
   if (result === '') return
   try {
-    await update($, tasks, b => withResult(b, rid, result))
+    await updateBoard($, b => withResult(b, rid, result))
   } catch {
     // bookkeeping only
   }
@@ -238,12 +252,12 @@ async function recordTasks(
 ): Promise<void> {
   try {
     if (tool === 'TodoWrite') {
-      await update($, tasks, b => fromTodos(b, input['todos'], actor))
+      await updateBoard($, b => fromTodos(b, input['todos'], actor))
     } else if (tool === 'TaskCreate') {
       const created = (result as { task?: { id?: unknown } } | undefined)?.task
-      await update($, tasks, b => fromTaskCreate(b, created?.id, input['subject'], actor))
+      await updateBoard($, b => fromTaskCreate(b, created?.id, input['subject'], actor))
     } else if (tool === 'TaskUpdate') {
-      await update($, tasks, b => fromTaskUpdate(b, input))
+      await updateBoard($, b => fromTaskUpdate(b, input))
     }
   } catch {
     // bookkeeping only
@@ -834,6 +848,8 @@ export const register: Register = on => {
   const early = new Map<string, Completion[]>()
   // each recorded request's prompt by its rid, cut, for its result's summary; the oldest go past MAX_ASKS
   const asks = new Map<string, string>()
+  // the request sent last, for the next one's topic: its rid, title and topic once placed
+  let lastAsk: (LastAsk & { rid: string }) | undefined
   // ids the engine was asked about on a tool call and did not list: not asked again
   const unknown = new Set<string>()
   const listing = { fails: 0 }
@@ -1222,7 +1238,7 @@ export const register: Register = on => {
     // a main-loop turn takes up the requests waiting for it
     if (e.agentId === undefined) {
       try {
-        await update($, tasks, b => startTurn(b, e.turnId, e.text, now))
+        await updateBoard($, b => startTurn(b, e.turnId, e.text, now))
       } catch {
         // bookkeeping only
       }
@@ -1238,7 +1254,7 @@ export const register: Register = on => {
     const box: { reply: TaskReply } = { reply: { error: '看板暫時無法寫入' } }
     const now = await stampNow($)
     try {
-      await update($, tasks, b => {
+      await updateBoard($, b => {
         box.reply = applyTask(b, input, e.agentId, now)
         return 'error' in box.reply ? b : box.reply.board
       })
@@ -1257,7 +1273,7 @@ export const register: Register = on => {
     if (id === undefined && tool !== TASK_TOOL) {
       try {
         const board = await read($, tasks)
-        if (markWorked(board) !== board) await update($, tasks, markWorked)
+        if (markWorked(board) !== board) await updateBoard($, markWorked)
       } catch {
         // bookkeeping only
       }
@@ -1426,7 +1442,7 @@ export const register: Register = on => {
       const answered = e.reason === 'answer' && e.answer.trim() !== ''
       const ending: { rid: string; title: string; subtasks: string[] }[] = []
       try {
-        const written = await update($, tasks, b => {
+        const written = await updateBoard($, b => {
           // a request that did nothing (no tool call, no plan) leaves the board before the rest
           const kept = dropIdle(b, e.turnId)
           ending.length = 0
@@ -1462,7 +1478,7 @@ export const register: Register = on => {
     try {
       if (recordsRequest(e)) {
         const rid = crypto.randomUUID()
-        await update($, tasks, b => {
+        await updateBoard($, b => {
           const made = openRequest(b, e.text, e.turnId, now, rid)
           box.id = made.id
           if (made.id !== undefined) box.rid = rid
@@ -1485,12 +1501,23 @@ export const register: Register = on => {
           const oldest = asks.keys().next().value
           if (oldest !== undefined) asks.delete(oldest)
         }
-        // the small model sums the request up while the turn runs; nothing waits on it
-        void titleLater($, rid, sent)
+        // the small model sums the request up and places it under a topic while the turn runs;
+        // nothing waits on it
+        const before = lastAsk === undefined ? undefined : { title: lastAsk.title, ...(lastAsk.topic === undefined ? {} : { topic: lastAsk.topic }) }
+        let candidates: TopicCandidate[] = []
+        try {
+          candidates = topicCandidates(await read($, tasks))
+        } catch {
+          // none offered
+        }
+        lastAsk = { rid, title: requestTitle(sent) }
+        void classifyLater($, rid, sent, candidates, before, (title, topic) => {
+          if (lastAsk?.rid === rid) lastAsk = { rid, title, topic }
+        })
       }
     } else {
       try {
-        await update($, tasks, b => ({ ...b, items: b.items.filter(i => i.id !== id) }))
+        await updateBoard($, b => ({ ...b, items: b.items.filter(i => i.id !== id) }))
       } catch {
         // bookkeeping only
       }
@@ -1503,8 +1530,9 @@ export const register: Register = on => {
     if (e.source === 'startup' || e.source === 'clear' || e.source === 'resume') {
       resetChanges()
       asks.clear()
+      lastAsk = undefined
       try {
-        await update($, tasks, () => EMPTY_BOARD)
+        await updateBoard($, () => EMPTY_BOARD)
       } catch {
         // bookkeeping only
       }

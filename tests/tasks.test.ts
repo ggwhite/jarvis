@@ -1608,7 +1608,8 @@ describe('request summaries wired', () => {
     await clock.settle()
     expect(await boardOf($)).toContain('[x] 1 計算 7*6 → 42')
     expect(asked).toHaveLength(2)
-    expect(asked[0]).toMatchObject({ model: SUMMARY_MODEL, system: SUMMARY_SYSTEM, timeoutMs: SUMMARY_TIMEOUT_MS })
+    expect(asked[0]).toMatchObject({ model: SUMMARY_MODEL, system: CLASSIFY_SYSTEM, timeoutMs: SUMMARY_TIMEOUT_MS })
+    expect(asked[1]).toMatchObject({ system: SUMMARY_SYSTEM })
     expect(asked[0]?.prompt).toContain('幫我算一下 7*6')
     expect(asked[1]?.prompt).toContain('幫我算一下 7*6')
     expect(asked[1]?.prompt).toContain('回答：\n42')
@@ -1734,6 +1735,113 @@ describe('request summaries wired', () => {
     expect(note).toContain('記下結果')
     expect(note).toContain('細項全部完成才記結果')
     expect(TASK_PROMPT).toContain('等細項全部完成才記')
+  })
+})
+
+describe('request topics wired', () => {
+  // the board as the tasks page holds it, kept from the plugin's last write of it
+  const watchBoard = (on: On) => {
+    let board: JarvisTaskBoard = EMPTY_BOARD
+    on('state.set', { plugin: 'jarvis', key: 'tasks' }, async (_$, e, next) => {
+      const out = await next(e)
+      if (out.value?.isSet === true) board = e.value as JarvisTaskBoard
+      return out
+    })
+    return async (_$: Engine): Promise<JarvisTaskBoard> => board
+  }
+
+  test('requests the small model places together share a topic; a new one opens another', async ($, on) => {
+    const asked: Asked[] = []
+    const boardState = watchBoard(on)
+    const { clock } = world(on, {}, async e => {
+      asked.push(e)
+      if (e.prompt.includes('回答：')) return said('ok')
+      if (e.prompt.includes('請求：\n看 Jamie')) return said('查看 Jamie 訊息\n新 Jamie 七日簽到')
+      if (e.prompt.includes('請求：\n看 Andy')) return said('查看 Andy 問題\n新 Andy 大樂透門檻')
+      return said('確認送出\n1')
+    })
+    await startSession($)
+    for (const [k, text] of ['看 Jamie', '看 Andy', '確認送出'].entries()) {
+      await send($, text)
+      await clock.settle()
+      await turnStarts($, `t${k}`, text)
+      await work($)
+      await turnEnds($, `t${k}`)
+      await clock.settle()
+    }
+    const b = await boardState($)
+    expect(b.topics).toEqual([
+      { id: '1', title: 'Jamie 七日簽到' },
+      { id: '2', title: 'Andy 大樂透門檻' },
+    ])
+    expect(b.items.map(i => i.topic)).toEqual(['1', '2', '1'])
+    const third = asked.filter(e => !e.prompt.includes('回答：'))[2]?.prompt ?? ''
+    expect(third).toContain('2 Andy 大樂透門檻（最近的請求：查看 Andy 問題）\n1 Jamie 七日簽到（最近的請求：查看 Jamie 訊息）')
+    expect(third).toContain('上一個請求：查看 Andy 問題（話題 2）')
+  })
+
+  test('no reply gives the request a topic of its own under its prompt line', async ($, on) => {
+    const boardState = watchBoard(on)
+    const { clock } = world(on, {}, async () => NO_REPLY)
+    await startSession($)
+    await send($, '算 1+1')
+    await clock.settle()
+    const b = await boardState($)
+    expect(b.topics).toEqual([{ id: '1', title: '算 1+1' }])
+    expect(b.items[0]?.topic).toBe('1')
+  })
+
+  test('a request that did nothing leaves no topic behind, but the next one still hears of it', async ($, on) => {
+    const asked: Asked[] = []
+    const boardState = watchBoard(on)
+    const { clock } = world(on, {}, async e => {
+      asked.push(e)
+      return said(e.prompt.includes('請求：\n解釋') ? '解釋 CAS\n新 CAS' : '確認\n新 別的')
+    })
+    await startSession($)
+    await send($, '解釋 CAS')
+    await clock.settle()
+    await turnStarts($, 't1', '解釋 CAS')
+    await turnEnds($, 't1')
+    await clock.settle()
+    expect((await boardState($)).topics ?? []).toEqual([])
+    await send($, '確認')
+    await clock.settle()
+    const second = asked.filter(e => !e.prompt.includes('回答：'))[1]?.prompt ?? ''
+    expect(second).toContain('上一個請求：解釋 CAS\n')
+    expect(second).toContain('（還沒有）')
+  })
+
+  test('a reply that lands after the request is gone opens no topic', async ($, on) => {
+    const boardState = watchBoard(on)
+    const { clock } = world(on, {}, async () => {
+      await clock.sleep(5000)
+      return said('解釋\n新 T')
+    })
+    await startSession($)
+    await send($, '解釋一下')
+    await clock.settle()
+    await turnStarts($, 't1', '解釋一下')
+    await turnEnds($, 't1')
+    await clock.advance(5000)
+    await clock.settle()
+    expect((await boardState($)).topics ?? []).toEqual([])
+  })
+
+  test('/clear forgets the last request', async ($, on) => {
+    const asked: Asked[] = []
+    const boardState = watchBoard(on)
+    const { clock } = world(on, {}, async e => {
+      asked.push(e)
+      return said('做事\n新 T')
+    })
+    await startSession($)
+    await send($, '做第一件事')
+    await clock.settle()
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    await send($, '做第二件事')
+    await clock.settle()
+    expect(asked.at(-1)?.prompt).not.toContain('上一個請求')
   })
 })
 
