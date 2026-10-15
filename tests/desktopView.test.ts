@@ -130,6 +130,45 @@ describe('desktop native: frame', () => {
   })
 })
 
+describe('desktop layout switch: JARVIS_DESKTOP_LAYOUT', () => {
+  const TAB_PAGES = ['now', 'log', 'stats', 'fleet', 'changes', 'tasks'] as const
+  const LABELS: Record<(typeof TAB_PAGES)[number], string> = { now: '現況', log: '事件流', stats: '統計', fleet: '艦隊', changes: '異動', tasks: '任務' }
+  // each tab's Desktop drawing: whether its root is the native dark background
+  const nativeByTab = async ($: Parameters<typeof drawOn>[0]) => {
+    const out: Record<string, boolean> = {}
+    for (const page of TAB_PAGES) {
+      await pressOn($, 'desktop', `tab-${page}`)
+      const tree = await drawOn($, 'desktop')
+      expect(textOf(tree)).toContain('J.A.R.V.I.S.')
+      out[page] = tree.props?.['backgroundColor'] === DT.bg
+      // the press went through: the native page lights its own tab
+      if (out[page]) expect(pills(tree).filter(p => p.props?.['backgroundColor'] === DT.orangeFill).map(textOf).join()).toContain(LABELS[page])
+    }
+    return out
+  }
+  const every = (v: boolean) => Object.fromEntries(TAB_PAGES.map(p => [p, v]))
+  const withBoard = (on: Parameters<typeof engine>[0]) => on('tool.register', async (_$, e) => ({ value: { tool: `mcp__jarvis__${e.name}` } }))
+
+  test('cells: every tab on Desktop draws the cell grid, not the native page', async ($, on) => {
+    withBoard(on)
+    engine(on, 'agent-1', 'cells')
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    expect(await nativeByTab($)).toEqual(every(false))
+  })
+
+  test('unset: every tab on Desktop draws the native page', async ($, on) => {
+    withBoard(on)
+    native(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    expect(await nativeByTab($)).toEqual(every(true))
+  })
+
+  test('cells leaves the terminal drawing as it was', async ($, on) => {
+    engine(on, 'agent-1', 'cells')
+    expect((await drawOn($, 'terminal')).props?.['backgroundColor']).not.toBe(DT.bg)
+  })
+})
+
 describe('desktop native: now page', () => {
   test('the suit is a glass card: the moving MARK XLII picture between two KPI tiles', async ($, on) => {
     native(on)
