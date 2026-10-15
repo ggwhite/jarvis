@@ -84,6 +84,9 @@ export type JarvisSubtask = {
   status: JarvisTaskStatus
   agentId?: string
   extId?: string
+  // when it last started running, and when it completed (ms); absent without a clock
+  startedAt?: number
+  endedAt?: number
 }
 
 // One work item. Its own `status` counts only while it has no subtasks; `nextSub` numbers
@@ -101,6 +104,9 @@ export type JarvisTaskItem = {
   key?: string
   turnId?: string
   queued?: true
+  // when its own status last started running, and when it completed (ms)
+  startedAt?: number
+  endedAt?: number
 }
 
 // The session's task board; `nextItem` numbers the next item, ids are never reused.

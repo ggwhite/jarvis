@@ -13,6 +13,8 @@ export const MAX_ITEMS = 50
 export const MAX_SUBTASKS = 50
 // a title is kept to this many characters
 export const TITLE_MAX = 120
+// how long a just-completed item or subtask stays lit
+export const FRESH_MS = 1500
 
 export const TASK_STATUSES: readonly JarvisTaskStatus[] = ['pending', 'in_progress', 'completed']
 
@@ -84,7 +86,7 @@ export function putItem(
   title: string,
   subtasks: readonly string[],
   actor: string | undefined,
-  extra: Partial<Pick<JarvisTaskItem, 'status' | 'origin' | 'key' | 'turnId' | 'queued'>> = {},
+  extra: Partial<Pick<JarvisTaskItem, 'status' | 'origin' | 'key' | 'turnId' | 'queued' | 'startedAt'>> = {},
 ): JarvisTaskBoard {
   const item = withSubtasks({ id: String(board.nextItem), title, status: 'pending', subtasks: [], nextSub: 1, ...extra }, subtasks, actor)
   return { items: [...board.items, item], nextItem: board.nextItem + 1 }
@@ -96,6 +98,18 @@ export function findSub(board: JarvisTaskBoard, id: string): { item: JarvisTaskI
   const item = m ? board.items.find(i => i.id === m[1]) : undefined
   const sub = item?.subtasks.find(s => s.id === id)
   return item && sub ? { item, sub } : undefined
+}
+
+type Timed = { status: JarvisTaskStatus; startedAt?: number; endedAt?: number }
+
+// `x` moved to `status` at `now`: running starts its clock, completed stops it, pending
+// clears both; the same status, or no clock, stamps nothing.
+function stamped<T extends Timed>(x: T, status: JarvisTaskStatus, now: number | undefined): T {
+  if (status === x.status || now === undefined) return { ...x, status }
+  const { startedAt: _s, endedAt: _e, ...rest } = x
+  if (status === 'in_progress') return { ...rest, status, startedAt: now } as T
+  if (status === 'completed') return { ...rest, status, ...(x.startedAt === undefined ? {} : { startedAt: x.startedAt }), endedAt: now } as T
+  return { ...rest, status } as T
 }
 
 const notFound = (id: string): string => `找不到 ${id}：id 是項目（如 "2"）或細項（如 "2.3"）`
@@ -142,7 +156,7 @@ function add(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>, a
   return putItem(roomy, title, titles, actor)
 }
 
-function update(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>, actor: string | undefined): JarvisTaskBoard | string {
+function update(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>, actor: string | undefined, now: number | undefined): JarvisTaskBoard | string {
   const id = str(input['id'])
   const status = input['status']
   if (status !== undefined && !isStatus(status)) return 'status 只能是 pending、in_progress、completed'
@@ -155,15 +169,12 @@ function update(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>
     if (status === undefined && title === undefined) return 'update 項目要帶 status 或 title'
     const hasSubs = item.subtasks.length > 0
     if (status !== undefined && hasSubs && status !== 'completed') return `項目 ${id} 有細項，狀態由細項決定；請 update 細項`
-    return replaceItem(board, {
-      ...item,
-      ...(title === undefined ? {} : { title }),
-      ...(status === undefined
-        ? {}
-        : hasSubs
-          ? { subtasks: item.subtasks.map(s => ({ ...s, status: 'completed' as const })) }
-          : { status }),
-    })
+    const titled = title === undefined ? item : { ...item, title }
+    if (status === undefined) return replaceItem(board, titled)
+    return replaceItem(
+      board,
+      hasSubs ? { ...titled, subtasks: item.subtasks.map(s => stamped(s, 'completed', now)) } : stamped(titled, status, now),
+    )
   }
   const found = findSub(board, id)
   if (!found) return notFound(id)
@@ -171,9 +182,8 @@ function update(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>
   if (status === undefined && title === undefined && agent === '') return 'update 細項要帶 status、title 或 agent'
   const owner = agent !== '' ? agent : (actor ?? sub.agentId)
   const next: JarvisSubtask = {
-    ...sub,
+    ...(status === undefined ? sub : stamped(sub, status, now)),
     ...(title === undefined ? {} : { title }),
-    ...(status === undefined ? {} : { status }),
     ...(owner === undefined ? {} : { agentId: owner }),
   }
   return replaceItem(board, { ...item, subtasks: item.subtasks.map(s => (s.id === id ? next : s)) })
@@ -191,8 +201,8 @@ function remove(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>
 }
 
 // One call of the board's tool: the board it leaves and the text the model reads, or why
-// it was refused. `actor` is the subagent that called it; absent for the main loop.
-export function applyTask(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>, actor?: string): TaskReply {
+// it was refused. `actor` is the subagent that called it; absent for the main loop. `now` stamps status changes.
+export function applyTask(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>, actor?: string, now?: number): TaskReply {
   const op = input['op']
   const next =
     op === 'list'
@@ -200,7 +210,7 @@ export function applyTask(board: JarvisTaskBoard, input: Readonly<Record<string,
       : op === 'add'
         ? add(board, input, actor)
         : op === 'update'
-          ? update(board, input, actor)
+          ? update(board, input, actor, now)
           : op === 'remove'
             ? remove(board, input)
             : `op 只能是 ${OPS.join('、')}`
@@ -302,7 +312,7 @@ export function makeRoom(board: JarvisTaskBoard): JarvisTaskBoard {
 // A request item for a prompt just sent, running from the start. One typed while a turn ran
 // (`runningTurn`) is tied to that turn and marked queued; any other waits for the next
 // main-loop turn. Nothing is made for a blank prompt or a board full of unfinished items.
-export function openRequest(board: JarvisTaskBoard, text: string, runningTurn?: string): { board: JarvisTaskBoard; id?: string } {
+export function openRequest(board: JarvisTaskBoard, text: string, runningTurn?: string, now?: number): { board: JarvisTaskBoard; id?: string } {
   const key = requestTitle(text)
   const roomy = makeRoom(board)
   if (key === '' || roomy.items.length >= MAX_ITEMS) return { board }
@@ -311,6 +321,7 @@ export function openRequest(board: JarvisTaskBoard, text: string, runningTurn?: 
       status: 'in_progress',
       origin: REQUEST_ORIGIN,
       key,
+      ...(now === undefined ? {} : { startedAt: now }),
       ...(runningTurn === undefined ? {} : { turnId: runningTurn, queued: true as const }),
     }),
     id: String(roomy.nextItem),
@@ -320,20 +331,20 @@ export function openRequest(board: JarvisTaskBoard, text: string, runningTurn?: 
 // A main-loop turn starts: request items waiting for a turn are tied to it. With none
 // waiting, a queued request whose prompt this turn begins with (the turn before closed it)
 // runs again, tied to this turn.
-export function startTurn(board: JarvisTaskBoard, turnId: string, text: string): JarvisTaskBoard {
+export function startTurn(board: JarvisTaskBoard, turnId: string, text: string, now?: number): JarvisTaskBoard {
   const waiting = board.items.filter(i => isRequest(i) && i.status === 'in_progress' && i.turnId === undefined)
   if (waiting.length > 0) return { ...board, items: board.items.map(i => (waiting.includes(i) ? { ...i, turnId } : i)) }
   const key = requestTitle(text)
   const queued = key === '' ? undefined : board.items.findLast(i => isRequest(i) && i.queued === true && i.key === key)
   if (!queued) return board
   const { queued: _q, ...rest } = queued
-  return replaceItem(board, { ...rest, status: 'in_progress', turnId })
+  return replaceItem(board, { ...stamped(rest, 'in_progress', now), turnId })
 }
 
 // A main-loop turn ends: its request items let go of it; a running one is done when the
 // turn answered or refused, and waits again (pending) when it was interrupted or died on an
 // error. Every other item is left as it is.
-export function endTurn(board: JarvisTaskBoard, turnId: string, reason: string): JarvisTaskBoard {
+export function endTurn(board: JarvisTaskBoard, turnId: string, reason: string, now?: number): JarvisTaskBoard {
   const ends = (i: JarvisTaskItem) => isRequest(i) && i.turnId === turnId
   if (!board.items.some(ends)) return board
   const status: JarvisTaskStatus = reason === 'aborted' || reason === 'error' ? 'pending' : 'completed'
@@ -342,7 +353,7 @@ export function endTurn(board: JarvisTaskBoard, turnId: string, reason: string):
     items: board.items.map(i => {
       if (!ends(i)) return i
       const { turnId: _t, ...rest } = i
-      return { ...rest, status: i.status === 'in_progress' ? status : i.status }
+      return i.status === 'in_progress' ? stamped(rest, status, now) : rest
     }),
   }
 }
@@ -350,6 +361,28 @@ export function endTurn(board: JarvisTaskBoard, turnId: string, reason: string):
 // The request being worked on: the newest request item running by its own status.
 export function currentRequest(board: JarvisTaskBoard): JarvisTaskItem | undefined {
   return board.items.findLast(i => isRequest(i) && i.status === 'in_progress')
+}
+
+// When an item began: its own start, else its earliest subtask's.
+export function itemStartedAt(item: JarvisTaskItem): number | undefined {
+  const starts = [item.startedAt, ...item.subtasks.map(s => s.startedAt)].filter((t): t is number => t !== undefined)
+  return starts.length === 0 ? undefined : Math.min(...starts)
+}
+
+// completed within FRESH_MS of `now`
+export const isFresh = (x: { status: JarvisTaskStatus; endedAt?: number }, now: number): boolean =>
+  x.status === 'completed' && x.endedAt !== undefined && now - x.endedAt < FRESH_MS
+
+// An item done within FRESH_MS: by its own stamp, or by a subtask's.
+export function itemFresh(item: JarvisTaskItem, now: number): boolean {
+  return itemStatus(item) === 'completed' && (isFresh(item, now) || item.subtasks.some(s => isFresh(s, now)))
+}
+
+// Whether the board has something that moves at `now`: running work, or work just done.
+export function boardLive(board: JarvisTaskBoard, now: number): boolean {
+  return board.items.some(
+    i => itemStatus(i) === 'in_progress' || itemFresh(i, now) || i.subtasks.some(s => s.status === 'in_progress' || isFresh(s, now)),
+  )
 }
 
 // The note beside each recorded prompt: which item it is, and what the model may do with it.

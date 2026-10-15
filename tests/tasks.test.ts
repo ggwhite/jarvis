@@ -5,6 +5,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { JarvisTaskBoard, JarvisTaskItem } from '../types'
 import {
   EMPTY_BOARD,
+  FRESH_MS,
   MAX_ITEMS,
   MAX_SUBTASKS,
   REQUEST_ORIGIN,
@@ -18,6 +19,7 @@ import {
   TODO_TITLE,
   applyTask,
   boardCounts,
+  boardLive,
   boardText,
   countsText,
   currentRequest,
@@ -25,6 +27,8 @@ import {
   fromTaskCreate,
   fromTaskUpdate,
   fromTodos,
+  itemFresh,
+  itemStartedAt,
   itemStatus,
   makeRoom,
   openRequest,
@@ -380,6 +384,65 @@ describe('the model and the request items', () => {
     const note = requestContext('7')
     expect(note).toContain('項目 7')
     expect(note).toContain('id=7')
+  })
+})
+
+describe('task board times', () => {
+  test('a status change is stamped: running starts the clock, completed stops it, pending clears both; no clock stamps nothing', () => {
+    let b = ok(applyTask(EMPTY_BOARD, { op: 'add', item: 'A', subtasks: ['a1'] }, undefined, 5))
+    expect(b.items[0]?.subtasks[0]?.startedAt).toBeUndefined()
+    b = ok(applyTask(b, { op: 'update', id: '1.1', status: 'in_progress' }, undefined, 10))
+    expect(b.items[0]?.subtasks[0]).toMatchObject({ startedAt: 10 })
+    b = ok(applyTask(b, { op: 'update', id: '1.1', status: 'in_progress', title: 'a1!' }, undefined, 15))
+    expect(b.items[0]?.subtasks[0]?.startedAt).toBe(10)
+    b = ok(applyTask(b, { op: 'update', id: '1.1', status: 'completed' }, undefined, 20))
+    expect(b.items[0]?.subtasks[0]).toMatchObject({ startedAt: 10, endedAt: 20 })
+    b = ok(applyTask(b, { op: 'update', id: '1.1', status: 'pending' }, undefined, 30))
+    expect(b.items[0]?.subtasks[0]?.startedAt).toBeUndefined()
+    expect(b.items[0]?.subtasks[0]?.endedAt).toBeUndefined()
+    const plain = ok(applyTask(build({ op: 'add', item: 'B' }), { op: 'update', id: '1', status: 'in_progress' }))
+    expect(plain.items[0]?.startedAt).toBeUndefined()
+  })
+
+  test("an item's own status is stamped; completing an item with subtasks stamps each", () => {
+    const own = ok(applyTask(build({ op: 'add', item: 'A' }), { op: 'update', id: '1', status: 'in_progress' }, undefined, 7))
+    expect(own.items[0]?.startedAt).toBe(7)
+    const subs = ok(applyTask(build({ op: 'add', item: 'A', subtasks: ['a1', 'a2'] }), { op: 'update', id: '1', status: 'completed' }, undefined, 9))
+    expect(subs.items[0]?.subtasks.map(s => s.endedAt)).toEqual([9, 9])
+  })
+
+  test('a request is stamped when sent and when its turn ends; a queued one is stamped again when it runs again', () => {
+    let b = openRequest(EMPTY_BOARD, 'A', undefined, 100).board
+    expect(b.items[0]?.startedAt).toBe(100)
+    b = startTurn(b, 't1', 'A', 110)
+    expect(b.items[0]?.startedAt).toBe(100)
+    expect(endTurn(b, 't1', 'answer', 200).items[0]).toMatchObject({ startedAt: 100, endedAt: 200 })
+    let q = openRequest(b, 'B', 't1', 150).board
+    q = endTurn(q, 't1', 'answer', 200)
+    q = startTurn(q, 't2', 'B', 300)
+    expect(q.items[1]?.startedAt).toBe(300)
+    expect(q.items[1]?.endedAt).toBeUndefined()
+  })
+
+  test("itemStartedAt: the item's own start, else its earliest subtask's", () => {
+    let b = build({ op: 'add', item: 'A', subtasks: ['a1', 'a2'] })
+    expect(itemStartedAt(b.items[0] as JarvisTaskItem)).toBeUndefined()
+    b = ok(applyTask(b, { op: 'update', id: '1.2', status: 'in_progress' }, undefined, 50))
+    b = ok(applyTask(b, { op: 'update', id: '1.1', status: 'in_progress' }, undefined, 40))
+    expect(itemStartedAt(b.items[0] as JarvisTaskItem)).toBe(40)
+    expect(itemStartedAt(openRequest(EMPTY_BOARD, 'R', undefined, 5).board.items[0] as JarvisTaskItem)).toBe(5)
+  })
+
+  test('boardLive: running work, or work completed within FRESH_MS', () => {
+    expect(boardLive(EMPTY_BOARD, 0)).toBe(false)
+    expect(boardLive(build({ op: 'add', item: 'A' }), 0)).toBe(false)
+    const running = ok(applyTask(build({ op: 'add', item: 'A', subtasks: ['a1'] }), { op: 'update', id: '1.1', status: 'in_progress' }, undefined, 0))
+    expect(boardLive(running, 0)).toBe(true)
+    const done = ok(applyTask(running, { op: 'update', id: '1.1', status: 'completed' }, undefined, 1000))
+    expect(boardLive(done, 1000 + FRESH_MS - 1)).toBe(true)
+    expect(boardLive(done, 1000 + FRESH_MS)).toBe(false)
+    expect(itemFresh(done.items[0] as JarvisTaskItem, 1000 + FRESH_MS - 1)).toBe(true)
+    expect(itemFresh(done.items[0] as JarvisTaskItem, 1000 + FRESH_MS)).toBe(false)
   })
 })
 

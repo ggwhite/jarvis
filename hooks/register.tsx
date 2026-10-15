@@ -95,6 +95,15 @@ const suit = atom({ plugin: 'jarvis', key: 'suit' } as const, { n: 0 })
 const changes = atom({ plugin: 'jarvis', key: 'changes' } as const, [] as JarvisChange[])
 const tasks = atom({ plugin: 'jarvis', key: 'tasks' } as const, EMPTY_BOARD)
 
+// the clock's time, or undefined where there is none: the board is then not stamped
+async function stampNow($: Pick<EngineInterface, 'clock'>): Promise<number | undefined> {
+  try {
+    return await $.clock.now()
+  } catch {
+    return undefined
+  }
+}
+
 // Tool calls that last as long as the agents they start, whose own calls are tracked:
 // counting them in flight would hide a stuck subagent.
 const UNTRACKED = new Set(['Agent', 'Workflow'])
@@ -1110,9 +1119,11 @@ export const register: Register = on => {
   })
 
   on('turn.start', async ($, e, next) => {
+    let now: number | undefined
     try {
-      const now = await $.clock.now()
-      await update($, main, m => ({ ...m, isRunning: true, runSince: now }))
+      const at = await $.clock.now()
+      now = at
+      await update($, main, m => ({ ...m, isRunning: true, runSince: at }))
     } catch {
       // bookkeeping only
     }
@@ -1120,7 +1131,7 @@ export const register: Register = on => {
     // a main-loop turn takes up the requests waiting for it
     if (e.agentId === undefined) {
       try {
-        await update($, tasks, b => startTurn(b, e.turnId, e.text))
+        await update($, tasks, b => startTurn(b, e.turnId, e.text, now))
       } catch {
         // bookkeeping only
       }
@@ -1134,9 +1145,10 @@ export const register: Register = on => {
   on('tool.call', { tool: 'mcp__jarvis__task' }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
     const box: { reply: TaskReply } = { reply: { error: '看板暫時無法寫入' } }
+    const now = await stampNow($)
     try {
       await update($, tasks, b => {
-        box.reply = applyTask(b, input, e.agentId)
+        box.reply = applyTask(b, input, e.agentId, now)
         return 'error' in box.reply ? b : box.reply.board
       })
     } catch {
@@ -1308,8 +1320,9 @@ export const register: Register = on => {
 
     // a main-loop turn's end closes its requests
     if (e.agentId === undefined) {
+      const now = await stampNow($)
       try {
-        await update($, tasks, b => endTurn(b, e.turnId, e.reason))
+        await update($, tasks, b => endTurn(b, e.turnId, e.reason, now))
       } catch {
         // bookkeeping only
       }
@@ -1329,9 +1342,10 @@ export const register: Register = on => {
     // the item's id beside the prompt. A prompt another hook drops takes its item with it.
     if (!recordsRequest(e)) return next(e)
     const box: { id?: string } = {}
+    const now = await stampNow($)
     try {
       await update($, tasks, b => {
-        const made = openRequest(b, e.text, e.turnId)
+        const made = openRequest(b, e.text, e.turnId, now)
         box.id = made.id
         return made.board
       })
