@@ -1618,6 +1618,8 @@ describe('request summaries wired', () => {
     expect(note).toContain('項目 7')
     expect(note).toContain('id=7')
     expect(note).toContain('記下結果')
+    expect(note).toContain('細項全部完成才記結果')
+    expect(TASK_PROMPT).toContain('等細項全部完成才記')
   })
 })
 
@@ -1684,6 +1686,10 @@ describe('results of work over many turns', () => {
     const own = finish(ok(applyTask(EMPTY_BOARD, { op: 'add', item: '自己的', subtasks: ['a'] })), '1.1')
     expect(own.items[0]?.resultDue).toBeUndefined()
     expect(requestsEnding(own, 't1')).toEqual([])
+    const todos = fromTodos(EMPTY_BOARD, [{ content: '讀檔', status: 'in_progress' }])
+    const mirrored = fromTodos(todos, [{ content: '讀檔', status: 'completed' }])
+    expect(mirrored.items[0]?.resultDue).toBeUndefined()
+    expect(requestsEnding(mirrored, 't1')).toEqual([])
   })
 
   test('the result ask carries the subtask titles, cut to SUMMARY_INPUT_MAX', () => {

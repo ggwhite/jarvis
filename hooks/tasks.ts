@@ -25,7 +25,7 @@ export const TASK_PROMPT = [
   '使用者在 jarvis 面板的「任務」分頁看這個 session 正在做、預計要做、做完的事。jarvis 會把使用者送出的每個請求自動記成一個進行中的項目，回覆結束時自動標完成；只回答、沒有呼叫工具也沒有細項的請求，答完會自動移除。你用 mcp__jarvis__task 補上計畫。',
   '- 多步工作（三步以上，或會派 subagent）開始前，用 add 列出細項：只帶 subtasks 會掛到本輪請求；帶 item 時，本輪請求還沒有細項就直接併入它（標題換成 item），不會多一個項目。',
   '- 開始做一個細項時標 in_progress，做完立刻標 completed，不要留到最後一起標。',
-  '- 請求項目的標題由 jarvis 自動摘成一句，回覆結束時記下結果；摘得不對時，用 update 帶 title 改。',
+  '- 請求項目的標題由 jarvis 自動摘成一句，回覆結束時記下結果（有細項的請求，等細項全部完成才記）；摘得不對時，用 update 帶 title 改。',
   '- 之後要做、這輪不做的事：用 add 只帶 item（不帶 subtasks），記成預計項目。',
   '- 計畫變了就 add 新細項，或 remove 用不到的。',
   '- 派 subagent 做某個細項後，用 update 帶 agent（Agent 工具回傳的 agentId）。',
@@ -448,7 +448,7 @@ export function boardLive(board: JarvisTaskBoard, now: number): boolean {
 
 // The note beside each recorded prompt: which item it is, and what the model may do with it.
 export const requestContext = (id: string): string =>
-  `jarvis 任務看板：這個請求已記成項目 ${id}，標題會自動摘成一句。這輪有呼叫工具或掛了細項，回覆結束時自動標完成並記下結果；只是回答問題，答完會自動移除。多步工作用 mcp__jarvis__task add 只帶 subtasks，把細項掛到這個項目；摘要不對時，用 update id=${id} 帶 title 改。`
+  `jarvis 任務看板：這個請求已記成項目 ${id}，標題會自動摘成一句。這輪有呼叫工具或掛了細項，回覆結束時自動標完成並記下結果（有細項的，等細項全部完成才記結果）；只是回答問題，答完會自動移除。多步工作用 mcp__jarvis__task add 只帶 subtasks，把細項掛到這個項目；摘要不對時，用 update id=${id} 帶 title 改。`
 
 // ---- what a small model makes of a request, after the fact ----
 
