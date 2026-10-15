@@ -1691,6 +1691,21 @@ describe('requests that did nothing wired', () => {
     expect(await boardOf($)).toContain('[x] 2 讀檔')
   })
 
+  test('only the first main-loop tool call of a turn writes the board', async ($, on) => {
+    world(on)
+    const writes = { n: 0 }
+    on('state.set', { plugin: 'jarvis', key: 'tasks' }, async (_$, e, next) => {
+      writes.n += 1
+      return next(e)
+    })
+    await send($, '讀兩個檔')
+    await turnStarts($, 't1', '讀兩個檔')
+    const before = writes.n
+    await work($)
+    await work($)
+    expect(writes.n - before).toBe(1)
+  })
+
   test("a plan keeps the request; an Agent call keeps it; a subagent's own calls do not", async ($, on) => {
     world(on)
     await send($, '計畫')
