@@ -5943,6 +5943,47 @@ describe('role detail page', () => {
     expect(blockTitles(await draw($, 40, 100)).slice(2).flat()).toContain('子代理')
   })
 
+  test('Desktop: a run row\'s Button is its MK mark alone, every column after it outside at the same cell in every row', async ($, on) => {
+    const clock = crew(on, [OPUS, SONNET, OPUS, SONNET, HAIKU, OPUS])
+    await fourWorkers($)
+    await clock.advance(1000)
+    const desk = { surface: 'desktop' as const, component: 'Pane' as const, requestId: 'jarvis', viewport: { columns: 120, rows: 50 }, props: PANE_PROPS(40, 100) }
+    const deskPress = async (key: string) => {
+      const ui = await $.ui.mount({ plugin: 'jarvis', ...desk })
+      await ui.press({ key })
+      await ui.unmount()
+    }
+    await deskPress('tab-stats')
+    await deskPress('role-worker')
+    const tree = (await $.ui.render(desk)) as RenderElement as Node
+    const kids = (n: Node): Node[] => (n.children ?? []).filter((k): k is Node => typeof k !== 'string')
+    const rows: Node[] = []
+    const walk = (n: Node) => {
+      if (n.type === 'Box' && kids(n).some(k => kids(k).some(b => b.type === 'Button' && String(b.props?.['key'] ?? '').startsWith('role-run-')))) rows.push(n)
+      kids(n).forEach(walk)
+    }
+    walk(tree)
+    expect(rows).toHaveLength(4)
+    const cells = (k: Node): number => (k.type === 'Svg' ? Number(k.props?.['width']) / 8 : Number(k.props?.['width'] ?? k.props?.['minWidth']))
+    const starts = rows.map(r => {
+      let n = 0
+      return kids(r).map(k => {
+        const at = n
+        n += cells(k)
+        return at
+      })
+    })
+    for (const r of rows) {
+      const button = kids(kids(r)[0] as Node).find(b => b.type === 'Button') as Node
+      expect(textOf(button)).toMatch(/^[⌜⌞]MK-\d+[⌝⌟]\s*$/)
+      expect(kids(r).slice(1).some(k => /Opus|Sonnet/.test(textOf(k)))).toBe(true)
+      expect(kids(r).reduce((n, k) => n + cells(k), 0)).toBe(96)
+    }
+    for (const s of starts) expect(s).toEqual(starts[0])
+    await deskPress('role-run-3')
+    expect(linesOf((await $.ui.render(desk)) as RenderElement as Node).join('\n')).toContain('MK-3')
+  })
+
   test('a role never dispatched opens to its empty page', async ($, on) => {
     crew(on, [OPUS])
     await $.agent.spawn(spawnIn('one', 'worker'))

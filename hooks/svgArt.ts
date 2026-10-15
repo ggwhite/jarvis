@@ -302,6 +302,13 @@ const DASHED: Record<string, { across: boolean; n: number; heavy: boolean }> = {
   '┊': { across: false, n: 4, heavy: false }, '┋': { across: false, n: 4, heavy: true },
 }
 const ROUNDED = '╭╮╰╯'
+// double and mixed corners and tees: each arm's stroke, left right up down, '-' none
+const DOUBLE_ARMS: Record<string, string> = {
+  '╔': '-d-d', '╗': 'd--d', '╚': '-dd-', '╝': 'd-d-', '╠': '-ddd', '╣': 'd-dd', '╦': 'dd-d', '╩': 'ddd-', '╬': 'dddd',
+  '╒': '-d-s', '╓': '-s-d', '╕': 'd--s', '╖': 's--d', '╘': '-ds-', '╙': '-sd-', '╛': 'd-s-', '╜': 's-d-',
+  '╞': '-dss', '╟': '-sdd', '╡': 'd-ss', '╢': 's-dd', '╤': 'dd-s', '╥': 'ss-d', '╧': 'dds-', '╨': 'ssd-', '╪': 'ddss', '╫': 'ssdd',
+}
+const DOUBLE_GAP = 2
 const RULE_LIGHT = 1.5
 const RULE_HEAVY = 3
 const RULE_R = 4
@@ -326,6 +333,38 @@ export function ruleSvg(text: string, color: string): string {
     if (u || dn) out += `M${num(cx)} ${num(u ? 0 : cy)}V${num(dn ? H : cy)}`
     return out
   }
+  // the strokes of a double or mixed glyph: a double arm two lines DOUBLE_GAP either side of
+  // the middle, meeting the other arms' lines where they cross
+  const doubled = (x: number, spec: string): string => {
+    const [l, r, u, dn] = [...spec].map(c => (c === '-' ? '' : c)) as [string, string, string, string]
+    const cx = x + W / 2
+    const g = DOUBLE_GAP
+    const across = (y: number, a: number, b: number) => `M${num(a)} ${num(y)}H${num(b)}`
+    const down = (xx: number, a: number, b: number) => `M${num(xx)} ${num(a)}V${num(b)}`
+    if (spec === spec.replace(/s/g, '')) {
+      // all double: each of the four lines broken where an arm leaves through it
+      let out = ''
+      for (const [y, gone] of [[cy - g, u], [cy + g, dn]] as const) {
+        if (!l && !r) continue
+        if (!gone) out += across(y, l ? x : cx - g, r ? x + W : cx + g)
+        else out += (l ? across(y, x, cx - g) : '') + (r ? across(y, cx + g, x + W) : '')
+      }
+      for (const [xx, gone] of [[cx - g, l], [cx + g, r]] as const) {
+        if (!u && !dn) continue
+        if (!gone) out += down(xx, u ? 0 : cy - g, dn ? H : cy + g)
+        else out += (u ? down(xx, 0, cy - g) : '') + (dn ? down(xx, cy + g, H) : '')
+      }
+      return out
+    }
+    if (l === 'd' || r === 'd') {
+      const top = u ? 0 : l && r ? cy + g : cy - g
+      const bottom = dn ? H : l && r ? cy - g : cy + g
+      return across(cy - g, l ? x : cx, r ? x + W : cx) + across(cy + g, l ? x : cx, r ? x + W : cx) + down(cx, top, bottom)
+    }
+    const left = l ? x : u && dn ? cx + g : cx - g
+    const right = r ? x + W : u && dn ? cx - g : cx + g
+    return down(cx - g, u ? 0 : cy, dn ? H : cy) + down(cx + g, u ? 0 : cy, dn ? H : cy) + across(cy, left, right)
+  }
   for (let i = 0; i < chars.length; i += 1) {
     const ch = chars[i] as string
     const x = i * W
@@ -334,8 +373,10 @@ export function ruleSvg(text: string, color: string): string {
     const light = LIGHT_ARMS[ch]
     const heavy = HEAVY_ARMS[ch]
     const dash = DASHED[ch]
+    const dbl = DOUBLE_ARMS[ch]
     if (light !== undefined) d.light += arms(x, light)
     else if (heavy !== undefined) d.heavy += arms(x, heavy)
+    else if (dbl !== undefined) d.light += doubled(x, dbl)
     else if (ch === '═') d.light += `M${num(x)} ${num(cy - 2)}H${num(x + W)}M${num(x)} ${num(cy + 2)}H${num(x + W)}`
     else if (ch === '║') d.light += `M${num(cx - 2)} 0V${H}M${num(cx + 2)} 0V${H}`
     else if (ROUNDED.includes(ch)) {

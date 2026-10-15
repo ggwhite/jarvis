@@ -383,3 +383,40 @@ describe('desktop svg: segments in cell boxes', () => {
     })
   }
 })
+
+describe('desktop svg: card padding', () => {
+  const kids = (n: Node): Node[] => (n.children ?? []).filter((k): k is Node => typeof k !== 'string')
+  // the cells a Desktop line takes: its cell boxes and pictures side by side
+  const cellsOf = (n: Node): number => {
+    if (n.type === 'Svg') return Number(n.props?.['width']) / cellPx(1)
+    if (n.props?.['width'] !== undefined) return Number(n.props['width'])
+    if (n.props?.['minWidth'] !== undefined) return Number(n.props['minWidth'])
+    if (n.type === 'Text' || n.type === 'Button') return cellWidth(textOf(n))
+    const ks = kids(n)
+    if (n.props?.['flexDirection'] === 'row') return ks.reduce((s, k) => s + cellsOf(k), 0) + Number(n.props['gap'] ?? 0) * Math.max(0, ks.length - 1)
+    return Math.max(0, ...ks.map(cellsOf))
+  }
+  const cards = (tree: Node) => all(tree, x => x.props?.['borderStyle'] !== undefined)
+
+  for (const key of ['tab-now', 'tab-stats', 'tab-changes']) {
+    test(`${key}: every card padded a cell, clipped inside its border, each line within it; the terminal's cards as before`, async ($, on) => {
+      engine(on)
+      await $.agent.spawn(spawnInput('find files', 'Explore'))
+      await pressOn($, 'desktop', key)
+      const desk = await drawOn($, 'desktop')
+      const found = cards(desk)
+      expect(found.length).toBeGreaterThan(0)
+      for (const c of found) {
+        expect(c.props?.['paddingX']).toBe(1)
+        expect(c.props?.['overflow']).toBe('hidden')
+        const w = Number(c.props?.['width'])
+        for (const line of kids(c)) expect(cellsOf(line)).toBeLessThanOrEqual(w - 4)
+      }
+      await pressOn($, 'terminal', key)
+      for (const c of cards(await drawOn($, 'terminal'))) {
+        expect(c.props?.['paddingX']).toBe(1)
+        expect(c.props?.['overflow']).toBeUndefined()
+      }
+    })
+  }
+})

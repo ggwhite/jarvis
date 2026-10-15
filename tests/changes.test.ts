@@ -550,6 +550,53 @@ export const drawn = async ($: Engine, cols = 80, rows = 30): Promise<string[]> 
   return linesOf(tree)
 }
 
+// Desktop: the pane's tree, and a press on it
+const deskProps = (cols: number, rows: number) => ({
+  title: 'Jarvis',
+  isFocused: true,
+  bodyColumns: cols,
+  placement: 'dock' as const,
+  scroll: { offset: 0, bodyRows: rows },
+  view: {},
+})
+const deskTree = async ($: Engine, cols = 80, rows = 30): Promise<Node> =>
+  (await $.ui.render({
+    surface: 'desktop',
+    component: 'Pane',
+    requestId: 'jarvis',
+    viewport: { columns: cols + 20, rows: rows + 10 },
+    props: deskProps(cols, rows),
+  })) as unknown as Node
+const deskPress = async ($: Engine, key: string, cols = 80, rows = 30) => {
+  const ui = await $.ui.mount({ plugin: 'jarvis', surface: 'desktop', component: 'Pane', requestId: 'jarvis', props: deskProps(cols, rows), viewport: { columns: cols + 20, rows: rows + 10 } })
+  await ui.press({ key })
+  await ui.unmount()
+  await settle()
+}
+const kidsOf = (n: Node): Node[] => (n.children ?? []).filter((k): k is Node => typeof k !== 'string')
+const allOf = (n: Node, pred: (x: Node) => boolean, out: Node[] = []): Node[] => {
+  if (pred(n)) out.push(n)
+  for (const k of kidsOf(n)) allOf(k, pred, out)
+  return out
+}
+const keyOf = (n: Node): string => String(n.props?.['key'] ?? '')
+// a Desktop cell box's cells: an Svg by its pixels, a Box by its width or least width
+const boxCells = (k: Node): number => (k.type === 'Svg' ? Number(k.props?.['width']) / 8 : Number(k.props?.['width'] ?? k.props?.['minWidth']))
+// Desktop rows pressed by a Button keyed `prefix…`: each row's Button and where each of its boxes starts
+const pressedRows = (tree: Node, prefix: string) =>
+  allOf(tree, x => x.type === 'Box' && kidsOf(x).some(k => kidsOf(k).some(b => b.type === 'Button' && keyOf(b).startsWith(prefix)))).map(row => {
+    const ks = kidsOf(row)
+    const at = ks.indexOf(ks.find(k => kidsOf(k).some(b => b.type === 'Button')) as Node)
+    const starts: number[] = []
+    let n = 0
+    for (const k of ks) {
+      starts.push(n)
+      n += boxCells(k)
+    }
+    const button = kidsOf(ks[at] as Node).find(b => b.type === 'Button') as Node
+    return { row, kids: ks, at, starts, total: n, button, label: textOf(button) }
+  })
+
 describe('changes page', () => {
   const A = '/w/acme/payments/service/order.go'
   const B = '/w/legacy/billing/api/pay.go'
@@ -1043,6 +1090,31 @@ describe('diff page', () => {
     expect(w.opens.filter(o => o['id'] !== 'jarvis')).toEqual([])
   })
 
+  test("Desktop: a file row's Button is its actor alone, the path and counts outside, starting at the same cell; a press opens the diff", async ($, on) => {
+    const w = setup(on)
+    await listed($, A, B)
+    const rows = pressedRows(await deskTree($), 'chg-s:')
+    expect(rows).toHaveLength(2)
+    const pathAt = (r: (typeof rows)[number]) => r.starts[r.kids.findIndex(k => textOf(k).includes('.go'))]
+    for (const r of rows) {
+      expect(r.label).toBe('主線')
+      expect(r.at).toBe(1)
+      expect(r.kids.findIndex(k => textOf(k).includes('.go'))).toBeGreaterThan(r.at)
+      expect(allOf(r.button, x => x.type === 'Svg')).toEqual([])
+      expect(r.total).toBe(76)
+    }
+    expect(new Set(rows.map(pathAt)).size).toBe(1)
+    // the terminal's row is still one Button holding the whole line
+    const ui = await pane($)
+    expect((await ui.find({ key: `chg-s:${A}` }))?.text).toContain('a.go')
+    await ui.unmount()
+    await deskPress($, `chg-s:${A}`)
+    await deskTree($)
+    await settle()
+    expect(linesOf(await deskTree($)).join('\n')).toContain('r/a.go')
+    expect(w.opens.filter(o => o['id'] !== 'jarvis')).toEqual([])
+  })
+
   test('the page shows the file, who changed it, its counts, the mode and the diff with line numbers', async ($, on) => {
     // the diff answers only once let go, as a real git answers after the drawing that asked
     let release = () => {}
@@ -1467,6 +1539,24 @@ describe('commits mode: repo list', () => {
     expect(lines[at('legacy/billing')]).not.toContain('↑')
   })
 
+  test("Desktop: a repo row's Button is its name (with ★), the branch and time outside; every row its full width; a press opens the tree", async ($, on) => {
+    setup(on)
+    await listed($)
+    const rows = pressedRows(await deskTree($), 'cm-repo-')
+    expect(rows).toHaveLength(3)
+    expect(rows.map(r => r.label)).toEqual(['★ acme/payments', 'legacy/billing', 'old'])
+    for (const r of rows) {
+      expect(r.total).toBe(76)
+      expect(r.kids.slice(r.at + 1).some(k => /main|master|dev/.test(textOf(k)))).toBe(true)
+    }
+    await deskPress($, `cm-repo-${A}`)
+    for (let i = 0; i < 3; i += 1) {
+      await deskTree($)
+      await settle()
+    }
+    expect(allOf(await deskTree($), x => x.type === 'Button' && keyOf(x) === 'back')).toHaveLength(1)
+  })
+
   test('find runs on entering the mode and on 重新整理, not on every drawing; the session counts are not asked', async ($, on) => {
     const w = setup(on)
     await listed($)
@@ -1662,6 +1752,27 @@ describe('commits mode: tree and diff pages', () => {
     expect(keys.indexOf('cm-refresh')).toBeLessThan(keys.indexOf('back'))
     expect(buttons.filter(b => b.key?.startsWith('cm-commit-')).length).toBe(4)
     expect(buttons.every(b => b.props['hotkey'] === undefined)).toBe(true)
+  })
+
+  test("Desktop: a commit row's Button is its node alone; lanes before it, sha, subject and age outside, the sha at the same cell; a press opens it", async ($, on) => {
+    setup(on)
+    await toTree($)
+    const rows = pressedRows(await deskTree($), 'cm-commit-')
+    expect(rows).toHaveLength(4)
+    const shaAt = (r: (typeof rows)[number]) => r.starts[r.kids.findIndex(k => /^\d{7}$/.test(textOf(k)))]
+    for (const r of rows) {
+      expect([COMMIT_ICON.head, '●']).toContain(r.label)
+      expect(r.total).toBe(76)
+      expect(r.kids.findIndex(k => /^\d{7}$/.test(textOf(k)))).toBeGreaterThan(r.at)
+    }
+    expect(rows.map(r => r.at)).toEqual([0, 1, 0, 0])
+    expect(new Set(rows.map(shaAt)).size).toBe(1)
+    await deskPress($, `cm-commit-${M}`)
+    for (let i = 0; i < 3; i += 1) {
+      await deskTree($)
+      await settle()
+    }
+    expect(linesOf(await deskTree($)).join('\n')).toContain('1 / 2')
   })
 
   test("a commit opens its first file's diff against its first parent; ‹ › walk its files; 返回 goes to the tree, then the list", async ($, on) => {

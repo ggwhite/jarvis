@@ -290,7 +290,25 @@ describe('svgArt rules', () => {
 
   test('a glyph it cannot draw gives nothing, for the caller to fall back on', () => {
     expect(ruleSvg('─x', '#fff')).toBe('')
-    expect(ruleSvg('╔═╗', '#fff')).toBe('')
+    expect(ruleSvg('─╱', '#fff')).toBe('')
+  })
+
+  test('double corners and tees: two strokes a side, meeting where they turn', () => {
+    const top = ruleSvg('╔═╗', THEME.frame)
+    const bottom = ruleSvg('╚═╝', THEME.frame)
+    expect(attr(top, 'width')).toBe(String(cellPx(3)))
+    expect(top).toContain('M2 7.5H8M6 11.5H8M2 7.5V19M6 11.5V19')
+    expect(top).toContain('M8 7.5H16M8 11.5H16')
+    expect(top).toContain('M16 7.5H22M16 11.5H18M18 11.5V19M22 7.5V19')
+    expect(bottom).toContain('M2 0V11.5')
+    expect(bottom).toContain('M22 0V11.5')
+    for (const t of ['╔═╗', '╚═╝', '╠╣╦╩╬', '║ ║', '╒╓╕╖╘╙╛╜', '╞╟╡╢╤╥╧╨╪╫']) {
+      const s = ruleSvg(t, '#fff')
+      expect(s).not.toBe('')
+      expect(count(s, /<path/g)).toBe(1)
+      expect(svgSafe(s)).toBe(true)
+      expect(ruleSvg(t, '#fff')).toBe(s)
+    }
   })
 
   test('the same rule draws the same source', () => {

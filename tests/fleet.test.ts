@@ -1691,6 +1691,30 @@ describe('fleet page on Desktop', () => {
     }
   })
 
+  test("a suit card's ╭─ corner is a picture outside its Button, the Button its icon alone", async ($, on) => {
+    const clock = fleetEngine(on, sampleWorld())
+    const tree = await openFleetDesk($, clock, 60, 80)
+    const kids = (n: Node): Node[] => (n.children ?? []).filter((k): k is Node => typeof k !== 'string')
+    const isSuit = (b: Node) => b.type === 'Button' && String(b.props?.['key'] ?? '').startsWith('suit-')
+    const buttons: Node[] = []
+    const cornered: Node[] = []
+    const walk = (n: Node) => {
+      if (isSuit(n)) buttons.push(n)
+      const ks = kids(n)
+      const at = ks.findIndex(k => kids(k).some(isSuit))
+      if (n.type === 'Box' && at > 0) {
+        const first = ks[at - 1] as Node
+        if (first.type === 'Svg' && /A4 4 0 0 1 /.test(String(first.props?.['source']))) cornered.push(first)
+      }
+      ks.forEach(walk)
+    }
+    walk(tree)
+    expect(buttons.length).toBeGreaterThan(0)
+    for (const b of buttons) expect(/[\u2500-\u257f]/.test(textOf(b))).toBe(false)
+    expect(cornered.length).toBeGreaterThan(0)
+    for (const c of cornered) expect(c.props?.['width']).toBe(cellPx(3))
+  })
+
   test('rules outside a Button are pictures; a title takes at least its cells, never truncated', async ($, on) => {
     const clock = fleetEngine(on, sampleWorld())
     const tree = await openFleetDesk($, clock, 60, 80)
