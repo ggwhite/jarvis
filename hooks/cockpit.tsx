@@ -412,6 +412,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   const textNode = (s: Seg) => <Text {...style(s)}>{s.t}</Text>
 
+  // Desktop's glyphs are narrower than a cell (its ─ wider): each segment takes a box of its
+  // cells there, so it starts where it does on the terminal
   const segNode = (s: Seg): RenderElement =>
     SvgEl && s.svg !== undefined && svgSafe(s.svg) ? (
       <SvgEl
@@ -421,6 +423,12 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         height={CELL_PX_H}
         {...(s.animated ? { isInteractive: true } : {})}
       />
+    ) : svgOn ? (
+      <Box width={cellWidth(s.t)} flexShrink={0}>
+        <Text wrap="truncate" {...style(s)}>
+          {s.t}
+        </Text>
+      </Box>
     ) : (
       textNode(s)
     )
@@ -429,6 +437,16 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   // a Button holds only text: its segments drawn as glyphs whatever the surface
   const plainTexts = (segs: readonly Seg[]) => segs.filter(s => s.t !== '').map(textNode)
+
+  // a Button drawn from `segs`: on Desktop boxed to their cells, so what follows lines up
+  const pressBox = (segs: readonly Seg[], button: RenderElement): RenderElement =>
+    svgOn ? (
+      <Box width={segsWidth(segs)} flexShrink={0}>
+        {button}
+      </Box>
+    ) : (
+      button
+    )
 
   // a picture `wide` cells by `tall` rows, or undefined when it may not be drawn (then the glyphs are)
   const svgNode = (source: string, alt: string, wide: number, tall: number, animated = false): RenderElement | undefined =>
@@ -616,7 +634,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         ((page === 'changeDiff' || page === 'commitTree' || page === 'commitDiff' || page === 'stashDiff') && tab.page === 'changes') ||
         (page === 'roleDetail' && tab.page === 'stats')
       const text = tabText(tab, tabsCompact)
-      return (
+      return pressBox(
+        [{ t: text }],
         <Button key={`tab-${tab.page}`} plain onPress={() => ctx.go(tab.page)}>
           {current ? (
             <Text bold inverse color={ACCENT}>
@@ -625,14 +644,18 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
           ) : (
             <Text color={FRAME}>{text}</Text>
           )}
-        </Button>
+        </Button>,
       )
     })
     for (const a of actions) {
+      const text = actionText(a, actionsCompact)
       nodes.push(
-        <Button key={a.key} plain onPress={a.run}>
-          <Text color={FRAME}>{actionText(a, actionsCompact)}</Text>
-        </Button>,
+        pressBox(
+          [{ t: text }],
+          <Button key={a.key} plain onPress={a.run}>
+            <Text color={FRAME}>{text}</Text>
+          </Button>,
+        ),
       )
     }
     return {
@@ -920,9 +943,12 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         h: 1,
         node: (
           <Box flexDirection="row">
-            <Button key={`role-${r.role}`} plain onPress={() => ctx.openRole?.(r.role)}>
-              {plainTexts(lead)}
-            </Button>
+            {pressBox(
+              lead,
+              <Button key={`role-${r.role}`} plain onPress={() => ctx.openRole?.(r.role)}>
+                {plainTexts(lead)}
+              </Button>,
+            )}
             {texts(rest)}
           </Box>
         ),
@@ -1150,9 +1176,12 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         h: 1,
         node: (
           <Box flexDirection="row">
-            <Button key={`agent-${n}`} plain onPress={() => ctx.open(a.id)}>
-              {plainTexts(chip)}
-            </Button>
+            {pressBox(
+              chip,
+              <Button key={`agent-${n}`} plain onPress={() => ctx.open(a.id)}>
+                {plainTexts(chip)}
+              </Button>,
+            )}
             {texts(rest)}
           </Box>
         ),
@@ -1423,11 +1452,13 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   // A suit's Button: the card's corner and icon (or a line's icon). Its `n` only keys it: the
   // order shifts as suits go busy or idle, so it is not drawn.
-  const suitChip = (s: FleetSession, n: number, chip: Seg[]) => (
-    <Button key={`suit-${n}`} plain onPress={() => ctx.openFleet(s.paneId)}>
-      {texts(chip)}
-    </Button>
-  )
+  const suitChip = (s: FleetSession, n: number, chip: Seg[]) =>
+    pressBox(
+      chip,
+      <Button key={`suit-${n}`} plain onPress={() => ctx.openFleet(s.paneId)}>
+        {plainTexts(chip)}
+      </Button>,
+    )
 
   // One card or line: the Button and its first row, the rows below.
   const suitBlock = (s: FleetSession, n: number, c: CardLines): Block => ({
@@ -1742,9 +1773,12 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       artNodes = art.map(({ pre, suit, post }, i) => (
         <Box flexDirection="row">
           {texts(pre)}
-          <Button key={`suit-row-${i}`} plain onPress={toggle}>
-            {plainTexts(suit)}
-          </Button>
+          {pressBox(
+            suit,
+            <Button key={`suit-row-${i}`} plain onPress={toggle}>
+              {plainTexts(suit)}
+            </Button>,
+          )}
           {texts(post)}
         </Box>
       ))
@@ -1767,9 +1801,12 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const markNode = (
       <Box flexDirection="row">
         {texts([sp(Math.floor(markGap / 2))])}
-        <Button key="suit-mark" plain onPress={toggle}>
-          {plainTexts(mark)}
-        </Button>
+        {pressBox(
+          mark,
+          <Button key="suit-mark" plain onPress={toggle}>
+            {plainTexts(mark)}
+          </Button>,
+        )}
         {texts([sp(markGap - Math.floor(markGap / 2))])}
       </Box>
     )
@@ -1906,7 +1943,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         h: 1,
         node: (
           <Button key={`cm-repo-${repo}`} plain onPress={() => cm.openRepo(repo)}>
-            <Text>{texts(leftRight(left, right, inner))}</Text>
+            <Text>{plainTexts(leftRight(left, right, inner))}</Text>
           </Button>
         ),
       })
@@ -1980,7 +2017,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         h: 1,
         node: (
           <Button key={`chg-${e.key}`} plain onPress={() => ctx.openDiff?.(e.key)}>
-            <Text>{texts(clip(segs, inner))}</Text>
+            <Text>{plainTexts(clip(segs, inner))}</Text>
           </Button>
         ),
       }
@@ -2213,7 +2250,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         h: 1,
         node: (
           <Button key={`cm-branch-${ref}`} plain onPress={() => cm.openBranch(ref)}>
-            <Text>{texts(leftRight(left, right, inner))}</Text>
+            <Text>{plainTexts(leftRight(left, right, inner))}</Text>
           </Button>
         ),
       }
@@ -2233,7 +2270,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         h: 1,
         node: (
           <Button key={`cm-branches-${key}`} plain onPress={() => toggle()}>
-            <Text>{texts([sp(1), { t: fitCells(label, inner - 1), color: MUTED }])}</Text>
+            <Text>{plainTexts([sp(1), { t: fitCells(label, inner - 1), color: MUTED }])}</Text>
           </Button>
         ),
       })
@@ -2262,7 +2299,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         h: 1,
         node: (
           <Button key={`cm-stash-${sha}`} plain onPress={() => cm.openStash(sha)}>
-            <Text>{texts(leftRight(left, [{ t: fmtAgo(cm.now - x.time), color: FRAME }], inner))}</Text>
+            <Text>{plainTexts(leftRight(left, [{ t: fmtAgo(cm.now - x.time), color: FRAME }], inner))}</Text>
           </Button>
         ),
       })
@@ -2303,7 +2340,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         h: 1,
         node: (
           <Button key={`cm-wt-${path}`} plain onPress={() => cm.openWorktree(path)}>
-            <Text>{texts(clip(segs, inner))}</Text>
+            <Text>{plainTexts(clip(segs, inner))}</Text>
           </Button>
         ),
       }
@@ -2346,7 +2383,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
           h: 1,
           node: (
             <Button key={`cm-commit-${sha}`} plain onPress={() => cm.openCommit(sha)}>
-              <Text>{texts(leftRight(left, right, inner))}</Text>
+              <Text>{plainTexts(leftRight(left, right, inner))}</Text>
             </Button>
           ),
         })
@@ -2483,9 +2520,12 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       node: (
         <Box flexDirection="row">
           {lead.length > 0 ? texts(lead) : null}
-          <Button key={`task-${it.id}`} plain onPress={() => toggle(it.id, !it.folded)}>
-            {plainTexts([icon, { ...title, t: name }])}
-          </Button>
+          {pressBox(
+            [icon, { ...title, t: name }],
+            <Button key={`task-${it.id}`} plain onPress={() => toggle(it.id, !it.folded)}>
+              {plainTexts([icon, { ...title, t: name }])}
+            </Button>,
+          )}
           {texts([{ ...title, t: title.t.slice(name.length) }, ...rest])}
         </Box>
       ),

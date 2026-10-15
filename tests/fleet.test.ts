@@ -1665,6 +1665,27 @@ describe('fleet page on Desktop', () => {
     expect(after).toEqual(before)
   })
 
+  test('each section header is a row of cell boxes summing to the pane width, its words truncated not wrapped', async ($, on) => {
+    const clock = fleetEngine(on, sampleWorld())
+    const tree = await openFleetDesk($, clock, 60, 80)
+    const kids = (n: Node): Node[] => (n.children ?? []).filter((k): k is Node => typeof k !== 'string')
+    const rows: Node[] = []
+    const walk = (n: Node) => {
+      if (n.type === 'Box' && kids(n).length > 0 && kids(n).every(k => k.type === 'Box' && kids(k)[0]?.type === 'Text')) rows.push(n)
+      kids(n).forEach(walk)
+    }
+    walk(tree)
+    for (const title of ['ARC REACTOR', 'TODAY BURN', 'IRON LEGION']) {
+      const line = rows.find(r => textOf(r).startsWith('── ') && textOf(r).includes(title))
+      expect(line).toBeDefined()
+      expect(kids(line as Node).reduce((n, k) => n + Number(k.props?.['width']), 0)).toBe(80)
+      for (const k of kids(line as Node)) {
+        expect(k.props?.['flexShrink']).toBe(0)
+        expect(kids(k)[0]?.props?.['wrap']).toBe('truncate')
+      }
+    }
+  })
+
   test('terminal fleet page: no Svg', async ($, on) => {
     const clock = fleetEngine(on, sampleWorld())
     expect(svgsOf(await openFleet($, clock, 60, 120))).toHaveLength(0)

@@ -322,3 +322,50 @@ describe('desktop svg: reactor and digits', () => {
     })
   }
 })
+
+describe('desktop svg: segments in cell boxes', () => {
+  const kids = (n: Node): Node[] => (n.children ?? []).filter((k): k is Node => typeof k !== 'string')
+  // the cells a row's boxes take before the first child `stop` picks, NaN when none does
+  const cellsBefore = (row: Node, stop: (x: Node) => boolean): number => {
+    let n = 0
+    for (const k of kids(row)) {
+      if (stop(k)) return n
+      n += Number(k.props?.['width'] ?? NaN)
+    }
+    return NaN
+  }
+
+  test('dispatch rows: every bar starts at the same cell, the Button boxed to its cells', async ($, on) => {
+    engine(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    await pressOn($, 'desktop', 'tab-stats')
+    const tree = await drawOn($, 'desktop')
+    const isRoleButton = (x: Node) => x.type === 'Button' && String(x.props?.['key'] ?? '').startsWith('role-')
+    const rows = all(tree, x => x.type === 'Box' && kids(x).some(k => kids(k).some(isRoleButton)))
+    expect(rows.length).toBeGreaterThan(1)
+    const starts = rows.map(r => cellsBefore(r, k => k.type === 'Svg'))
+    for (const s of starts) expect(s).toBe(starts[0])
+    expect(starts[0]).toBeGreaterThan(0)
+    for (const r of rows) {
+      const box = kids(r)[0] as Node
+      expect(box.props?.['flexShrink']).toBe(0)
+      expect(kids(box).some(isRoleButton)).toBe(true)
+    }
+    await pressOn($, 'desktop', 'role-Explore')
+    expect(all(await drawOn($, 'desktop'), x => x.type === 'Button' && x.props?.['key'] === 'back')).toHaveLength(1)
+  })
+
+  for (const key of ['tab-now', 'tab-stats', 'tab-fleet']) {
+    test(`${key}: no Text carries mono on Desktop; the terminal has no cell boxes`, async ($, on) => {
+      engine(on)
+      await $.agent.spawn(spawnInput('find files', 'Explore'))
+      await pressOn($, 'desktop', key)
+      const desk = await drawOn($, 'desktop')
+      for (const t of all(desk, x => x.type === 'Text')) expect(t.props?.['mono']).toBeUndefined()
+      expect(all(desk, x => x.type === 'Box' && x.props?.['flexShrink'] === 0).length).toBeGreaterThan(0)
+      await pressOn($, 'terminal', key)
+      const term = await drawOn($, 'terminal')
+      expect(all(term, x => x.props?.['flexShrink'] !== undefined || x.props?.['wrap'] !== undefined)).toHaveLength(0)
+    })
+  }
+})
