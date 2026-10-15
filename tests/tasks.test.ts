@@ -1401,6 +1401,54 @@ describe('task board page', () => {
   })
 })
 
+describe('task board page topics', () => {
+  test('a topic row and an indented request row are Buttons that fold and open; the indent stays outside', async ($, on) => {
+    let classified = 0
+    const { clock } = world(on, {}, async e => {
+      if (e.prompt.includes('回答：')) return said('好了')
+      classified += 1
+      return said(classified === 1 ? '查看 Jamie\n新 Jamie 簽到' : '確認送出\n1')
+    })
+    await send($, '查看 Jamie')
+    await clock.settle()
+    await turnStarts($, 't1', '查看 Jamie')
+    await work($)
+    await turnEnds($, 't1')
+    await clock.settle()
+    await send($, '確認送出')
+    await clock.settle()
+    await turnStarts($, 't2', '確認送出')
+    await work($)
+    await task($, { op: 'add', subtasks: ['步驟一'] })
+    await task($, { op: 'update', id: '2.1', status: 'in_progress' })
+    await openTasks($)
+    const has = async (word: string) => linesOf(await draw($)).some(l => l.includes(word))
+    const root = await draw($)
+    const topic = taskButton(root, 't:1')
+    expect(topic).toBeDefined()
+    expect(textOf(topic!)).toContain('Jamie 簽到')
+    expect(textOf(topic!)).toBe(textOf(topic!).trimStart())
+    const req = taskButton(root, '2')
+    expect(req).toBeDefined()
+    expect(textOf(req!)).toContain('確認送出')
+    expect(textOf(req!)).toBe(textOf(req!).trimStart())
+    expect(linesOf(root).find(l => l.includes('確認送出'))?.startsWith(' '.repeat(SUB_INDENT))).toBe(true)
+    // a press on the indented request folds its plan and opens it again
+    expect(await has('步驟一')).toBe(true)
+    await pressKey($, 'task-2')
+    expect(await has('步驟一')).toBe(false)
+    expect(await has('確認送出')).toBe(true)
+    await pressKey($, 'task-2')
+    expect(await has('步驟一')).toBe(true)
+    // a press on the topic folds its requests and opens them again
+    await pressKey($, 'task-t:1')
+    expect(await has('確認送出')).toBe(false)
+    expect(await has('Jamie 簽到')).toBe(true)
+    await pressKey($, 'task-t:1')
+    expect(await has('確認送出')).toBe(true)
+  })
+})
+
 describe('request topics', () => {
   // a request item sent with rid `rid`, done when `done`
   const req = (b: JarvisTaskBoard, text: string, rid: string, done = true) => {
