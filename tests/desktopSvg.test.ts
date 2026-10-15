@@ -238,6 +238,33 @@ describe('desktop svg: the suit', () => {
     expect(after).toEqual(before)
   })
 
+  test('no Button on Desktop holds a picture: its children are glyphs', async ($, on) => {
+    const clock = engine(on)
+    await $.agent.spawn(spawnInput('find files', 'Explore'))
+    await clock.advance(3000)
+    await pressOn($, 'desktop', 'suit-mark', 50)
+    const tree = await drawOn($, 'desktop', 50)
+    const buttons = all(tree, x => x.type === 'Button')
+    expect(buttons.length).toBeGreaterThan(0)
+    for (const b of buttons) expect(svgs(b)).toEqual([])
+  })
+
+  test('the still suit asks the clock for no 250 ms frames on Desktop; the terminal still does', async ($, on) => {
+    const periods: number[] = []
+    on('clock.every', { ms: SUIT_TICK_MS }, async (_$, e, next) => {
+      periods.push(e.ms)
+      return next(e)
+    })
+    const clock = engine(on)
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await clock.advance(10_000)
+    await drawOn($, 'desktop', 50)
+    await clock.advance(SUIT_TICK_MS * 4)
+    expect(periods.filter(ms => ms === SUIT_TICK_MS)).toEqual([])
+    await drawOn($, 'terminal', 50)
+    expect(periods.filter(ms => ms === SUIT_TICK_MS).length).toBeGreaterThan(0)
+  })
+
   test('narrow (40): the suit centered alone, its readouts under it', async ($, on) => {
     engine(on)
     const tree = await drawOn($, 'desktop', 50, 40)

@@ -67,9 +67,10 @@ export function rampBarSvg(width: number, pct: number, colors: readonly string[]
   const n = whole(width)
   const w = cellPx(n)
   const fill = w * clamp01(pct)
+  const id = `g-${colors.join('').replace(/[^0-9a-zA-Z]/g, '')}`
   const bar =
     fill > 0
-      ? `<defs>${gradient('g', colors)}</defs><rect class="fill" x="0" y="${BAR_Y}" width="${num(fill)}" height="${BAR_H}" rx="2" fill="url(#g)"/>`
+      ? `<defs>${gradient(id, colors)}</defs><rect class="fill" x="0" y="${BAR_Y}" width="${num(fill)}" height="${BAR_H}" rx="2" fill="url(#${id})"/>`
       : ''
   return svgDoc(n, 1, track(w) + bar)
 }

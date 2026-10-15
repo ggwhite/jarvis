@@ -1151,7 +1151,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         node: (
           <Box flexDirection="row">
             <Button key={`agent-${n}`} plain onPress={() => ctx.open(a.id)}>
-              {texts(chip)}
+              {plainTexts(chip)}
             </Button>
             {texts(rest)}
           </Box>
@@ -1395,7 +1395,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         node: (
           <Box flexDirection="row">
             <Button key={`role-run-${n}`} plain onPress={() => ctx.open(a.id, 'roleDetail')}>
-              {texts(segs)}
+              {plainTexts(segs)}
             </Button>
           </Box>
         ),
@@ -1743,7 +1743,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         <Box flexDirection="row">
           {texts(pre)}
           <Button key={`suit-row-${i}`} plain onPress={toggle}>
-            {texts(suit)}
+            {plainTexts(suit)}
           </Button>
           {texts(post)}
         </Box>
@@ -1768,7 +1768,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       <Box flexDirection="row">
         {texts([sp(Math.floor(markGap / 2))])}
         <Button key="suit-mark" plain onPress={toggle}>
-          {texts(mark)}
+          {plainTexts(mark)}
         </Button>
         {texts([sp(markGap - Math.floor(markGap / 2))])}
       </Box>
@@ -2484,7 +2484,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         <Box flexDirection="row">
           {lead.length > 0 ? texts(lead) : null}
           <Button key={`task-${it.id}`} plain onPress={() => toggle(it.id, !it.folded)}>
-            {texts([icon, { ...title, t: name }])}
+            {plainTexts([icon, { ...title, t: name }])}
           </Button>
           {texts([{ ...title, t: title.t.slice(name.length) }, ...rest])}
         </Box>
@@ -2591,7 +2591,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   }
 
   // held still, the suit asks for no frames
-  ctx.onStandby?.(standby, suitPaused ? undefined : suitRests ? SUIT_REST_TICK_MS : SUIT_TICK_MS)
+  ctx.onStandby?.(standby, suitPaused || svgOn ? undefined : suitRests ? SUIT_REST_TICK_MS : SUIT_TICK_MS)
 
   return (
     <Box flexDirection="column">

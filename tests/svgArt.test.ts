@@ -82,6 +82,18 @@ describe('svgArt basics', () => {
 const points = (svg: string): string[] => (svg.match(/points="([^"]*)"/)?.[1] ?? '').split(' ').filter(p => p !== '')
 
 describe('svgArt bars and lines', () => {
+  test('rampBarSvg: the gradient id follows the colors, so two bars in one document never share one', () => {
+    const idOf = (src: string) => /<linearGradient id="([^"]+)"/.exec(src)?.[1]
+    const gold = idOf(rampBarSvg(10, 0.5, ['#aa8800', '#ffeeaa']))
+    const red = idOf(rampBarSvg(10, 0.5, ['#ff0000']))
+    expect(gold).toBeDefined()
+    expect(red).toBeDefined()
+    expect(gold).not.toBe(red)
+    expect(idOf(rampBarSvg(20, 0.9, ['#aa8800', '#ffeeaa']))).toBe(gold)
+    const src = rampBarSvg(10, 0.5, ['#ff0000'])
+    expect(src).toContain(`fill="url(#${red})"`)
+  })
+
   test('rampBarSvg: the width in cells, a gradient fill as far as pct', () => {
     const s = rampBarSvg(10, 0.5, BURN_RAMP)
     expect(attr(s, 'width')).toBe(String(cellPx(10)))
