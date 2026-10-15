@@ -155,6 +155,8 @@ describe('svgArt suit', () => {
     expect(count(s, /<rect /g)).toBe(2)
     expect(s).toContain(`width="${3 * CELL_PX_W}"`)
     expect(s).toContain(`height="${CELL_PX_H / 2}"`)
+    // rows sit on half-pixel edges: crisp edges keep a seam of background from showing between them
+    expect(count(s, /shape-rendering="crispEdges"/g)).toBe(2)
   })
 
   test('suitSvg: the canvas in cells, corners when sighted', () => {
