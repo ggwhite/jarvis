@@ -2352,6 +2352,16 @@ describe('task board topics drawn', () => {
     expect(keptFolds({ 't:1': true, 't:9': false, '1': true }, b)).toEqual({ 't:1': true, '1': true })
   })
 
+  test('a topic whose running request just added a plan stays open with the plan drawn', () => {
+    const b = ok(applyTask(board(), { op: 'add', subtasks: ['s1', 's2'] }))
+    const lines = taskLines(b, 60, 20, owner, 0)
+    const jamie = lines.find(l => text(l.segs).includes('Jamie 簽到'))
+    expect(jamie?.item).toEqual({ id: 't:1', folded: false })
+    expect(lines.some(l => text(l.segs).includes('s1'))).toBe(true)
+    expect(lines.some(l => text(l.segs).includes('s2'))).toBe(true)
+    expect(topicFolded(boardGroups(b).planned[0]!, { 't:1': true })).toBe(true)
+  })
+
   test('a request with a plan under a topic draws its subtasks two indents in, every row width cells', () => {
     const planned = ok(applyTask(board(), { op: 'add', subtasks: ['步驟一'] }))
     // a request whose only subtask waits is planned, so its topic would fold: start the subtask

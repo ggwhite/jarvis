@@ -56,9 +56,12 @@ export const isFolded = (item: JarvisTaskItem, folds: TaskFolds): boolean => fol
 // A topic's fold choice is kept under this key, beside the items' ids.
 export const topicKey = (id: string): string => `t:${id}`
 
-// Whether a topic's requests are hidden: the press's choice, else hidden unless it runs.
+// Whether a topic's requests are hidden: the press's choice, else hidden unless it runs or a
+// request in it is still inside its turn (a fresh plan of waiting subtasks reads as planned).
 export const topicFolded = (group: TaskGroup, folds: TaskFolds): boolean =>
-  group.topic === undefined ? false : (folds[topicKey(group.topic.id)] ?? groupStatus(group) !== 'in_progress')
+  group.topic === undefined
+    ? false
+    : (folds[topicKey(group.topic.id)] ?? !(groupStatus(group) === 'in_progress' || group.items.some(i => i.status === 'in_progress')))
 
 // The fold choices of the items and topics still on the board.
 export const keptFolds = (folds: TaskFolds | undefined, board: JarvisTaskBoard): Record<string, boolean> =>
