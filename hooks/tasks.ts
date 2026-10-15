@@ -74,14 +74,14 @@ export const replaceItem = (board: JarvisTaskBoard, item: JarvisTaskItem): Jarvi
 })
 
 // A new item last on the board, numbered from `nextItem`; every way of making an item goes
-// through here. `extra` carries what the caller knows of it (status, origin). The caps are
+// through here. `extra` carries what the caller knows of it (status, origin, a request's key and turn). The caps are
 // the caller's to enforce: `add` and the mirrors check MAX_ITEMS and MAX_SUBTASKS themselves.
 export function putItem(
   board: JarvisTaskBoard,
   title: string,
   subtasks: readonly string[],
   actor: string | undefined,
-  extra: Partial<Pick<JarvisTaskItem, 'status' | 'origin'>> = {},
+  extra: Partial<Pick<JarvisTaskItem, 'status' | 'origin' | 'key' | 'turnId' | 'queued'>> = {},
 ): JarvisTaskBoard {
   const item = withSubtasks({ id: String(board.nextItem), title, status: 'pending', subtasks: [], nextSub: 1, ...extra }, subtasks, actor)
   return { items: [...board.items, item], nextItem: board.nextItem + 1 }
@@ -240,6 +240,101 @@ export function boardText(board: JarvisTaskBoard): string {
     }
   }
   return lines.join('\n')
+}
+
+// ---- the person's requests, recorded as they are sent ----
+
+// the origin of an item jarvis made for a request the person sent
+export const REQUEST_ORIGIN = 'request'
+// a request item's title, taken from its prompt, is kept to this many characters
+export const REQUEST_TITLE_MAX = 40
+
+// A prompt's first non-blank line as one line, cut to REQUEST_TITLE_MAX with an ellipsis.
+export function requestTitle(text: string): string {
+  const line =
+    text
+      .split('\n')
+      .map(l => l.replace(/\s+/g, ' ').trim())
+      .find(l => l !== '') ?? ''
+  const chars = [...line]
+  return chars.length > REQUEST_TITLE_MAX ? `${chars.slice(0, REQUEST_TITLE_MAX - 1).join('')}…` : line
+}
+
+// what of a prompt.submit decides whether it is recorded
+export type RequestSubmission = { text: string; command?: unknown; isMeta?: true; origin: { kind: string } }
+
+// The person's own prompts, typed or through Remote Control; not a slash command, not one
+// the person does not see, not a notification, a peer's message or a plugin's.
+export function recordsRequest(e: RequestSubmission): boolean {
+  return (
+    e.command === undefined &&
+    e.isMeta !== true &&
+    (e.origin.kind === 'composer' || e.origin.kind === 'bridge') &&
+    requestTitle(e.text) !== ''
+  )
+}
+
+const isRequest = (item: JarvisTaskItem): boolean => item.origin === REQUEST_ORIGIN
+
+// The board with room for one more item: at MAX_ITEMS its oldest done item goes; unchanged
+// when there is room or nothing is done.
+export function makeRoom(board: JarvisTaskBoard): JarvisTaskBoard {
+  if (board.items.length < MAX_ITEMS) return board
+  const oldest = board.items.find(i => itemStatus(i) === 'completed')
+  return oldest ? { ...board, items: board.items.filter(i => i !== oldest) } : board
+}
+
+// A request item for a prompt just sent, running from the start. One typed while a turn ran
+// (`runningTurn`) is tied to that turn and marked queued; any other waits for the next
+// main-loop turn. Nothing is made for a blank prompt or a board full of unfinished items.
+export function openRequest(board: JarvisTaskBoard, text: string, runningTurn?: string): { board: JarvisTaskBoard; id?: string } {
+  const key = requestTitle(text)
+  const roomy = makeRoom(board)
+  if (key === '' || roomy.items.length >= MAX_ITEMS) return { board }
+  return {
+    board: putItem(roomy, key, [], undefined, {
+      status: 'in_progress',
+      origin: REQUEST_ORIGIN,
+      key,
+      ...(runningTurn === undefined ? {} : { turnId: runningTurn, queued: true as const }),
+    }),
+    id: String(roomy.nextItem),
+  }
+}
+
+// A main-loop turn starts: request items waiting for a turn are tied to it. With none
+// waiting, a queued request whose prompt this turn begins with (the turn before closed it)
+// runs again, tied to this turn.
+export function startTurn(board: JarvisTaskBoard, turnId: string, text: string): JarvisTaskBoard {
+  const waiting = board.items.filter(i => isRequest(i) && i.status === 'in_progress' && i.turnId === undefined)
+  if (waiting.length > 0) return { ...board, items: board.items.map(i => (waiting.includes(i) ? { ...i, turnId } : i)) }
+  const key = requestTitle(text)
+  const queued = key === '' ? undefined : board.items.findLast(i => isRequest(i) && i.queued === true && i.key === key)
+  if (!queued) return board
+  const { queued: _q, ...rest } = queued
+  return replaceItem(board, { ...rest, status: 'in_progress', turnId })
+}
+
+// A main-loop turn ends: its request items let go of it; a running one is done when the
+// turn answered or refused, and waits again (pending) when it was interrupted or died on an
+// error. Every other item is left as it is.
+export function endTurn(board: JarvisTaskBoard, turnId: string, reason: string): JarvisTaskBoard {
+  const ends = (i: JarvisTaskItem) => isRequest(i) && i.turnId === turnId
+  if (!board.items.some(ends)) return board
+  const status: JarvisTaskStatus = reason === 'aborted' || reason === 'error' ? 'pending' : 'completed'
+  return {
+    ...board,
+    items: board.items.map(i => {
+      if (!ends(i)) return i
+      const { turnId: _t, ...rest } = i
+      return { ...rest, status: i.status === 'in_progress' ? status : i.status }
+    }),
+  }
+}
+
+// The request being worked on: the newest request item running by its own status.
+export function currentRequest(board: JarvisTaskBoard): JarvisTaskItem | undefined {
+  return board.items.findLast(i => isRequest(i) && i.status === 'in_progress')
 }
 
 // ---- the built-in task tools, mirrored when the session has them ----

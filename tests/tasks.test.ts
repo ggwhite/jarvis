@@ -2,11 +2,13 @@ import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import type { JarvisTaskBoard } from '../types'
+import type { JarvisTaskBoard, JarvisTaskItem } from '../types'
 import {
   EMPTY_BOARD,
   MAX_ITEMS,
   MAX_SUBTASKS,
+  REQUEST_ORIGIN,
+  REQUEST_TITLE_MAX,
   TASKS_TITLE,
   TASK_PROMPT,
   TASK_SECTION_ID,
@@ -18,12 +20,19 @@ import {
   boardCounts,
   boardText,
   countsText,
+  currentRequest,
+  endTurn,
   fromTaskCreate,
   fromTaskUpdate,
   fromTodos,
   itemStatus,
+  makeRoom,
+  openRequest,
   putItem,
+  recordsRequest,
+  requestTitle,
   sortedItems,
+  startTurn,
 } from '../hooks/tasks'
 import type { Seg } from '../hooks/cockpit'
 import { TASK_ICON } from '../hooks/icons'
@@ -208,6 +217,108 @@ describe('task board status and order', () => {
       ['任務看板（0/2 項目 · 細項 1/2）', '[>] 1 加看板', '  [x] 1.1 調查', '  [>] 1.2 實作 (agent agent-7)', '[ ] 2 寫文件'].join('\n'),
     )
     expect(boardText(EMPTY_BOARD)).toBe('任務看板是空的。')
+  })
+})
+
+describe('task board requests', () => {
+  const statusOf = (item: JarvisTaskItem | undefined) => itemStatus(item as JarvisTaskItem)
+
+  test('requestTitle: the first non-blank line, one line, cut to REQUEST_TITLE_MAX with an ellipsis', () => {
+    expect(requestTitle('\n  修  jarvis\t的 bug  \n第二行')).toBe('修 jarvis 的 bug')
+    expect(requestTitle('   \n\t')).toBe('')
+    const long = requestTitle('長'.repeat(100))
+    expect([...long].length).toBe(REQUEST_TITLE_MAX)
+    expect(long.endsWith('…')).toBe(true)
+  })
+
+  test("recordsRequest: the person's own prompts; not a slash command, a hidden prompt, another source or a blank", () => {
+    const sub = (over: Record<string, unknown> = {}) =>
+      ({ text: '做事', origin: { kind: 'composer' }, ...over }) as Parameters<typeof recordsRequest>[0]
+    expect(recordsRequest(sub())).toBe(true)
+    expect(recordsRequest(sub({ origin: { kind: 'bridge' } }))).toBe(true)
+    expect(recordsRequest(sub({ command: { name: 'jarvis', args: '' } }))).toBe(false)
+    expect(recordsRequest(sub({ isMeta: true }))).toBe(false)
+    for (const kind of ['task-notification', 'peer', 'plugin', 'scheduled-trigger', 'sdk', 'unclassified']) {
+      expect(recordsRequest(sub({ origin: { kind } }))).toBe(false)
+    }
+    expect(recordsRequest(sub({ text: '  \n ' }))).toBe(false)
+  })
+
+  test('openRequest: a running request item; one typed over a turn is tied to it and marked queued', () => {
+    const idle = openRequest(EMPTY_BOARD, '修 bug')
+    expect(idle.id).toBe('1')
+    expect(idle.board.items[0]).toMatchObject({ id: '1', title: '修 bug', status: 'in_progress', origin: REQUEST_ORIGIN, key: '修 bug', subtasks: [] })
+    expect(idle.board.items[0]?.turnId).toBeUndefined()
+    expect(idle.board.items[0]?.queued).toBeUndefined()
+    const typedOver = openRequest(idle.board, '再加測試', 't1')
+    expect(typedOver.id).toBe('2')
+    expect(typedOver.board.items[1]).toMatchObject({ turnId: 't1', queued: true })
+    expect(openRequest(EMPTY_BOARD, '  ')).toEqual({ board: EMPTY_BOARD })
+  })
+
+  test('a turn takes up the waiting requests and its end completes them; interrupted or failed, they wait again', () => {
+    const b = startTurn(openRequest(EMPTY_BOARD, 'A').board, 't1', 'A')
+    expect(b.items[0]?.turnId).toBe('t1')
+    expect(currentRequest(b)?.id).toBe('1')
+    const done = endTurn(b, 't1', 'answer')
+    expect(done.items[0]?.status).toBe('completed')
+    expect(done.items[0]?.turnId).toBeUndefined()
+    expect(currentRequest(done)).toBeUndefined()
+    expect(endTurn(b, 't1', 'refusal').items[0]?.status).toBe('completed')
+    expect(endTurn(b, 't1', 'aborted').items[0]?.status).toBe('pending')
+    expect(endTurn(b, 't1', 'error').items[0]?.status).toBe('pending')
+    expect(endTurn(b, 't9', 'answer')).toBe(b)
+  })
+
+  test("a turn's end leaves the model's own items alone; a request with subtasks shows what its subtasks say", () => {
+    let b = ok(applyTask(EMPTY_BOARD, { op: 'add', item: '跨輪工作', subtasks: ['s1', 's2'] }))
+    b = ok(applyTask(b, { op: 'update', id: '1.1', status: 'in_progress' }))
+    b = startTurn(openRequest(b, 'B').board, 't1', 'B')
+    b = ok(applyTask(b, { op: 'add', to: '2', subtasks: ['b1'] }))
+    const after = endTurn(b, 't1', 'answer')
+    expect(after.items[0]).toEqual(b.items[0])
+    expect(statusOf(after.items[0])).toBe('in_progress')
+    expect(after.items[1]?.status).toBe('completed')
+    expect(statusOf(after.items[1])).toBe('pending')
+  })
+
+  test('a request typed over a turn closes with it, and runs again when its own turn begins with it', () => {
+    let b = startTurn(openRequest(EMPTY_BOARD, 'A').board, 't1', 'A')
+    b = openRequest(b, 'B', 't1').board
+    b = endTurn(b, 't1', 'answer')
+    expect(b.items.map(i => i.status)).toEqual(['completed', 'completed'])
+    expect(startTurn(b, 't2', '背景任務完成通知')).toBe(b)
+    b = startTurn(b, 't3', 'B')
+    expect(b.items[1]).toMatchObject({ status: 'in_progress', turnId: 't3' })
+    expect(b.items[1]?.queued).toBeUndefined()
+    expect(endTurn(b, 't3', 'answer').items[1]?.status).toBe('completed')
+  })
+
+  test('a waiting request is tied to the turn even when a queued one has the same prompt', () => {
+    let b = startTurn(openRequest(EMPTY_BOARD, 'A').board, 't1', 'A')
+    b = openRequest(b, 'B', 't1').board
+    b = endTurn(b, 't1', 'answer')
+    b = openRequest(b, 'B').board
+    b = startTurn(b, 't2', 'B')
+    expect(b.items.map(i => [i.id, i.status, i.turnId])).toEqual([
+      ['1', 'completed', undefined],
+      ['2', 'completed', undefined],
+      ['3', 'in_progress', 't2'],
+    ])
+  })
+
+  test('a full board makes room by dropping its oldest done item; full of unfinished work, no request item is made', () => {
+    let b = EMPTY_BOARD
+    for (let i = 0; i < MAX_ITEMS; i += 1) b = ok(applyTask(b, { op: 'add', item: `i${i}` }))
+    expect(makeRoom(b)).toBe(b)
+    expect(openRequest(b, 'A')).toEqual({ board: b })
+    b = ok(applyTask(b, { op: 'update', id: '3', status: 'completed' }))
+    b = ok(applyTask(b, { op: 'update', id: '5', status: 'completed' }))
+    const made = openRequest(b, 'A')
+    expect(made.id).toBe(String(MAX_ITEMS + 1))
+    expect(made.board.items).toHaveLength(MAX_ITEMS)
+    expect(made.board.items.some(i => i.id === '3')).toBe(false)
+    expect(made.board.items.some(i => i.id === '5')).toBe(true)
   })
 })
 

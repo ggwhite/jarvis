@@ -87,8 +87,10 @@ export type JarvisSubtask = {
 }
 
 // One work item. Its own `status` counts only while it has no subtasks; `nextSub` numbers
-// the next subtask. `origin` marks an item mirrored from a built-in tool: `todo:<actor>`
-// for TodoWrite, `tasks` for TaskCreate.
+// the next subtask. `origin` says where it came from: `request` for a request the person
+// sent (jarvis made it), `todo:<actor>` for TodoWrite, `tasks` for TaskCreate; none for the
+// model's own. A request item keeps `key`, its prompt's title as made; `turnId`, the
+// main-loop turn it is tied to; `queued` when it was typed while a turn ran.
 export type JarvisTaskItem = {
   id: string
   title: string
@@ -96,6 +98,9 @@ export type JarvisTaskItem = {
   subtasks: JarvisSubtask[]
   nextSub: number
   origin?: string
+  key?: string
+  turnId?: string
+  queued?: true
 }
 
 // The session's task board; `nextItem` numbers the next item, ids are never reused.
