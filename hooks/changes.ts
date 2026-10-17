@@ -1,4 +1,5 @@
 import type { JarvisChange } from '../types'
+import { t } from './i18n'
 import { cellWidth, fitCells } from './jarvis'
 
 export type ChangeMode = 'session' | 'unpushed' | 'commits'
@@ -107,7 +108,7 @@ export function reposOf(list: readonly JarvisChange[]): string[] {
 }
 
 export function repoName(repo: string | null, cwd: string, home: string): string {
-  if (repo === null) return '(非 git)'
+  if (repo === null) return t('changes.notGit')
   if (repo === cwd) return '.'
   if (cwd !== '' && repo.startsWith(`${cwd}/`)) return repo.slice(cwd.length + 1)
   if (home !== '' && (repo === home || repo.startsWith(`${home}/`))) return `~${repo.slice(home.length)}`

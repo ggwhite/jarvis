@@ -6,6 +6,7 @@ import { isFailed } from './gitDiff'
 import type { DiffRow, Failed } from './gitDiff'
 import type { StashFile } from './gitRepo'
 import { COMMIT_ICON } from './icons'
+import { t } from './i18n'
 import { JARVIS_PALETTE, THEME } from './jarvis'
 import type { BranchList, Remotes, RepoView, StashInfo, WorktreeRow } from './repoViews'
 
@@ -18,15 +19,15 @@ export const laneColor = (lane: number): string => (lane < 0 ? THEME.frame : (LA
 
 export function relTime(ms: number): string {
   const m = Math.floor(Math.max(0, ms) / 60_000)
-  if (m < 1) return '剛剛'
-  if (m < 60) return `${m} 分鐘前`
+  if (m < 1) return t('time.justNow')
+  if (m < 60) return t('time.minutesAgo', { n: m })
   const h = Math.floor(m / 60)
-  if (h < 24) return `${h} 小時前`
+  if (h < 24) return t('time.hoursAgo', { n: h })
   const d = Math.floor(h / 24)
-  if (d < 2) return '昨天'
-  if (d < 30) return `${d} 天前`
-  if (d < 365) return `${Math.floor(d / 30)} 個月前`
-  return `${Math.floor(d / 365)} 年前`
+  if (d < 2) return t('time.yesterday')
+  if (d < 30) return t('time.daysAgo', { n: d })
+  if (d < 365) return t('time.monthsAgo', { n: Math.floor(d / 30) })
+  return t('time.yearsAgo', { n: Math.floor(d / 365) })
 }
 
 // the session directory by its own name, not '.'

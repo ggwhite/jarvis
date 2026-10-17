@@ -14,6 +14,7 @@ import {
 import { RING_BIG, RING_SMALL, brailleLine, cellsToSegs, gaugeBar, gaugeCells } from './fleetChart'
 import type { ChartSeg } from './fleetChart'
 import { gaugeBarSvg, meterSvg, ringSvg, sparkSvg } from './svgArt'
+import { t as tr } from './i18n'
 import { THEME, cellWidth, fitCells, fmtClock, fmtDate, fmtUsd, padCells, shortModel } from './jarvis'
 
 // A suit as drawn: `chip` the label of its number Button, `top` what follows it on its
@@ -250,7 +251,7 @@ const sparkSeg = (s: FleetSession, o: SuitOpts, width: number, idle: boolean, co
   const t = idle ? daySparkOf(s, width, o.idleMax) : sparkOf(s, o.now, width)
   if (o.svg !== true) return { t, color }
   const svg = idle ? sparkSvg(hourlyOf(s), width, o.idleMax, color) : sparkSvg(beatsOf(s.stamps, o.now), width, undefined, color)
-  return { t, color, svg, alt: idle ? '今日每小時' : '最近一小時' }
+  return { t, color, svg, alt: idle ? tr('alt.hourlyToday') : tr('alt.lastHour') }
 }
 
 // The highest hour of today among `idle`: what SuitOpts.idleMax asks.
@@ -380,7 +381,7 @@ export function idleSummary(idle: readonly FleetSession[], now: number): ChartSe
     { t: '◇ ', color: F },
     { t: 'STANDBY', color: P, bold: true },
     { t: ` ${idle.length}`, color: B, bold: true },
-    { t: ' 艘', color: F },
-    ...(m > 0 ? [{ t: ' · ', color: M }, { t: String(m), color: A, bold: true }, { t: ' 艘可退役', color: F }] : []),
+    { t: tr('fleet.suits'), color: F },
+    ...(m > 0 ? [{ t: ' · ', color: M }, { t: String(m), color: A, bold: true }, { t: tr('fleet.retirable'), color: F }] : []),
   ]
 }

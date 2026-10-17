@@ -3,6 +3,7 @@ import { relPath, repoName } from './changes'
 import type { ChangeMode } from './changes'
 import { isFailed } from './gitDiff'
 import type { DiffRow, Failed, FileStat, Unpushed } from './gitDiff'
+import { t } from './i18n'
 import { THEME, fitCells, padCells } from './jarvis'
 
 export const MAX_LISTED = 200
@@ -78,10 +79,10 @@ export function sessionGroups(
     const base = { key: `s:${c.path}`, path: c.path, label: relPath(c.path, c.repo, names.home), actors: c.actors }
     if (s === undefined) g.entries.push({ ...base, add: 0, del: 0, binary: false, pending: true })
     else if (isFailed(s)) g.entries.push({ ...base, add: 0, del: 0, binary: false, note: s.error, pending: false })
-    else if (s.binary) g.entries.push({ ...base, add: 0, del: 0, binary: true, note: '二進位', pending: false })
+    else if (s.binary) g.entries.push({ ...base, add: 0, del: 0, binary: true, note: t('common.binary'), pending: false })
     else {
       const add = s.deleted ? 0 : s.add
-      const mark = s.deleted ? '已刪除' : s.vsHead ? '對 HEAD' : undefined
+      const mark = s.deleted ? t('changes.deleted') : s.vsHead ? t('changes.vsHead') : undefined
       g.entries.push({ ...base, add, del: s.del, binary: false, ...(mark ? { mark } : {}), ...(s.deleted ? { deleted: true } : {}), pending: false })
       g.add += add
       g.del += s.del
@@ -103,11 +104,11 @@ export function unpushedGroups(
     if (r === undefined) return { key: repo, name, entries: [], add: 0, del: 0, pending: true }
     if (isFailed(r)) return { key: repo, name, error: r.error, entries: [], add: 0, del: 0, pending: false }
     const entries: ChangeEntry[] = r.files.slice(0, MAX_LISTED).map(f => {
-      const note = f.binary ? '二進位' : undefined
+      const note = f.binary ? t('common.binary') : undefined
       return {
         key: `u:${f.path}`,
         path: f.path,
-        label: `${relPath(f.path, repo, names.home)}${f.untracked ? ' (新)' : ''}`,
+        label: `${relPath(f.path, repo, names.home)}${f.untracked ? t('changes.untracked') : ''}`,
         actors: list.find(c => c.path === f.path)?.actors ?? [],
         add: f.add,
         del: f.del,
@@ -153,6 +154,6 @@ export function diffLines(rows: readonly DiffRow[], width: number): DiffSeg[][] 
     const color = r.kind === 'add' ? THEME.success : r.kind === 'del' ? THEME.error : undefined
     return [gut, { t: fitCells(`${sign}${shownText(r.text)}`, textW + 1), ...(color ? { color } : {}) }]
   })
-  if (rows.length > MAX_DIFF_ROWS) out.push([{ t: fitCells(`… 還有 ${rows.length - MAX_DIFF_ROWS} 行`, width), color: THEME.frame }])
+  if (rows.length > MAX_DIFF_ROWS) out.push([{ t: fitCells(t('changes.moreLines', { n: rows.length - MAX_DIFF_ROWS }), width), color: THEME.frame }])
   return out
 }

@@ -1,3 +1,4 @@
+import { locale, localized, t } from './i18n'
 import { lineOf } from './tasks'
 import type { TopicCandidate, TopicChoice } from './tasks'
 
@@ -13,8 +14,10 @@ export const RESULT_MAX = 40
 // the reply's token cap: one short line
 export const SUMMARY_TOKENS = 100
 
-export const SUMMARY_SYSTEM =
-  '你替一個工作看板寫一行摘要。只回那一行繁體中文：不加引號、不加句號、不加「標題：」之類的前綴，也不解釋，也不用 → × — – 這類符號或彎引號。'
+export let SUMMARY_SYSTEM: string
+localized(() => {
+  SUMMARY_SYSTEM = t('sum.system')
+})
 
 // a text cut to SUMMARY_INPUT_MAX characters
 export const clipInput = (text: string): string => [...text].slice(0, SUMMARY_INPUT_MAX).join('')
@@ -22,9 +25,12 @@ export const clipInput = (text: string): string => [...text].slice(0, SUMMARY_IN
 // What a request came to, from its prompt, its plan's subtasks when it has one, and the answer
 // of the turn it was done in.
 export const resultAsk = (prompt: string, answer: string, subtasks: readonly string[] = []): string =>
-  `用不超過 ${RESULT_MAX} 個字寫出這個請求的結果或結論，例如「42」「比較後交換的無鎖原子更新」「已合併進 master」。\n\n請求：\n${clipInput(prompt)}${
-    subtasks.length === 0 ? '' : `\n\n細項：\n${clipInput(subtasks.map(t => `- ${t}`).join('\n'))}`
-  }\n\n回答：\n${clipInput(answer)}`
+  t('sum.result', {
+    max: RESULT_MAX,
+    prompt: clipInput(prompt),
+    subtasks: subtasks.length === 0 ? '' : t('sum.subtasks', { list: clipInput(subtasks.map(s => `- ${s}`).join('\n')) }),
+    answer: clipInput(answer),
+  })
 
 // quotes and brackets around a reply, and a full stop after it
 const WRAPS = /^["'「『“‘]+|["'」』”’]+$/g
@@ -42,9 +48,11 @@ const WIDE: [RegExp, string][] = [
 // phrases of the asks and their system prompts, which a summary never carries but a reply
 // repeating the instructions back does
 const ECHOES = [/請求的結果或結論/, /個字寫出/, /只回(?:那)?[一兩]行/, /第[一二]行[:：]/, /一行摘要/, /不加(?:引號|句號)/]
+// the same, of the English asks; looked for only under the English locale
+const ECHOES_EN = [/result or conclusion of this request/i, /in at most \d+ characters/i, /reply with only (?:that )?(?:one|two) lines?/i, /^line [12]:/i, /one-line summary/i, /no (?:quotes|trailing period)/i]
 
 // Whether a reply repeats the instructions back instead of following them.
-const echoesAsk = (text: string): boolean => ECHOES.some(p => p.test(text))
+const echoesAsk = (text: string): boolean => ECHOES.some(p => p.test(text)) || (locale() === 'en' && ECHOES_EN.some(p => p.test(text)))
 
 // A reply as one line: its first non-blank line, unwrapped, cut to `max` characters; '' when
 // it repeats the instructions back.
@@ -57,8 +65,10 @@ export function cleanSummary(text: string, max: number): string {
 // a new topic's title is kept to this many characters
 export const TOPIC_TITLE_MAX = 16
 
-export const CLASSIFY_SYSTEM =
-  '你替一個工作看板整理請求。照指示的行數回繁體中文：不加引號、不加句號、不加「標題：」之類的前綴，也不解釋，也不用 → × — – 這類符號或彎引號。'
+export let CLASSIFY_SYSTEM: string
+localized(() => {
+  CLASSIFY_SYSTEM = t('cls.system')
+})
 
 // the request sent before this one: its title, and its topic once placed
 export type LastAsk = { title: string; topic?: string }
@@ -66,23 +76,26 @@ export type LastAsk = { title: string; topic?: string }
 // What a request asks for and which topic it belongs to, from the topics offered and the
 // request before it; a short request is told to follow the one before.
 export const classifyAsk = (prompt: string, candidates: readonly TopicCandidate[], last?: LastAsk): string => {
-  const topics = candidates.length === 0 ? '（還沒有）' : candidates.map(c => `${c.id} ${c.title}（最近的請求：${c.latest}）`).join('\n')
+  const topics = candidates.length === 0 ? t('cls.noTopics') : candidates.map(c => t('cls.topic', c)).join('\n')
   const lastLine =
     last === undefined
       ? ''
-      : `上一個請求：${last.title}${last.topic !== undefined && candidates.some(c => c.id === last.topic) ? `（話題 ${last.topic}）` : ''}\n\n`
+      : t('cls.last', {
+          title: last.title,
+          topic: last.topic !== undefined && candidates.some(c => c.id === last.topic) ? t('cls.lastTopic', { id: last.topic }) : '',
+        })
   return [
-    `用不超過 ${SUMMARY_TITLE_MAX} 個字寫出這個請求要做什麼，動詞開頭，例如「計算 7*6」「解釋 CAS」「修 jarvis 的高亮」。`,
-    '再判斷它屬於下面哪個話題。',
+    t('cls.title', { max: SUMMARY_TITLE_MAX }),
+    t('cls.which'),
     '',
-    '只回兩行：',
-    '第一行：請求標題。',
-    `第二行：屬於既有話題就回話題編號（只回數字）；都不屬於就回「新 」加上不超過 ${TOPIC_TITLE_MAX} 個字的話題名稱，例如「新 Jamie 七日簽到累計充值」。`,
-    '很短的請求（例如「確認送出」「好」「1」「push」）通常接續前一個請求的話題。',
+    t('cls.twoLines'),
+    t('cls.line1'),
+    t('cls.line2', { max: TOPIC_TITLE_MAX }),
+    t('cls.short'),
     '',
-    `既有話題（最近活動的在前）：\n${topics}`,
+    t('cls.topics', { topics }),
     '',
-    `${lastLine}請求：\n${clipInput(prompt)}`,
+    t('cls.request', { last: lastLine, prompt: clipInput(prompt) }),
   ].join('\n')
 }
 
@@ -90,6 +103,9 @@ export const classifyAsk = (prompt: string, candidates: readonly TopicCandidate[
 const TOPIC_NO = /^(?:話題\s*)?(\d+)(?:$|[\s（(:：])/
 // the word that opens a new topic, and what may sit between it and the title
 const NEW_TOPIC = /^新(?:話題)?[\s:：]*/
+// the same as the small model writes them in English; read only under the English locale
+const TOPIC_NO_EN = /^(?:topic\s*#?\s*)?(\d+)(?:$|[\s（(:：])/i
+const NEW_TOPIC_EN = /^new(?:\s+topic)?\b[\s:：]*/i
 // full-width digits as their ASCII ones
 const asciiDigits = (text: string): string => text.replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0) - 0xfee0))
 
@@ -99,9 +115,12 @@ export function parseClassify(reply: string, candidates: readonly TopicCandidate
   const lines = reply.split('\n').filter(l => l.trim() !== '')
   const title = cleanSummary(lines[0] ?? '', SUMMARY_TITLE_MAX)
   const second = cleanSummary(lines[1] ?? '', Number.MAX_SAFE_INTEGER)
-  const no = TOPIC_NO.exec(asciiDigits(second))?.[1]
+  const en = locale() === 'en'
+  const digits = asciiDigits(second)
+  const no = TOPIC_NO.exec(digits)?.[1] ?? (en ? TOPIC_NO_EN.exec(digits)?.[1] : undefined)
   const hit = no === undefined ? undefined : candidates.find(c => c.id === no)
   if (hit) return { title, choice: { kind: 'join', id: hit.id, title: hit.title } }
-  const named = NEW_TOPIC.test(second) ? cleanSummary(second.replace(NEW_TOPIC, ''), TOPIC_TITLE_MAX) : ''
+  const opener = NEW_TOPIC.test(second) ? NEW_TOPIC : en && NEW_TOPIC_EN.test(second) ? NEW_TOPIC_EN : undefined
+  const named = opener ? cleanSummary(second.replace(opener, ''), TOPIC_TITLE_MAX) : ''
   return { title, choice: { kind: 'new', title: named !== '' ? named : title } }
 }

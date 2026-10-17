@@ -1,4 +1,5 @@
 import type { JarvisSubtask, JarvisTaskBoard, JarvisTaskItem, JarvisTaskStatus, JarvisTopic } from '../types'
+import { localized, t } from './i18n'
 
 // The tool the model keeps the board with: its short name as registered, and the name the
 // model calls it by.
@@ -20,45 +21,48 @@ export const TASK_STATUSES: readonly JarvisTaskStatus[] = ['pending', 'in_progre
 
 const OPS = ['add', 'update', 'remove', 'list'] as const
 
-export const TASK_PROMPT = [
-  '# 任務看板',
-  '使用者在 jarvis 面板的「任務」分頁看這個 session 正在做、預計要做、做完的事。jarvis 會把使用者送出的每個請求自動記成一個進行中的項目，回覆結束時自動標完成；只回答、沒有呼叫工具也沒有細項的請求，答完會自動移除。你用 mcp__jarvis__task 補上計畫。',
-  '- 多步工作（三步以上，或會派 subagent）開始前，用 add 列出細項：只帶 subtasks 會掛到本輪請求；帶 item 時，本輪請求還沒有細項就直接併入它（標題換成 item），不會多一個項目。',
-  '- 開始做一個細項時標 in_progress，做完立刻標 completed，不要留到最後一起標。',
-  '- 請求項目的標題由 jarvis 自動摘成一句，回覆結束時記下結果（有細項的請求，等細項全部完成才記）；摘得不對時，用 update 帶 title 改。',
-  '- 之後要做、這輪不做的事：用 add 只帶 item（不帶 subtasks），記成預計項目。',
-  '- 計畫變了就 add 新細項，或 remove 用不到的。',
-  '- 派 subagent 做某個細項後，用 update 帶 agent（Agent 工具回傳的 agentId）。',
-  '- 你是 subagent 時，只 update 交給你的細項，不新增工作項目。',
-  '- 一問一答不用拆細項。',
-].join('\n')
+const taskPrompt = (): string =>
+  [
+    t('prompt.head'),
+    t('prompt.intro'),
+    t('prompt.plan'),
+    t('prompt.mark'),
+    t('prompt.title'),
+    t('prompt.later'),
+    t('prompt.change'),
+    t('prompt.agent'),
+    t('prompt.subagent'),
+    t('prompt.single'),
+  ].join('\n')
 
-export const TASK_TOOL_SPEC = {
-  name: TASK_TOOL_NAME,
-  description: [
-    '維護本 session 的任務看板（jarvis 面板「任務」分頁）。兩層：工作項目（id 如 "2"）→ 細項（id 如 "2.3"）。',
-    'op=add：item 建新項目，可同時帶 subtasks；或 to=既有項目 id，把 subtasks 加進去；不帶 item 和 to、只帶 subtasks 時，掛到本輪請求項目。帶 item 和 subtasks、本輪請求項目還沒有細項時，併入本輪請求項目（標題換成 item）。只帶 item 是預計項目。',
-    'op=update：id 指項目或細項，帶 status（pending／in_progress／completed）、title 或 agent（負責這個細項的 subagent 的 agentId）。有細項的項目狀態由細項推出，把它標 completed 會把細項全部標 completed。',
-    'op=remove：刪除 id 指的項目或細項。',
-    'op=list：回傳整張看板。',
-    '每次成功都回傳更新後的看板。',
-  ].join('\n'),
-  inputSchema: {
-    type: 'object',
-    properties: {
-      op: { type: 'string', enum: [...OPS] },
-      item: { type: 'string', description: 'add：新工作項目的標題' },
-      to: { type: 'string', description: 'add：要加細項的既有項目 id' },
-      subtasks: { type: 'array', items: { type: 'string' }, description: 'add：細項標題，依執行順序' },
-      id: { type: 'string', description: 'update／remove：項目 id（"2"）或細項 id（"2.3"）' },
-      status: { type: 'string', enum: [...TASK_STATUSES] },
-      title: { type: 'string', description: 'update：新標題' },
-      agent: { type: 'string', description: 'update：負責這個細項的 subagent 的 agentId' },
+const taskToolSpec = () =>
+  ({
+    name: TASK_TOOL_NAME,
+    description: [t('tool.intro'), t('tool.add'), t('tool.update'), t('tool.remove'), t('tool.list'), t('tool.reply')].join('\n'),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: [...OPS] },
+        item: { type: 'string', description: t('tool.item') },
+        to: { type: 'string', description: t('tool.to') },
+        subtasks: { type: 'array', items: { type: 'string' }, description: t('tool.subtasks') },
+        id: { type: 'string', description: t('tool.id') },
+        status: { type: 'string', enum: [...TASK_STATUSES] },
+        title: { type: 'string', description: t('tool.title') },
+        agent: { type: 'string', description: t('tool.agent') },
+      },
+      required: ['op'],
     },
-    required: ['op'],
-  },
-  isDeferred: false,
-} as const
+    isDeferred: false,
+  }) as const
+
+// the board's instructions and its tool, in the current locale
+export let TASK_PROMPT: string
+export let TASK_TOOL_SPEC: ReturnType<typeof taskToolSpec>
+localized(() => {
+  TASK_PROMPT = taskPrompt()
+  TASK_TOOL_SPEC = taskToolSpec()
+})
 
 export type TaskReply = { board: JarvisTaskBoard; text: string } | { error: string }
 
@@ -112,7 +116,7 @@ function stamped<T extends Timed>(x: T, status: JarvisTaskStatus, now: number | 
   return { ...rest, status } as T
 }
 
-const notFound = (id: string): string => `找不到 ${id}：id 是項目（如 "2"）或細項（如 "2.3"）`
+const notFound = (id: string): string => t('board.notFound', { id })
 
 // An item's subtasks with `titles` added after the last; a subagent's own are marked its.
 function withSubtasks(item: JarvisTaskItem, titles: readonly string[], actor: string | undefined): JarvisTaskItem {
@@ -133,42 +137,42 @@ function add(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>, a
   const to = str(input['to'])
   if (to !== '') {
     const item = board.items.find(i => i.id === to)
-    if (!item) return `找不到項目 ${to}`
-    if (titles.length === 0) return 'add 帶 to 時，subtasks 至少要有一個細項'
-    if (item.subtasks.length + titles.length > MAX_SUBTASKS) return `一個項目最多 ${MAX_SUBTASKS} 個細項`
+    if (!item) return t('board.itemNotFound', { id: to })
+    if (titles.length === 0) return t('board.toNeedsSubtasks')
+    if (item.subtasks.length + titles.length > MAX_SUBTASKS) return t('board.maxSubtasks', { max: MAX_SUBTASKS })
     return replaceItem(board, withSubtasks(item, titles, actor))
   }
   const title = titleOf(input['item'])
   // the request being worked on, which the main loop's plans hang on; a subagent's never do
   const current = actor === undefined ? currentRequest(board) : undefined
   if (title === '') {
-    if (!current || titles.length === 0) return 'add 要帶 item（新項目標題）或 to（既有項目 id）'
-    if (current.subtasks.length + titles.length > MAX_SUBTASKS) return `一個項目最多 ${MAX_SUBTASKS} 個細項`
+    if (!current || titles.length === 0) return t('board.addNeeds')
+    if (current.subtasks.length + titles.length > MAX_SUBTASKS) return t('board.maxSubtasks', { max: MAX_SUBTASKS })
     return replaceItem(board, withSubtasks(current, titles, actor))
   }
-  if (titles.length > MAX_SUBTASKS) return `一個項目最多 ${MAX_SUBTASKS} 個細項`
+  if (titles.length > MAX_SUBTASKS) return t('board.maxSubtasks', { max: MAX_SUBTASKS })
   // a plan for the request being worked on folds into its item rather than standing beside it
   if (current && current.subtasks.length === 0 && titles.length > 0) {
     return replaceItem(board, withSubtasks({ ...current, title, titleBy: 'model' }, titles, actor))
   }
   const roomy = makeRoom(board)
-  if (roomy.items.length >= MAX_ITEMS) return `看板最多 ${MAX_ITEMS} 個項目，先 remove 用不到的項目`
+  if (roomy.items.length >= MAX_ITEMS) return t('board.maxItems', { max: MAX_ITEMS })
   return putItem(roomy, title, titles, actor)
 }
 
 function update(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>, actor: string | undefined, now: number | undefined): JarvisTaskBoard | string {
   const id = str(input['id'])
   const status = input['status']
-  if (status !== undefined && !isStatus(status)) return 'status 只能是 pending、in_progress、completed'
+  if (status !== undefined && !isStatus(status)) return t('board.badStatus')
   const title = input['title'] === undefined ? undefined : titleOf(input['title'])
-  if (title === '') return 'title 不能是空的'
+  if (title === '') return t('board.emptyTitle')
   const agent = str(input['agent'])
   if (ITEM_ID.test(id)) {
     const item = board.items.find(i => i.id === id)
-    if (!item) return `找不到項目 ${id}`
-    if (status === undefined && title === undefined) return 'update 項目要帶 status 或 title'
+    if (!item) return t('board.itemNotFound', { id })
+    if (status === undefined && title === undefined) return t('board.itemUpdateNeeds')
     const hasSubs = item.subtasks.length > 0
-    if (status !== undefined && hasSubs && status !== 'completed') return `項目 ${id} 有細項，狀態由細項決定；請 update 細項`
+    if (status !== undefined && hasSubs && status !== 'completed') return t('board.itemHasSubtasks', { id })
     const titled: JarvisTaskItem = title === undefined ? item : { ...item, title, titleBy: 'model' }
     if (status === undefined) return replaceItem(board, titled)
     return replaceItem(
@@ -179,7 +183,7 @@ function update(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>
   const found = findSub(board, id)
   if (!found) return notFound(id)
   const { item, sub } = found
-  if (status === undefined && title === undefined && agent === '') return 'update 細項要帶 status、title 或 agent'
+  if (status === undefined && title === undefined && agent === '') return t('board.subUpdateNeeds')
   const owner = agent !== '' ? agent : (actor ?? sub.agentId)
   const next: JarvisSubtask = {
     ...(status === undefined ? sub : stamped(sub, status, now)),
@@ -192,7 +196,7 @@ function update(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>
 function remove(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>): JarvisTaskBoard | string {
   const id = str(input['id'])
   if (ITEM_ID.test(id)) {
-    if (!board.items.some(i => i.id === id)) return `找不到項目 ${id}`
+    if (!board.items.some(i => i.id === id)) return t('board.itemNotFound', { id })
     return { ...board, items: board.items.filter(i => i.id !== id) }
   }
   const found = findSub(board, id)
@@ -213,7 +217,7 @@ export function applyTask(board: JarvisTaskBoard, input: Readonly<Record<string,
           ? update(board, input, actor, now)
           : op === 'remove'
             ? remove(board, input)
-            : `op 只能是 ${OPS.join('、')}`
+            : t('board.badOp', { ops: OPS.join(t('common.listSep')) })
   if (typeof next === 'string') return { error: next }
   const settled = planResults(board, next)
   return { board: settled, text: boardText(settled) }
@@ -271,19 +275,19 @@ export function boardCounts(board: JarvisTaskBoard): BoardCounts {
   }
 }
 
-export const countsText = (c: BoardCounts): string => `${c.itemsDone}/${c.items} 項目 · 細項 ${c.subtasksDone}/${c.subtasks}`
+export const countsText = (c: BoardCounts): string => t('tasks.counts', c)
 
 const MARK: Record<JarvisTaskStatus, string> = { pending: '[ ]', in_progress: '[>]', completed: '[x]' }
 
 // The board as the model reads it, in the order added so the ids read in order; the request
 // being worked on is marked.
 export function boardText(board: JarvisTaskBoard): string {
-  if (board.items.length === 0) return '任務看板是空的。'
+  if (board.items.length === 0) return t('board.empty')
   const current = currentRequest(board)
-  const lines = [`任務看板（${countsText(boardCounts(board))}）`]
+  const lines = [t('board.head', { counts: countsText(boardCounts(board)) })]
   for (const item of board.items) {
     const result = item.result === undefined ? '' : ` → ${item.result}`
-    lines.push(`${MARK[itemStatus(item)]} ${item.id} ${item.title}${result}${item === current ? '（本輪請求）' : ''}`)
+    lines.push(`${MARK[itemStatus(item)]} ${item.id} ${item.title}${result}${item === current ? t('board.current') : ''}`)
     for (const s of item.subtasks) {
       lines.push(`  ${MARK[s.status]} ${s.id} ${s.title}${s.agentId === undefined ? '' : ` (agent ${s.agentId})`}`)
     }
@@ -458,8 +462,7 @@ export function boardLive(board: JarvisTaskBoard, now: number): boolean {
 }
 
 // The note beside each recorded prompt: which item it is, and what the model may do with it.
-export const requestContext = (id: string): string =>
-  `jarvis 任務看板：這個請求已記成項目 ${id}，標題會自動摘成一句。這輪有呼叫工具或掛了細項，回覆結束時自動標完成並記下結果（有細項的，等細項全部完成才記結果）；只是回答問題，答完會自動移除。多步工作用 mcp__jarvis__task add 只帶 subtasks，把細項掛到這個項目；摘要不對時，用 update id=${id} 帶 title 改。`
+export const requestContext = (id: string): string => t('board.requestContext', { id })
 
 // ---- what a small model makes of a request, after the fact ----
 
@@ -601,7 +604,10 @@ export function closeResults(board: JarvisTaskBoard, answered: boolean): JarvisT
 
 export const TODO_TITLE = 'TodoWrite'
 export const TASKS_ORIGIN = 'tasks'
-export const TASKS_TITLE = '內建任務'
+export let TASKS_TITLE: string
+localized(() => {
+  TASKS_TITLE = t('tasks.builtin')
+})
 
 // TodoWrite's whole list, one item per actor: each call replaces its subtasks (numbered
 // again from .1); an empty list removes the item.

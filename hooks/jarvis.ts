@@ -1,10 +1,14 @@
 import type { JarvisAgent, JarvisEvent, JarvisInflight, JarvisMain } from '../types'
+import { localized, t } from './i18n'
 
 export const MAX_AGENTS = 50
 export const CHAIN_WARN = 4
 export const STALE_MS = 10 * 60 * 1000
 export const MAX_EVENTS = 200
-export const MAIN_SOURCE = '主線'
+export let MAIN_SOURCE: string
+localized(() => {
+  MAIN_SOURCE = t('common.main')
+})
 export const MAIN_ACTOR = 'main'
 export const LOOP_FAILS = 3
 export const STUCK_MS = 5 * 60 * 1000
@@ -180,7 +184,7 @@ export function summarize(agents: readonly JarvisAgent[]): Summary {
     const family = familyOf(a.model)
     const key = family ?? 'other'
     const group = byKey.get(key) ?? {
-      label: family ? FAMILY_NAME[family] : '其他',
+      label: family ? FAMILY_NAME[family] : t('common.other'),
       ...(family ? { family } : {}),
       count: 0,
     }
@@ -422,10 +426,10 @@ export function finishedOf(list: readonly JarvisAgent[]): JarvisAgent[] {
 // The one-line summary: models by use count, estimated cost against all-Opus.
 export function summaryLine(sum: Summary): string {
   const models = sum.groups.map(g => `${g.label}×${g.count}`).join(' ')
-  if (sum.savedPct === undefined) return `${models} · 未計價`
+  if (sum.savedPct === undefined) return `${models} · ${t('common.unpriced')}`
   const pct = Math.round(sum.savedPct)
-  const tail = pct >= 0 ? `省${pct}%` : `多花${-pct}%`
-  return `${models} · ≈${fmtUsd(sum.cost)} vs Opus ${fmtUsd(sum.opusCost)}（${tail}）`
+  const tail = pct >= 0 ? t('cost.saved', { pct }) : t('cost.over', { pct: -pct })
+  return t('cost.summary', { models, cost: fmtUsd(sum.cost), opus: fmtUsd(sum.opusCost), tail })
 }
 
 export type Health = 'ok' | 'loop' | 'stuck'
@@ -437,15 +441,18 @@ export type Role = 'Explore' | 'clerk' | 'worker' | 'verifier' | 'fork' | 'workf
 
 export const ROLES: Role[] = ['Explore', 'clerk', 'worker', 'verifier', 'fork', 'workflow', 'other']
 
-export const ROLE_LABEL: Record<Role, string> = {
-  Explore: 'Explore',
-  clerk: 'clerk',
-  worker: 'worker',
-  verifier: 'verifier',
-  fork: 'fork',
-  workflow: 'workflow',
-  other: '其他',
-}
+export let ROLE_LABEL: Record<Role, string>
+localized(() => {
+  ROLE_LABEL = {
+    Explore: 'Explore',
+    clerk: 'clerk',
+    worker: 'worker',
+    verifier: 'verifier',
+    fork: 'fork',
+    workflow: 'workflow',
+    other: t('common.other'),
+  }
+})
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 
@@ -697,7 +704,7 @@ export function modelShares(agents: readonly JarvisAgent[]): ModelShare[] {
     const family = familyOf(a.model)
     const key = family ?? 'other'
     const row = byKey.get(key) ?? {
-      label: family ? FAMILY_NAME[family] : '其他',
+      label: family ? FAMILY_NAME[family] : t('common.other'),
       ...(family ? { family } : {}),
       count: 0,
       cost: 0,

@@ -3,6 +3,7 @@ import { GIT, answered, parseDiff, parseNumstatZ, pickTarget } from './gitDiff'
 import type { DiffRow, Failed, NumstatRow } from './gitDiff'
 import { branchRows, countStatus, parseBranchRefs, parseRemotes, parseStashes, parseWorktrees, worktreeRows } from './repoViews'
 import type { BranchList, Remotes, StashInfo, WorktreeRow } from './repoViews'
+import { t } from './i18n'
 
 export const ENV = '/usr/bin/env'
 // how long a fetch may take before it is given up
@@ -19,7 +20,7 @@ export type StashFile = NumstatRow & { untracked: boolean }
 // in the common git dir (a linked worktree's is its main repo's, given absolute).
 export async function remotesOf(io: Pick<ChangesIo, 'run' | 'stat'>, repo: string): Promise<Remotes | Failed> {
   const r = await io.run([GIT, '-C', repo, 'remote', '-v'])
-  if (!answered(r)) return { error: 'git remote 失敗' }
+  if (!answered(r)) return { error: t('err.failed', { what: 'git remote' }) }
   const remotes = parseRemotes(r.stdout)
   const d = await io.run([GIT, '-C', repo, 'rev-parse', '--git-common-dir'])
   const dir = answered(d) ? d.stdout.trim() : ''
@@ -32,7 +33,7 @@ export async function remotesOf(io: Pick<ChangesIo, 'run' | 'stat'>, repo: strin
 // origin/master) marked when there is one.
 export async function branchesOf(io: Pick<ChangesIo, 'run'>, repo: string): Promise<BranchList | Failed> {
   const r = await io.run([GIT, '-C', repo, 'for-each-ref', '--sort=-committerdate', BRANCH_FORMAT, 'refs/heads', 'refs/remotes'])
-  if (!answered(r)) return { error: 'git for-each-ref 失敗' }
+  if (!answered(r)) return { error: t('err.failed', { what: 'git for-each-ref' }) }
   const target = await pickTarget(io, repo)
   let merged: Set<string> | undefined
   if (target !== undefined) {
@@ -44,14 +45,14 @@ export async function branchesOf(io: Pick<ChangesIo, 'run'>, repo: string): Prom
 
 export async function stashesOf(io: Pick<ChangesIo, 'run'>, repo: string): Promise<StashInfo[] | Failed> {
   const r = await io.run([GIT, '-C', repo, 'stash', 'list', STASH_FORMAT])
-  return answered(r) ? parseStashes(r.stdout) : { error: 'git stash 失敗' }
+  return answered(r) ? parseStashes(r.stdout) : { error: t('err.failed', { what: 'git stash' }) }
 }
 
 // A stash's files, untracked ones included; those its third parent holds are untracked (no
 // third parent: none are).
 export async function stashFiles(io: Pick<ChangesIo, 'run'>, repo: string, sha: string): Promise<StashFile[] | Failed> {
   const r = await io.run([GIT, '-C', repo, 'stash', 'show', '--include-untracked', '--numstat', '-z', '--no-renames', sha])
-  if (!answered(r)) return { error: 'git stash 失敗' }
+  if (!answered(r)) return { error: t('err.failed', { what: 'git stash' }) }
   const u = await io.run([GIT, '-C', repo, 'ls-tree', '-r', '--name-only', '-z', `${sha}^3`])
   const untracked = new Set(answered(u) ? u.stdout.split('\x00').filter(s => s !== '') : [])
   return parseNumstatZ(r.stdout.replace(/^\n+/, '')).map(f => ({ ...f, untracked: untracked.has(f.path) }))
@@ -63,13 +64,13 @@ export async function stashFileDiff(io: Pick<ChangesIo, 'run'>, repo: string, sh
     ? [GIT, '-C', repo, 'show', '--no-color', '--no-renames', '--format=', `${sha}^3`, '--', f.path]
     : [GIT, '-C', repo, 'diff', '--no-color', '--no-renames', `${sha}^1`, sha, '--', f.path]
   const r = await io.run(argv)
-  return answered(r) ? parseDiff(r.stdout) : { error: 'git diff 失敗' }
+  return answered(r) ? parseDiff(r.stdout) : { error: t('err.failed', { what: 'git diff' }) }
 }
 
 // Every worktree with its uncommitted files; a pruned or bare one is not asked.
 export async function worktreesOf(io: Pick<ChangesIo, 'run'>, repo: string): Promise<WorktreeRow[] | Failed> {
   const r = await io.run([GIT, '-C', repo, 'worktree', 'list', '--porcelain', '-z'])
-  if (!answered(r)) return { error: 'git worktree 失敗' }
+  if (!answered(r)) return { error: t('err.failed', { what: 'git worktree' }) }
   const list = parseWorktrees(r.stdout)
   const dirty = new Map<string, number>()
   for (const w of list) {
@@ -96,8 +97,8 @@ export function fetchArgv(repo: string): string[] {
 // true when done; else why not: stderr's last line, or that it ran past its time
 export async function fetchRepo(io: Pick<ChangesIo, 'run'>, repo: string): Promise<true | Failed> {
   const r = await io.run(fetchArgv(repo))
-  if (r === undefined) return { error: 'fetch 逾時' }
+  if (r === undefined) return { error: t('err.fetchTimeout') }
   if (r.exitCode === 0) return true
   const last = r.stderr.split('\n').map(s => s.trim()).filter(s => s !== '').at(-1)
-  return { error: last ?? 'fetch 失敗' }
+  return { error: last ?? t('err.failed', { what: 'fetch' }) }
 }

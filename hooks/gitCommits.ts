@@ -2,6 +2,7 @@ import { dirOf } from './changes'
 import type { ChangesIo } from './changes'
 import { GIT, answered, parseDiff, parseNumstatZ } from './gitDiff'
 import type { DiffRow, Failed, NumstatRow } from './gitDiff'
+import { t } from './i18n'
 import { shortRef } from './repoViews'
 
 export const FIND = '/usr/bin/find'
@@ -42,12 +43,12 @@ export function parseFound(stdout: string): string[] {
 }
 
 export async function findRepos(io: Pick<ChangesIo, 'run'>, cwd: string): Promise<string[] | Failed> {
-  if (cwd === '') return { error: '找不到 repo' }
+  if (cwd === '') return { error: t('repo.notFound') }
   const r = await io.run(findArgv(cwd))
-  if (r === undefined) return { error: '找不到 repo' }
+  if (r === undefined) return { error: t('repo.notFound') }
   const repos = parseFound(r.stdout)
   // find exits 1 on a directory it may not read, what it found still printed
-  if (repos.length === 0 && r.exitCode !== 0) return { error: '找不到 repo' }
+  if (repos.length === 0 && r.exitCode !== 0) return { error: t('repo.notFound') }
   return repos
 }
 
@@ -79,7 +80,7 @@ const headName = async (io: Pick<ChangesIo, 'run'>, repo: string): Promise<strin
 
 export async function repoSummary(io: Pick<ChangesIo, 'run'>, repo: string): Promise<RepoSummary | Failed> {
   const r = await io.run([GIT, '-C', repo, 'log', '-1', '--decorate=full', '--format=%ct%x00%h%x00%D', 'HEAD'])
-  if (!answered(r)) return { error: 'git log 失敗' }
+  if (!answered(r)) return { error: t('err.failed', { what: 'git log' }) }
   const [ct = '', short = '', refs = ''] = r.stdout.replace(/\n+$/, '').split('\x00')
   const a = await io.run([GIT, '-C', repo, 'rev-list', '--count', '@{u}..HEAD'])
   const ahead = a?.exitCode === 0 ? Number(a.stdout.trim()) || 0 : undefined
@@ -97,7 +98,7 @@ export async function commitTreeOf(io: Pick<ChangesIo, 'run'>, repo: string, ref
   const u = spec === undefined ? undefined : await io.run([GIT, '-C', repo, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', spec])
   const upstream = u?.exitCode === 0 && u.stdout.trim() !== '' ? u.stdout.trim() : undefined
   const r = await io.run([GIT, '-C', repo, 'log', '--topo-order', '--decorate=full', '-n', String(MAX_COMMITS), LOG_FORMAT, tip, ...(upstream ? [upstream] : [])])
-  if (!answered(r)) return { error: 'git log 失敗' }
+  if (!answered(r)) return { error: t('err.failed', { what: 'git log' }) }
   const commits = parseLog(r.stdout)
   let unpushed: string[] = []
   let unpushedFailed = false
@@ -119,7 +120,7 @@ export async function commitFiles(io: Pick<ChangesIo, 'run'>, repo: string, c: P
       ? [GIT, '-C', repo, 'show', '--numstat', '-z', '--no-renames', '--format=', c.sha]
       : [GIT, '-C', repo, 'diff', '--numstat', '-z', '--no-renames', p, c.sha]
   const r = await io.run(argv)
-  if (!answered(r)) return { error: 'git diff 失敗' }
+  if (!answered(r)) return { error: t('err.failed', { what: 'git diff' }) }
   return parseNumstatZ(r.stdout.replace(/^\n+/, ''))
 }
 
@@ -135,5 +136,5 @@ export async function commitFileDiff(
       ? [GIT, '-C', repo, 'show', '--no-color', '--no-renames', '--format=', c.sha, '--', path]
       : [GIT, '-C', repo, 'diff', '--no-color', '--no-renames', p, c.sha, '--', path]
   const r = await io.run(argv)
-  return answered(r) ? parseDiff(r.stdout) : { error: 'git diff 失敗' }
+  return answered(r) ? parseDiff(r.stdout) : { error: t('err.failed', { what: 'git diff' }) }
 }

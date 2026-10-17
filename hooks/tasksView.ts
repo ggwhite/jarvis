@@ -1,11 +1,15 @@
 import type { JarvisStatus, JarvisTaskBoard, JarvisTaskItem, JarvisTaskStatus } from '../types'
 import type { Seg } from './cockpit'
 import { RESULT_ICON, TASK_ICON, withIcon } from './icons'
+import { localized, t } from './i18n'
 import { ANIM_MS, SPINNER, THEME, cellWidth, fitCells, fmtReadout, padCells } from './jarvis'
 import { boardGroups, groupStatus, isFresh, itemFresh, itemRunning, itemStartedAt, itemStatus, topicsOf } from './tasks'
 import type { TaskGroup } from './tasks'
 
-export const EMPTY_TEXT = '還沒有任務。送出請求後，這裡會列出正在做、預計要做和做完的事。'
+export let EMPTY_TEXT: string
+localized(() => {
+  EMPTY_TEXT = t('tasks.empty')
+})
 
 // a subtask row's indent under its item
 export const SUB_INDENT = 4
@@ -18,9 +22,9 @@ export const RESULT_MIN = 4
 
 // the page's three parts in order, each under its heading
 const SECTIONS = [
-  ['running', '進行中'],
-  ['planned', '預計'],
-  ['done', '已完成'],
+  ['running', 'tasks.running'],
+  ['planned', 'tasks.planned'],
+  ['done', 'tasks.done'],
 ] as const
 
 const ICON_COLOR: Record<JarvisTaskStatus, string> = {
@@ -140,16 +144,16 @@ function subtaskRights(status: JarvisTaskStatus, startedAt: number | undefined, 
   const a = owner.agent
   if (a === undefined) return [[mk]]
   const took = time(a.ms)
-  if (a.status === 'running' && a.waiting === true) return [spaced([{ t: '等待', color: THEME.primary }, took, mk]), spaced([took, mk]), [mk]]
+  if (a.status === 'running' && a.waiting === true) return [spaced([{ t: t('member.waiting'), color: THEME.primary }, took, mk]), spaced([took, mk]), [mk]]
   if (a.status === 'running') {
     const tool: Seg[] = a.tool === '' ? [] : [{ t: fitCells(a.tool, TOOL_MAX), color: THEME.accent }]
     return [spaced([...tool, took, mk]), spaced([took, mk]), [mk]]
   }
   if (a.status === 'done' || a.status === 'failed') {
-    const word: Seg = a.status === 'done' ? { t: '完成', color: THEME.success } : { t: '失敗', color: THEME.error }
+    const word: Seg = a.status === 'done' ? { t: t('member.done'), color: THEME.success } : { t: t('member.failed'), color: THEME.error }
     return [spaced([word, took, mk]), spaced([word, mk])]
   }
-  return [spaced([{ t: '失聯', color: THEME.error }, mk]), [mk]]
+  return [spaced([{ t: t('member.stale'), color: THEME.error }, mk]), [mk]]
 }
 
 // A part's heading with its count, `width` cells.
@@ -230,12 +234,12 @@ export function taskLines(
   for (const [key, label] of SECTIONS) {
     const groups = parts[key]
     if (groups.length === 0) continue
-    lines.push({ segs: headingRow(label, groups.length, width) })
+    lines.push({ segs: headingRow(t(label), groups.length, width) })
     for (const group of groups) lines.push(...groupLines(group, width, owner, now, folds))
   }
   if (lines.length <= room) return lines
   const kept = lines.slice(0, room - 1)
-  return [...kept, { segs: [{ t: fitCells(`還有 ${lines.length - kept.length} 列`, width), color: THEME.frame }] }]
+  return [...kept, { segs: [{ t: fitCells(t('tasks.moreRows', { n: lines.length - kept.length }), width), color: THEME.frame }] }]
 }
 
 // The board's lines as segments alone.

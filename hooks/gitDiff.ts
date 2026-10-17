@@ -1,6 +1,7 @@
 import type { JarvisChange } from '../types'
 import { CREATED, UNKNOWN } from './changes'
 import type { ChangesIo } from './changes'
+import { t } from './i18n'
 
 export const GIT = '/usr/bin/git'
 export const MAX_UNTRACKED = 50
@@ -95,18 +96,18 @@ async function sessionArgv(io: ChangesIo, c: Source, kind: '--numstat' | '--no-c
 
 export async function sessionStat(io: ChangesIo, c: Source): Promise<FileStat | Failed> {
   const how = await sessionArgv(io, c, '--numstat')
-  if (!how) return { error: '無原始內容' }
+  if (!how) return { error: t('err.noOriginal') }
   const r = await io.run(how.argv)
-  if (!answered(r, true)) return { error: 'git diff 失敗' }
+  if (!answered(r, true)) return { error: t('err.failed', { what: 'git diff' }) }
   const row = parseNumstat(r.stdout)[0]
   return { add: row?.add ?? 0, del: row?.del ?? 0, binary: row?.binary ?? false, deleted: how.deleted, vsHead: how.vsHead }
 }
 
 export async function sessionDiff(io: ChangesIo, c: Source): Promise<DiffRow[] | Failed> {
   const how = await sessionArgv(io, c, '--no-color')
-  if (!how) return { error: '無原始內容' }
+  if (!how) return { error: t('err.noOriginal') }
   const r = await io.run(how.argv)
-  return answered(r, true) ? parseDiff(r.stdout) : { error: 'git diff 失敗' }
+  return answered(r, true) ? parseDiff(r.stdout) : { error: t('err.failed', { what: 'git diff' }) }
 }
 
 export async function pickTarget(io: Pick<ChangesIo, 'run'>, repo: string): Promise<string | undefined> {
@@ -123,11 +124,11 @@ export async function pickTarget(io: Pick<ChangesIo, 'run'>, repo: string): Prom
 export async function unpushedOf(io: ChangesIo, repo: string): Promise<Unpushed | Failed> {
   const target = await pickTarget(io, repo)
   let base = 'HEAD'
-  let note = '找不到 origin，只比 HEAD'
+  let note = t('err.noOrigin')
   if (target !== undefined) {
     const mb = await io.run([GIT, '-C', repo, 'merge-base', 'HEAD', target])
     if (mb?.exitCode === 0 && mb.stdout.trim() !== '') base = mb.stdout.trim()
-    note = base === 'HEAD' ? 'merge-base 失敗，只比 HEAD' : ''
+    note = base === 'HEAD' ? t('err.mergeBase') : ''
   }
   let ahead = 0
   if (base !== 'HEAD') {
@@ -135,7 +136,7 @@ export async function unpushedOf(io: ChangesIo, repo: string): Promise<Unpushed 
     ahead = c?.exitCode === 0 ? Number(c.stdout.trim()) || 0 : 0
   }
   const d = await io.run([GIT, '-C', repo, 'diff', '--numstat', '-z', '--no-renames', base])
-  if (!answered(d)) return { error: 'git diff 失敗' }
+  if (!answered(d)) return { error: t('err.failed', { what: 'git diff' }) }
   const files: UnpushedFile[] = parseNumstatZ(d.stdout).map(f => ({ ...f, path: `${repo}/${f.path}`, untracked: false }))
   const u = await io.run([GIT, '-C', repo, 'ls-files', '--others', '--exclude-standard', '-z'])
   const untracked = answered(u) ? u.stdout.split('\0').filter(s => s !== '').slice(0, MAX_UNTRACKED) : []
@@ -154,5 +155,5 @@ export async function unpushedDiff(io: ChangesIo, repo: string, base: string, f:
     ? [GIT, 'diff', '--no-index', '--no-color', '--', CREATED, f.path]
     : [GIT, '-C', repo, 'diff', '--no-color', '--no-renames', base, '--', f.path]
   const r = await io.run(argv)
-  return answered(r, true) ? parseDiff(r.stdout) : { error: 'git diff 失敗' }
+  return answered(r, true) ? parseDiff(r.stdout) : { error: t('err.failed', { what: 'git diff' }) }
 }

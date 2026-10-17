@@ -1,6 +1,7 @@
 import type { JarvisAgent } from '../types'
 import { runningOf, staleOf, summarize } from './jarvis'
 import type { Health } from './jarvis'
+import { t } from './i18n'
 
 export const THROTTLE_MS = 2000
 export const TTL_MS = 900_000
@@ -9,13 +10,13 @@ export const REFRESH_MS = 600_000
 export const MAX_FAILURES = 3
 export const RUN_TIMEOUT_MS = 5000
 
-const WARN_PREFIX: Record<Health, string> = { ok: '', loop: '⚠繞圈 ', stuck: '⚠卡住 ' }
+const warnPrefix = (health: Health): string => (health === 'ok' ? '' : t(health === 'loop' ? 'health.loop' : 'health.stuck'))
 
 // The sidebar text for a session's squad; undefined when there is nothing to show.
 // A health warning leads the text, and shows even with no subagents.
 export function jarvisText(list: readonly JarvisAgent[], health: Health = 'ok'): string | undefined {
   const body = countsText(list)
-  const prefix = WARN_PREFIX[health]
+  const prefix = warnPrefix(health)
   if (prefix === '') return body
   return body === undefined ? prefix.trimEnd() : `${prefix}${body}`
 }
@@ -33,7 +34,7 @@ function countsText(list: readonly JarvisAgent[]): string | undefined {
   const saved = summarize(list).savedPct
   if (saved === undefined) return counts.join(' ')
   const pct = Math.round(saved)
-  const tail = pct >= 0 ? `省${pct}%` : `多花${-pct}%`
+  const tail = pct >= 0 ? t('cost.saved', { pct }) : t('cost.over', { pct: -pct })
   return `${counts.join(' ')} · ${tail}`
 }
 

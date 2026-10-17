@@ -5,6 +5,7 @@ import { DT, GLASS } from './desktopTheme'
 import { CONTEXT_ALERT, CONTEXT_WARN, DECOMMISSION_MS, beatsOf, fleetSections, fleetTotals, fmtAgo, fmtBig, wrapCells } from './fleet'
 import { hourlyOf, idleHourMax, windowFoot } from './fleetCards'
 import { RING_BIG, RING_SMALL } from './fleetChart'
+import { localized, t as tr } from './i18n'
 import { CHANGE_ICON, COMMIT_ICON, TAB_ICON, forDesktop } from './icons'
 import { MAIN_ACTOR, cellWidth, fmtUsd, shortModel } from './jarvis'
 import type { Cockpit } from './jarvis'
@@ -64,18 +65,21 @@ const FLEET_STATUS: Record<FleetStatus, { icon: string; label: string; color: st
   idle: { icon: '◇', label: 'STANDBY', color: DT.textSub },
 }
 
-const CHANGE_MODES: { mode: ChangeMode; label: string }[] = [
-  { mode: 'session', label: '本 session' },
-  { mode: 'unpushed', label: '未推送' },
-  { mode: 'commits', label: '提交' },
-]
-
-const REPO_VIEWS: { view: RepoView; label: string }[] = [
-  { view: 'log', label: '提交' },
-  { view: 'branches', label: '分支' },
-  { view: 'stash', label: 'Stash' },
-  { view: 'worktrees', label: 'Worktree' },
-]
+let CHANGE_MODES: { mode: ChangeMode; label: string }[]
+let REPO_VIEWS: { view: RepoView; label: string }[]
+localized(() => {
+  CHANGE_MODES = [
+    { mode: 'session', label: tr('changes.modeSessionShort') },
+    { mode: 'unpushed', label: tr('changes.modeUnpushed') },
+    { mode: 'commits', label: tr('changes.modeCommits') },
+  ]
+  REPO_VIEWS = [
+    { view: 'log', label: tr('repo.viewCommits') },
+    { view: 'branches', label: tr('repo.viewBranches') },
+    { view: 'stash', label: 'Stash' },
+    { view: 'worktrees', label: 'Worktree' },
+  ]
+})
 
 // a commit graph's lanes on dark glass, neighbours never alike
 const LANE_DT: readonly string[] = [DT.data, DT.ok, DT.orange, DT.blue, DT.orangeBright, DT.textSub]
@@ -196,13 +200,13 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
     const idle = s.status === 'idle'
     const vals = idle ? hourlyOf(s) : beatsOf(s.stamps, now)
     const run = s.runSince === undefined ? undefined : fmtAgo(now - s.runSince)
-    const info = (idle ? [s.model ? shortModel(s.model) : undefined, `${s.tools} 次工具`] : [s.model ? shortModel(s.model) : undefined, s.tool, run])
+    const info = (idle ? [s.model ? shortModel(s.model) : undefined, tr('fleet.toolCount', { n: s.tools })] : [s.model ? shortModel(s.model) : undefined, s.tool, run])
       .filter((x): x is string => x !== undefined && x !== '')
       .join(' · ')
     const pct = s.contextPct
     const body = row([
       fit.on('spark')
-        ? { w: SCOL.spark, node: picture(sparkSvg(vals, SCOL.spark, idle ? idleMax : undefined, idle ? DT.orange : st.color, GLASS), idle ? '今日每小時' : '最近一小時', SCOL.spark, 1) }
+        ? { w: SCOL.spark, node: picture(sparkSvg(vals, SCOL.spark, idle ? idleMax : undefined, idle ? DT.orange : st.color, GLASS), idle ? tr('alt.hourlyToday') : tr('alt.lastHour'), SCOL.spark, 1) }
         : null,
       { w: fit.rest, node: say(info === '' ? '--' : info) },
       fit.on('meter')
@@ -223,14 +227,14 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
 
   const fleetPage = (): RenderElement => {
     if (!ctx.herdr) {
-      return card(head(forDesktop(TAB_ICON.fleet), '艦隊', '需要 herdr'), [
+      return card(head(forDesktop(TAB_ICON.fleet), tr('tab.fleet'), tr('fleet.needsHerdrShort')), [
         <Box flexDirection="row" gap={2} alignItems="center">
-          {picture(ringSvg(RING_SMALL, 0, false, [], undefined, GLASS), 'herdr 未連線', RING_SMALL.w, Math.ceil(RING_SMALL.h / 2))}
+          {picture(ringSvg(RING_SMALL, 0, false, [], undefined, GLASS), tr('alt.herdrOff'), RING_SMALL.w, Math.ceil(RING_SMALL.h / 2))}
           <Box flexDirection="column" flexShrink={1}>
             <Text color={DT.text} bold wrap="wrap">
-              需要 herdr：艦隊頁從 herdr 讀取所有 Claude session
+              {tr('fleet.needsHerdr')}
             </Text>
-            {note('在 herdr 裡執行 Claude Code（HERDR_ENV=1）後，這裡會列出每個 session 的狀態、今日用量與額度。')}
+            {note(tr('fleet.herdrHint'))}
           </Box>
         </Box>,
       ], DT.orangeEdge)
@@ -265,7 +269,7 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
     const ring = wide ? RING_BIG : RING_SMALL
     const reactor =
       q && wins.length > 0
-        ? card(head('⚡', 'ARC REACTOR', '額度'), [
+        ? card(head('⚡', 'ARC REACTOR', tr('title.quota')), [
             <Box flexDirection="row" gap={1} flexWrap="wrap">
               {wins.map(x => {
                 const foot = windowFoot(x.w, q, now, wide)
@@ -305,7 +309,7 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
     )
     const suits =
       fleet.sessions.length === 0
-        ? [card(head(forDesktop(TAB_ICON.fleet), '艦隊'), [say(fleet.at === 0 ? '掃描艦隊中…' : '艦隊目前沒有 Claude session')])]
+        ? [card(head(forDesktop(TAB_ICON.fleet), tr('tab.fleet')), [say(fleet.at === 0 ? tr('fleet.scanning') : tr('fleet.empty'))])]
         : [
             ...(activeCards.length > 0 ? [section('▶ ACTIVE', activeCards.length, DT.orange), ...activeCards] : []),
             ...(idleCards.length > 0 ? [section('◇ STANDBY', idleCards.length, DT.textSub), ...idleCards] : []),
@@ -327,7 +331,7 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
     const field = (label: string, value: string | undefined, color: string = DT.text): RenderElement =>
       row([
         { w: LABEL_W, node: say(label) },
-        { w: valueW, node: value ? say(value, color) : say('（無）', DT.textFaint) },
+        { w: valueW, node: value ? say(value, color) : say(tr('common.none'), DT.textFaint) },
       ])
     const para = (label: string, text: string | undefined, max: number, color: string): RenderElement[] => {
       const lines = wrapCells(text ?? '', valueW, max)
@@ -339,27 +343,27 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
     const paneId = s.paneId
     return (
       <Box flexDirection="column" gap={1}>
-        {actions([pill('back', '返回', false, () => ctx.go('fleet')), pill('jump', '跳轉', true, () => ctx.jump(paneId))])}
+        {actions([pill('back', tr('common.back'), false, () => ctx.go('fleet')), pill('jump', tr('common.jump'), true, () => ctx.jump(paneId))])}
         {card(
           headWith(`${st.icon}`, s.title, <Text color={st.color} bold>{s.status === 'idle' ? idleText(s) : st.label}</Text>),
           [
             list([
-              field('工作區', s.workspace),
-              field('目錄', s.cwd),
-              field('模型', s.model && shortModel(s.model), DT.data),
-              field('閒置', s.lastAt === undefined ? undefined : fmtAgo(now - s.lastAt)),
+              field(tr('field.workspace'), s.workspace),
+              field(tr('field.dir'), s.cwd),
+              field(tr('field.model'), s.model && shortModel(s.model), DT.data),
+              field(tr('field.idle'), s.lastAt === undefined ? undefined : fmtAgo(now - s.lastAt)),
               row([
-                { w: LABEL_W, node: say('今日') },
+                { w: LABEL_W, node: say(tr('field.today')) },
                 { w: valueW, node: say(`${fmtBig(s.todayTokens)} tok · ${fmtUsd(s.todayCost)}`, DT.orange, true) },
               ]),
               row([
                 { w: LABEL_W, node: say('Context') },
                 { w: valueW, node: say(s.contextPct === undefined ? '--' : `${s.contextPct}%`, ctxColor(s.contextPct), true) },
               ]),
-              field('近期工具', `${s.tools} 次`),
+              field(tr('field.recentTools'), tr('fleet.tools', { n: s.tools })),
             ]),
-            list(para('最後提問', s.lastUser, 3, DT.text)),
-            list(para('最後回覆', s.lastReply, 5, DT.orangeBright)),
+            list(para(tr('field.lastPrompt'), s.lastUser, 3, DT.text)),
+            list(para(tr('field.lastReply'), s.lastReply, 5, DT.orangeBright)),
             ...(jumpError !== undefined ? [say(jumpError, DT.fail, true)] : []),
           ],
           st.accent,
@@ -379,8 +383,8 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
   const actorOf = (actors: readonly string[]): { t: string; color: string; bold?: boolean } => {
     const [first] = actors
     const more = actors.length > 1 ? ` +${actors.length - 1}` : ''
-    if (first === undefined) return { t: '其他', color: DT.textFaint }
-    if (first === MAIN_ACTOR) return { t: `主線${more}`, color: DT.data, bold: true }
+    if (first === undefined) return { t: tr('common.other'), color: DT.textFaint }
+    if (first === MAIN_ACTOR) return { t: `${tr('common.main')}${more}`, color: DT.data, bold: true }
     const member = view.roster.get(first)
     return member ? { t: `MK-${member.n}${more}`, color: member.color } : { t: `MK${more}`, color: DT.textSub }
   }
@@ -405,7 +409,7 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
   const ACTOR_W = 8
 
   const groupCard = (g: ChangeGroup): RenderElement => {
-    if (g.removed !== undefined) return card(head(forDesktop(CHANGE_ICON.repo), g.name), [say(`已移除（${g.removed} 檔）`)])
+    if (g.removed !== undefined) return card(head(forDesktop(CHANGE_ICON.repo), g.name), [say(tr('changes.removed', { n: g.removed }))])
     const cw = Math.min(COUNT_MAX, Math.max(1, ...g.entries.map(e => entryCounts(e).w)))
     const fit = fitColumns({ actor: ACTOR_W, count: cw }, ['actor'], cardInner)
     const fileRow = (e: ChangeEntry): RenderElement => {
@@ -420,7 +424,7 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
     }
     const lines: RenderElement[] = [
       ...(g.note !== undefined ? [say(g.note)] : []),
-      ...(g.error !== undefined ? [say(g.error)] : g.entries.length === 0 ? [say(g.pending ? '計算中…' : '沒有未推送的改動')] : []),
+      ...(g.error !== undefined ? [say(g.error)] : g.entries.length === 0 ? [say(g.pending ? tr('common.computing') : tr('changes.noUnpushed'))] : []),
     ]
     return card(
       headWith(
@@ -428,7 +432,7 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
         g.name,
         <Box flexDirection="row" gap={1}>
           {g.ahead ? <Text color={DT.data} bold>{`↑${g.ahead}`}</Text> : null}
-          <Text color={DT.textSub}>{`${g.entries.length} 檔`}</Text>
+          <Text color={DT.textSub}>{tr('changes.files', { n: g.entries.length })}</Text>
           {counts(g.add, g.del)}
         </Box>,
       ),
@@ -443,10 +447,10 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
   const repoListCard = (): RenderElement => {
     const cm = ctx.commits
     const rl = cm?.list
-    const top = head(forDesktop(CHANGE_ICON.repo), cm?.cwdName ?? '提交', rl && rl.rows.length > 0 ? `${rl.total} repos` : undefined)
-    if (!cm || !rl || (rl.rows.length === 0 && rl.scanning)) return card(top, [say('掃描 repo 中…')])
+    const top = head(forDesktop(CHANGE_ICON.repo), cm?.cwdName ?? tr('repo.viewCommits'), rl && rl.rows.length > 0 ? `${rl.total} repos` : undefined)
+    if (!cm || !rl || (rl.rows.length === 0 && rl.scanning)) return card(top, [say(tr('repo.scanning'))])
     if (rl.error !== undefined) return card(top, [say(rl.error)])
-    if (rl.rows.length === 0) return card(top, [say('找不到 repo')])
+    if (rl.rows.length === 0) return card(top, [say(tr('repo.notFound'))])
     const fit = fitColumns(RCOL, ['branch', 'time'], cardInner)
     const rows = rl.rows.map(r => {
       const repo = r.repo
@@ -456,20 +460,20 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
         fit.on('branch') ? { w: RCOL.branch, node: say(r.branch ?? '') } : null,
         { w: RCOL.ahead, node: say(r.ahead ? `↑${r.ahead}` : '', DT.data, true), end: true },
         fit.on('time')
-          ? { w: RCOL.time, node: r.pending ? say('讀取中…', DT.textFaint) : say(r.error ?? relTime(cm.now - (r.time ?? 0)), DT.textFaint), end: true }
+          ? { w: RCOL.time, node: r.pending ? say(tr('common.loading'), DT.textFaint) : say(r.error ?? relTime(cm.now - (r.time ?? 0)), DT.textFaint), end: true }
           : null,
       ])
     })
-    return card(top, [list(rows), ...(rl.more > 0 ? [say(`… 還有 ${rl.more} 個 repo`)] : [])])
+    return card(top, [list(rows), ...(rl.more > 0 ? [say(tr('repo.more', { n: rl.more }))] : [])])
   }
 
   const changesPage = (): RenderElement => {
     const files = cv.groups.reduce((sum, g) => sum + g.entries.length, 0)
-    const header = card(head(forDesktop(TAB_ICON.changes), '異動', cv.mode === 'commits' ? undefined : `${files} 檔`), [
+    const header = card(head(forDesktop(TAB_ICON.changes), tr('tab.changes'), cv.mode === 'commits' ? undefined : tr('changes.files', { n: files })), [
       actions([
         ...CHANGE_MODES.map(m => pill(`chg-mode-${m.mode}`, m.label, m.mode === cv.mode, () => ctx.setChangesMode?.(m.mode))),
         ...(cv.mode !== 'session'
-          ? [pill('chg-refresh', '重新整理', false, () => (cv.mode === 'commits' ? ctx.commits?.refreshList() : ctx.refreshChanges?.()))]
+          ? [pill('chg-refresh', tr('common.refresh'), false, () => (cv.mode === 'commits' ? ctx.commits?.refreshList() : ctx.refreshChanges?.()))]
           : []),
       ]),
     ])
@@ -484,13 +488,13 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
     const beyond = cv.mode === 'session' ? Math.max(0, cv.total - MAX_LISTED) : 0
     const body =
       cv.groups.length === 0
-        ? [card(head('📭', '沒有異動'), [say(cv.mode === 'session' ? '這個 session 還沒改過檔案' : '這個 session 還沒碰過任何 git repo')])]
+        ? [card(head('📭', tr('title.noChanges')), [say(cv.mode === 'session' ? tr('changes.noFiles') : tr('changes.noRepos'))])]
         : cv.groups.map(groupCard)
     return (
       <Box flexDirection="column" gap={1}>
         {header}
         {body}
-        {beyond > 0 ? say(`… 還有 ${beyond} 檔`) : null}
+        {beyond > 0 ? say(tr('changes.moreFiles', { n: beyond })) : null}
       </Box>
     )
   }
@@ -515,12 +519,12 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
         { w: textW, node: say(`${sign}${text(r.text)}`, color) },
       ])
     })
-    if (rows.length > MAX_DIFF_ROWS) out.push(say(`… 還有 ${rows.length - MAX_DIFF_ROWS} 行`))
+    if (rows.length > MAX_DIFF_ROWS) out.push(say(tr('changes.moreLines', { n: rows.length - MAX_DIFF_ROWS })))
     return list(out)
   }
 
   const diffOf = (rows: readonly DiffRow[] | Failed | undefined): RenderElement =>
-    rows === undefined ? say('計算中…') : isFailed(rows) ? say(rows.error) : rows.length === 0 ? say('沒有差異') : diffBody(rows)
+    rows === undefined ? say(tr('common.computing')) : isFailed(rows) ? say(rows.error) : rows.length === 0 ? say(tr('changes.noDiff')) : diffBody(rows)
 
   // ‹ i / n › over a set of files
   const stepper = (keys: { prev: string; next: string }, at: number, total: number, open: (i: number) => void): RenderElement[] => [
@@ -541,7 +545,7 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
     }
     return (
       <Box flexDirection="column" gap={1}>
-        {actions([pill('back', '返回', false, () => ctx.go('changes')), ...stepper({ prev: 'diff-prev', next: 'diff-next' }, diffAt, diffOrder.length, open)])}
+        {actions([pill('back', tr('common.back'), false, () => ctx.go('changes')), ...stepper({ prev: 'diff-prev', next: 'diff-next' }, diffAt, diffOrder.length, open)])}
         {card(
           <Box flexDirection="column">
             <Box overflow="hidden">{sayStart(`${g.name}/${e.label}`, DT.orange, true)}</Box>
@@ -566,9 +570,9 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
 
   const remoteLines = (r: RepoPage, cm: CommitsCtx): RenderElement[] => {
     const rem = r.remotes
-    if (rem === undefined) return [say('讀取 remote 中…')]
+    if (rem === undefined) return [say(tr('remote.loading'))]
     if (isFailed(rem)) return [say(rem.error)]
-    if (rem.remotes.length === 0) return [say('沒有 remote')]
+    if (rem.remotes.length === 0) return [say(tr('remote.none'))]
     const NAME_W = 10
     const out: RenderElement[] = [
       list(
@@ -580,12 +584,12 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
         ),
       ),
     ]
-    if (rem.remotes.length > MAX_REMOTES) out.push(say(`還有 ${rem.remotes.length - MAX_REMOTES} 個 remote`))
-    const when = rem.fetchedAt === undefined ? '從未 fetch' : `fetch ${relTime(cm.now - rem.fetchedAt)}`
+    if (rem.remotes.length > MAX_REMOTES) out.push(say(tr('remote.more', { n: rem.remotes.length - MAX_REMOTES })))
+    const when = rem.fetchedAt === undefined ? tr('remote.neverFetched') : `fetch ${relTime(cm.now - rem.fetchedAt)}`
     out.push(
       <Box flexDirection="row" gap={2} alignItems="center">
         <Text color={DT.textSub}>{when}</Text>
-        {r.fetching ? <Text color={DT.textFaint}>fetch 中…</Text> : pill('cm-fetch', 'fetch', false, () => cm.fetch())}
+        {r.fetching ? <Text color={DT.textFaint}>{tr('remote.fetching')}</Text> : pill('cm-fetch', 'fetch', false, () => cm.fetch())}
       </Box>,
     )
     if (r.fetchError !== undefined) out.push(say(r.fetchError, DT.fail))
@@ -597,9 +601,9 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
   // the commits: each row its lanes, short sha (bright when made this session), ↑ when not
   // pushed, the subject (the press that opens its diff), refs when there is room and its age
   const logBody = (t: RepoPage['tree'], cm: CommitsCtx): RenderElement[] => {
-    if (t === undefined) return [say('讀取中…')]
+    if (t === undefined) return [say(tr('common.loading'))]
     if (isFailed(t)) return [say(t.error)]
-    if (t.commits.length === 0) return [say('這個 repo 還沒有 commit')]
+    if (t.commits.length === 0) return [say(tr('repo.noCommits'))]
     const rows = commitRows(t, cm.startedAt)
     const gw = graphWidth(rows.map(r => r.graph)) + (rows.some(r => r.graph.overflow) ? 1 : 0)
     const fit = fitColumns({ graph: gw, ...LCOL }, ['refs', 'age'], cardInner)
@@ -642,11 +646,11 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
   // the branches: ◉ the current one, 進行中, then 只在遠端 and gone each folded to one press;
   // the name opens its tree
   const branchBody = (b: BranchList | Failed | undefined, cm: CommitsCtx, open: { remote: boolean; gone: boolean }): RenderElement[] => {
-    if (b === undefined) return [say('讀取中…')]
+    if (b === undefined) return [say(tr('common.loading'))]
     if (isFailed(b)) return [say(b.error)]
-    if (b.total === 0) return [say('沒有分支')]
+    if (b.total === 0) return [say(tr('branch.none'))]
     const statusOf = (r: BranchRow): string =>
-      [r.ahead > 0 ? `↑${r.ahead}` : '', r.behind > 0 ? `↓${r.behind}` : '', r.gone ? 'gone' : '', r.kind !== 'remote' && !r.upstream ? '無 upstream' : '', r.merged ? '已 merge' : '']
+      [r.ahead > 0 ? `↑${r.ahead}` : '', r.behind > 0 ? `↓${r.behind}` : '', r.gone ? 'gone' : '', r.kind !== 'remote' && !r.upstream ? tr('branch.noUpstream') : '', r.merged ? tr('branch.merged') : '']
         .filter(x => x !== '')
         .join(' ')
     const drawn = [...(b.current ? [b.current] : []), ...b.active.rows, ...(open.remote ? b.remote.rows : []), ...(open.gone ? b.gone.rows : [])]
@@ -666,15 +670,15 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
         fit.on('age') ? { w: 4, node: say(fmtAgo(cm.now - r.time), DT.textFaint), end: true } : null,
       ])
     }
-    const more = (k: number): RenderElement[] => (k > 0 ? [say(`還有 ${k} 個分支`)] : [])
+    const more = (k: number): RenderElement[] => (k > 0 ? [say(tr('branch.more', { n: k }))] : [])
     const out: RenderElement[] = b.current ? [list([branchRow(b.current)])] : []
-    if (b.active.rows.length > 0) out.push(say(`進行中 ${b.active.rows.length + b.active.more}`), list(b.active.rows.map(branchRow)), ...more(b.active.more))
+    if (b.active.rows.length > 0) out.push(say(tr('branch.active', { n: b.active.rows.length + b.active.more })), list(b.active.rows.map(branchRow)), ...more(b.active.more))
     for (const [key, title, g, isOpen, toggle] of [
-      ['remote', '只在遠端', b.remote, open.remote, cm.toggleRemote],
+      ['remote', tr('branch.remoteOnly'), b.remote, open.remote, cm.toggleRemote],
       ['gone', 'gone', b.gone, open.gone, cm.toggleGone],
     ] as const) {
       if (g.rows.length === 0) continue
-      const label = `${isOpen ? '▾' : '▸'} ${title} ${g.rows.length + g.more} 個${key === 'gone' ? '（遠端已刪，多半已 merge）' : ''}`
+      const label = `${isOpen ? '▾' : '▸'} ${title} ${tr('branch.count', { n: g.rows.length + g.more })}${key === 'gone' ? tr('branch.goneNote') : ''}`
       out.push(press(`cm-branches-${key}`, () => toggle(), say(label, DT.orange)))
       if (isOpen) out.push(list(g.rows.map(branchRow)), ...more(g.more))
     }
@@ -685,10 +689,10 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
 
   // the stashes, shared by every worktree of the repo; a message opens its diff
   const stashBody = (s: StashInfo[] | Failed | undefined, cm: CommitsCtx): RenderElement[] => {
-    if (s === undefined) return [say('讀取中…')]
+    if (s === undefined) return [say(tr('common.loading'))]
     if (isFailed(s)) return [say(s.error)]
-    const lead = say('stash 由這個 repo 的所有 worktree 共用', DT.textFaint)
-    if (s.length === 0) return [lead, say('沒有 stash')]
+    const lead = say(tr('stash.shared'), DT.textFaint)
+    if (s.length === 0) return [lead, say(tr('stash.none'))]
     const fit = fitColumns(SCOL_STASH, ['branch', 'age'], cardInner)
     return [
       lead,
@@ -711,14 +715,14 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
   // the worktrees: ◉ the repo's own, its branch (or the detached sha), its uncommitted files,
   // 已不存在 when pruned, locked, agent; a path (not a pruned one) opens its tree
   const worktreeBody = (w: WorktreeRow[] | Failed | undefined, cm: CommitsCtx): RenderElement[] => {
-    if (w === undefined) return [say('讀取中…')]
+    if (w === undefined) return [say(tr('common.loading'))]
     if (isFailed(w)) return [say(w.error)]
-    if (w.length === 0) return [say('沒有 worktree')]
+    if (w.length === 0) return [say(tr('worktree.none'))]
     const fit = fitColumns(WCOL, ['branch'], cardInner)
     return [
       list(
         w.map(x => {
-          const marks = [x.prunable ? '已不存在' : '', !x.prunable && x.dirty !== undefined ? (x.dirty > 0 ? `±${x.dirty}` : '乾淨') : '', x.locked ? 'locked' : '', x.agent ? 'agent' : '']
+          const marks = [x.prunable ? tr('worktree.missing') : '', !x.prunable && x.dirty !== undefined ? (x.dirty > 0 ? `±${x.dirty}` : tr('worktree.clean')) : '', x.locked ? 'locked' : '', x.agent ? 'agent' : '']
             .filter(m => m !== '')
             .join(' ')
           const name = sayStart(x.name, x.main ? DT.data : DT.text, x.main)
@@ -771,7 +775,7 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
             : logBody(t, cm)
     return (
       <Box flexDirection="column" gap={1}>
-        {actions([pill('back', '返回', false, () => cm.back()), pill('cm-refresh', '重新整理', false, () => cm.refreshTree())])}
+        {actions([pill('back', tr('common.back'), false, () => cm.back()), pill('cm-refresh', tr('common.refresh'), false, () => cm.refreshTree())])}
         {header}
         {card(head(r.view === 'log' ? forDesktop(COMMIT_ICON.branch) : '📂', label), body)}
       </Box>
@@ -798,7 +802,7 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
         : []
     const body: RenderElement[] =
       files === undefined
-        ? [say('讀取中…')]
+        ? [say(tr('common.loading'))]
         : isFailed(files)
           ? [say(files.error)]
           : files.length === 0 || !file
@@ -808,13 +812,13 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
                   <Box flexGrow={1} flexShrink={1} overflow="hidden">
                     {sayStart(file.path, DT.orangeBright, true)}
                   </Box>
-                  {file.binary ? <Text color={DT.textSub}>二進位</Text> : counts(file.add, file.del)}
+                  {file.binary ? <Text color={DT.textSub}>{tr('common.binary')}</Text> : counts(file.add, file.del)}
                 </Box>,
                 diffOf(rows),
               ]
     return (
       <Box flexDirection="column" gap={1}>
-        {actions([pill('back', '返回', false, () => ctx.go('commitTree')), ...nav])}
+        {actions([pill('back', tr('common.back'), false, () => ctx.go('commitTree')), ...nav])}
         {card(title, body)}
       </Box>
     )
@@ -845,11 +849,11 @@ export function drawPageB(kit: KitB, view: Cockpit, ctx: Ctx): RenderElement {
     if (!cm?.repo) return changesPage()
     if (ctx.page === 'commitDiff' && cm.diff) {
       const d = cm.diff
-      return fileDiffPage(diffTitle(d.commit.sha.slice(0, 7), d.commit.subject, cm.repo.name), d.files, d.file, d.rows, cm.openFile, { prev: 'cdiff-prev', next: 'cdiff-next' }, '這個 commit 沒有改檔案')
+      return fileDiffPage(diffTitle(d.commit.sha.slice(0, 7), d.commit.subject, cm.repo.name), d.files, d.file, d.rows, cm.openFile, { prev: 'cdiff-prev', next: 'cdiff-next' }, tr('commit.noFiles'))
     }
     if (ctx.page === 'stashDiff' && cm.stashDiff) {
       const d = cm.stashDiff
-      return fileDiffPage(diffTitle(d.stash.name, d.stash.message, cm.repo.name), d.files, d.file, d.rows, cm.openStashFile, { prev: 'sdiff-prev', next: 'sdiff-next' }, '這個 stash 沒有檔案')
+      return fileDiffPage(diffTitle(d.stash.name, d.stash.message, cm.repo.name), d.files, d.file, d.rows, cm.openStashFile, { prev: 'sdiff-prev', next: 'sdiff-next' }, tr('stash.noFiles'))
     }
     return commitTreePage(cm, cm.repo)
   }

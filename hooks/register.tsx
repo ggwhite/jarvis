@@ -69,6 +69,7 @@ import type { LastAsk } from './summary'
 import { FETCH_TIMEOUT_MS, branchesOf, fetchRepo, remotesOf, sameRepoPaths, stashFileDiff, stashFiles, stashesOf, worktreesOf } from './gitRepo'
 import type { StashFile } from './gitRepo'
 import type { BranchList, Remotes, RepoView, StashInfo, WorktreeRow } from './repoViews'
+import { loadLocale, t as tr } from './i18n'
 
 const PANE = 'jarvis'
 const MAX_EARLY = 100
@@ -481,7 +482,7 @@ function fetchCommits($: Pick<EngineInterface, 'fs' | 'process' | 'ui'>, cc: Com
     try {
       out = await fetchRepo(ioOf($, FETCH_TIMEOUT_MS), repo)
     } catch {
-      out = { error: 'fetch 失敗' }
+      out = { error: tr('err.failed', { what: 'fetch' }) }
     }
     let group = [repo]
     if (out === true) {
@@ -576,7 +577,7 @@ async function commitListNow(
           try {
             s = await repoSummary(io, repo)
           } catch {
-            s = { error: 'git log 失敗' }
+            s = { error: tr('err.failed', { what: 'git log' }) }
           }
           if (cc.gen !== gen) return
           if ((cc.repoGen.get(repo) ?? 0) === repoGen) cc.summaries.set(repo, s)
@@ -629,7 +630,7 @@ async function changesNow(
             try {
               r = await unpushedOf(io, repo)
             } catch {
-              r = { error: 'git diff 失敗' }
+              r = { error: tr('err.failed', { what: 'git diff' }) }
             }
             if (cache.unpushedGen !== gen) return
             cache.unpushed.set(repo, r)
@@ -732,7 +733,7 @@ async function diffNow(
       try {
         rows = item.mode === 'session' ? await sessionDiff(io, item.change) : await unpushedDiff(io, item.repo, item.base, item.file)
       } catch {
-        rows = { error: 'git diff 失敗' }
+        rows = { error: tr('err.failed', { what: 'git diff' }) }
       }
       if (current()) {
         cache.diffs.set(key, { sig, rows })
@@ -769,18 +770,17 @@ async function openPane($: Pick<EngineInterface, 'clock' | 'ui'>, boot: (at: num
   }
 }
 
-const RC_NOTE = 'Remote Control 的 Desktop／手機檢視目前不顯示 mod 面板，請在終端機或 Desktop 本機 session 查看'
-
 // /jarvis's answer. Typed at this machine (or where the origin is not said) it is as ever; sent
 // over the Remote Control bridge it says where the pane went: on a remote surface that attached,
 // on the terminal alone (which the remote view does not show), or not placed and why.
 export function jarvisOpenText(opened: PaneOpened | false, origin: string | undefined, surfaces: readonly string[]): string {
-  if (opened === false) return 'Jarvis 面板開啟失敗'
-  if (origin !== 'bridge') return 'Jarvis 面板已開啟'
+  if (opened === false) return tr('pane.openFailed')
+  if (origin !== 'bridge') return tr('pane.opened')
   const remote = surfaces.some(s => s !== 'terminal')
-  if (opened.isPlaced) return remote ? 'Jarvis 面板已開啟' : `Jarvis 面板已在終端機開啟（${RC_NOTE}）`
-  const why = opened.reason === undefined || opened.reason === '' ? '沒有可放面板的畫面' : `畫面暫時放不下面板，條件滿足後會自動顯示（引擎原因：${opened.reason}）`
-  return remote ? `Jarvis 面板已開啟，但還沒放上畫面：${why}` : `Jarvis 面板已開啟，但還沒放上畫面：${why}（${RC_NOTE}）`
+  const note = tr('pane.rcNote')
+  if (opened.isPlaced) return remote ? tr('pane.opened') : tr('pane.openedTerminal', { note })
+  const why = opened.reason === undefined || opened.reason === '' ? tr('pane.noSurface') : tr('pane.noRoom', { reason: opened.reason })
+  return remote ? tr('pane.notPlaced', { why }) : tr('pane.notPlacedNote', { why, note })
 }
 
 // What the engine says of its agents, as reconcileAgents reads it; undefined when it
@@ -985,6 +985,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     unknown.clear()
     listing.fails = 0
+    // the locale first: the board's tool registers with its words
+    await loadLocale($)
     try {
       await $.command.register({
         name: 'jarvis',
@@ -1138,7 +1140,7 @@ export const register: Register = on => {
         try {
           const r = await io.run(focusArgv(paneId))
           const err: FleetJumpError | undefined =
-            r?.exitCode === 0 ? undefined : { paneId, text: `跳轉失敗：${(r?.stderr ?? '').trim() || 'herdr 沒有回應'}` }
+            r?.exitCode === 0 ? undefined : { paneId, text: tr('fleet.jumpFailed', { why: (r?.stderr ?? '').trim() || tr('fleet.herdrNoReply') }) }
           await update($, fleet, v => withJump(v, err))
         } catch {
           // the page stays as it was
@@ -1327,7 +1329,7 @@ export const register: Register = on => {
   // subagents each land on the board the last one left.
   on('tool.call', { tool: 'mcp__jarvis__task' }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
-    const box: { reply: TaskReply } = { reply: { error: '看板暫時無法寫入' } }
+    const box: { reply: TaskReply } = { reply: { error: tr('err.boardWrite') } }
     const now = await stampNow($)
     try {
       await updateBoard($, b => {
@@ -1335,7 +1337,7 @@ export const register: Register = on => {
         return 'error' in box.reply ? b : box.reply.board
       })
     } catch {
-      box.reply = { error: '看板暫時無法寫入' }
+      box.reply = { error: tr('err.boardWrite') }
     }
     const reply = box.reply
     return 'error' in reply ? { deny: reply.error } : { result: reply.text }
@@ -1681,10 +1683,10 @@ export const register: Register = on => {
     const onStash = shown.page === 'stashDiff' && commitRepo !== ''
     const gitIo = ioOf($)
     const tree = onTree
-      ? askCommits<CommitTree>($, commitsCache, commitRepo, `t\x00${commitRepo}\x00${commitRef ?? ''}`, () => commitTreeOf(gitIo, commitRepo, commitRef), 'git log 失敗')
+      ? askCommits<CommitTree>($, commitsCache, commitRepo, `t\x00${commitRepo}\x00${commitRef ?? ''}`, () => commitTreeOf(gitIo, commitRepo, commitRef), tr('err.failed', { what: 'git log' }))
       : undefined
     const askStashes = () =>
-      askCommits<StashInfo[]>($, commitsCache, commitRepo, `s\x00${commitRepo}`, () => stashesOf(gitIo, commitRepo), 'git stash 失敗')
+      askCommits<StashInfo[]>($, commitsCache, commitRepo, `s\x00${commitRepo}`, () => stashesOf(gitIo, commitRepo), tr('err.failed', { what: 'git stash' }))
     const commit =
       shown.page === 'commitDiff' && tree !== undefined && !isFailed(tree) ? tree.commits.find(c => c.sha === shown.commitSha) : undefined
     const pageStashes = onStash ? askStashes() : undefined
@@ -1693,19 +1695,19 @@ export const register: Register = on => {
     const onRepoPage =
       onTree && (shown.page === 'commitTree' || (shown.page === 'commitDiff' && !commit) || (shown.page === 'stashDiff' && !stash))
     const remotes = onRepoPage
-      ? askCommits<Remotes>($, commitsCache, commitRepo, `r\x00${commitRepo}`, () => remotesOf(gitIo, commitRepo), 'git remote 失敗')
+      ? askCommits<Remotes>($, commitsCache, commitRepo, `r\x00${commitRepo}`, () => remotesOf(gitIo, commitRepo), tr('err.failed', { what: 'git remote' }))
       : undefined
     const branches =
       onRepoPage && repoView === 'branches'
-        ? askCommits<BranchList>($, commitsCache, commitRepo, `b\x00${commitRepo}`, () => branchesOf(gitIo, commitRepo), 'git for-each-ref 失敗')
+        ? askCommits<BranchList>($, commitsCache, commitRepo, `b\x00${commitRepo}`, () => branchesOf(gitIo, commitRepo), tr('err.failed', { what: 'git for-each-ref' }))
         : undefined
     const stashes = (onRepoPage && repoView === 'stash') || onStash ? askStashes() : undefined
     const worktrees =
       onRepoPage && repoView === 'worktrees'
-        ? askCommits<WorktreeRow[]>($, commitsCache, commitRepo, `w\x00${commitRepo}`, () => worktreesOf(gitIo, commitRepo), 'git worktree 失敗')
+        ? askCommits<WorktreeRow[]>($, commitsCache, commitRepo, `w\x00${commitRepo}`, () => worktreesOf(gitIo, commitRepo), tr('err.failed', { what: 'git worktree' }))
         : undefined
     const commitFileList = commit
-      ? askCommits<CommitFile[]>($, commitsCache, commitRepo, `f\x00${commitRepo}\x00${commit.sha}`, () => commitFiles(gitIo, commitRepo, commit), 'git diff 失敗')
+      ? askCommits<CommitFile[]>($, commitsCache, commitRepo, `f\x00${commitRepo}\x00${commit.sha}`, () => commitFiles(gitIo, commitRepo, commit), tr('err.failed', { what: 'git diff' }))
       : undefined
     const commitFile =
       commitFileList !== undefined && !isFailed(commitFileList)
@@ -1719,11 +1721,11 @@ export const register: Register = on => {
             commitRepo,
             `d\x00${commitRepo}\x00${commit.sha}\x00${commitFile.path}`,
             () => commitFileDiff(gitIo, commitRepo, commit, commitFile.path),
-            'git diff 失敗',
+            tr('err.failed', { what: 'git diff' }),
           )
         : undefined
     const stashFileList = stash
-      ? askCommits<StashFile[]>($, commitsCache, commitRepo, `sf\x00${commitRepo}\x00${stash.sha}`, () => stashFiles(gitIo, commitRepo, stash.sha), 'git stash 失敗')
+      ? askCommits<StashFile[]>($, commitsCache, commitRepo, `sf\x00${commitRepo}\x00${stash.sha}`, () => stashFiles(gitIo, commitRepo, stash.sha), tr('err.failed', { what: 'git stash' }))
       : undefined
     const stashFile =
       stashFileList !== undefined && !isFailed(stashFileList) ? (stashFileList.find(f => f.path === shown.commitFile) ?? stashFileList[0]) : undefined
@@ -1735,7 +1737,7 @@ export const register: Register = on => {
             commitRepo,
             `sd\x00${commitRepo}\x00${stash.sha}\x00${stashFile.path}`,
             () => stashFileDiff(gitIo, commitRepo, stash.sha, stashFile),
-            'git diff 失敗',
+            tr('err.failed', { what: 'git diff' }),
           )
         : undefined
     const diffKey = shown.diffKey ?? ''

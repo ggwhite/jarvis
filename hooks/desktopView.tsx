@@ -6,6 +6,7 @@ import { A_PAGES, drawPageA, isPageA, shownPageA } from './desktopPagesA'
 import { B_PAGES, drawPageB, tabOfB } from './desktopPagesB'
 import { DT, GLASS, backdropSvg } from './desktopTheme'
 import { BIG_ROWS, bigWidth } from './fleetChart'
+import { t as tr } from './i18n'
 import { ROLE_ICON, forDesktop } from './icons'
 import { CHAIN_WARN, MAIN_ACTOR, MAIN_SOURCE, ROLE_LABEL, THEME, elapsedMs, fmtClock, fmtDur, fmtK, fmtMs, fmtUsd, phaseOf, roleModels, roleOf, shareLabel, shortModel, tokenTotal, tokensOf, topTools } from './jarvis'
 import type { Cockpit, Phase } from './jarvis'
@@ -73,13 +74,13 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
           <Text color={DT.orange} bold>
             ⌝
           </Text>
-          {picture(reactorSvg(live, GLASS), live ? '反應爐運轉中' : '反應爐待機', 1, 1, live)}
+          {picture(reactorSvg(live, GLASS), live ? tr('alt.reactorOn') : tr('alt.reactorOff'), 1, 1, live)}
         </Box>
         <Text color={view.health === 'ok' ? DT.orange : DT.fail} bold>
           {HEALTH_TEXT[view.health]}
         </Text>
       </Box>
-      {Svg ? picture(backdropSvg(cardInner, 1), '背景', cardInner, 1) : null}
+      {Svg ? picture(backdropSvg(cardInner, 1), tr('alt.backdrop'), cardInner, 1) : null}
     </Box>
   )
 
@@ -283,8 +284,8 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     const agents = view.sections.flatMap(s => s.units.flatMap(u => (u.kind === 'agent' ? [u.agent] : u.agents)))
     const done = view.finished.filter(a => a.status === 'done').length
     const listCard = card(
-      head('👥', '子代理', `▶${view.running.length} 執行中 · ${done} 完成`),
-      agents.length === 0 ? [<Text color={DT.textSub}>還沒有派工。派出 subagent 後這裡會即時顯示。</Text>] : agents.slice(0, Math.max(3, rows - 30)).map(agentRow),
+      head('👥', tr('title.subagents'), tr('squad.desktopHead', { n: view.running.length, done })),
+      agents.length === 0 ? [<Text color={DT.textSub}>{tr('squad.empty')}</Text>] : agents.slice(0, Math.max(3, rows - 30)).map(agentRow),
       view.running.length > 0 ? DT.orangeEdge : undefined,
     )
 
@@ -300,9 +301,9 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     const fDescW = Math.max(1, recentInner - fFixedW())
     const flights = view.inflight.slice(-5)
     const flightCard = card(
-      head('⚙️', '進行中', `${view.inflight.length} 個`),
+      head('⚙️', tr('title.inflight'), tr('inflight.count', { n: view.inflight.length })),
       flights.length === 0
-        ? [<Text color={DT.textSub}>目前沒有執行中的工具呼叫</Text>]
+        ? [<Text color={DT.textSub}>{tr('inflight.idle')}</Text>]
         : flights.map(f => (
             <Box flexDirection="row" gap={1} alignItems="center">
               <Box width={FCOL.who} flexShrink={0} overflow="hidden">
@@ -364,11 +365,11 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     )
     const recent = view.events.slice(-6).reverse()
     const recentCard = card(
-      head('🕘', '最近事件', `${view.events.length} 則`),
+      head('🕘', tr('title.recent'), tr('log.count', { n: view.events.length })),
       recent.length === 0
-        ? [<Text color={DT.textSub}>還沒有工具呼叫</Text>]
+        ? [<Text color={DT.textSub}>{tr('log.noCalls')}</Text>]
         : [
-            eventRow({ time: sub('時間'), who: sub('誰'), tool: sub('工具'), desc: sub('描述'), took: sub('耗時'), mark: sub('結果') }),
+            eventRow({ time: sub(tr('col.time')), who: sub(tr('col.who')), tool: sub(tr('col.tool')), desc: sub(tr('col.desc')), took: sub(tr('col.took')), mark: sub(tr('col.result')) }),
             ...recent.map(ev =>
               eventRow({
                 time: sub(fmtClock(ev.ts)),
@@ -424,7 +425,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     const rateColor = rate === undefined ? DT.textFaint : rate >= 90 ? DT.orange : rate >= 70 ? DT.orangeBright : DT.fail
     const chainColor = m.chain >= CHAIN_WARN ? DT.fail : DT.orange
     const top = topTools(m.toolCounts, 1)[0]
-    const mainCard = card(head('💻', 'MAIN LINE', `${shortModel(m.model)} · ${m.isRunning ? '● 運作中' : '○ 閒置'}`), [
+    const mainCard = card(head('💻', 'MAIN LINE', `${shortModel(m.model)} · ${m.isRunning ? tr('main.working') : tr('main.idle')}`), [
       <Box flexDirection="row" gap={1} flexWrap="wrap">
         {tile([<Text color={DT.textSub}>SUCCESS RATE</Text>, picture(bigTextSvg(rateText, rateColor), `SUCCESS RATE ${rateText}`, bigWidth(rateText), BIG_ROWS)])}
         {tile([
@@ -458,7 +459,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     const nameW = Math.min(DCOL.name, cardInner - DCOL.count - 1)
     const shownRoles = view.dispatch.filter((d, i) => (d.role !== 'workflow' && d.role !== 'other') || (counts[i] ?? 0) > 0)
     const dispatchCard = card(
-      head('📨', 'DISPATCH', `${counts.reduce((sum, n) => sum + n, 0)} 次派工`),
+      head('📨', 'DISPATCH', tr('stats.dispatches', { n: counts.reduce((sum, n) => sum + n, 0) })),
       shownRoles.map(d => {
         const n = d.running + d.done + d.failed
         return (
@@ -491,7 +492,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
     const modelsTable =
       view.models.length === 0
         ? ''
-        : ['| 模型 | 比例 | 次數 |', '|---|---:|---:|', ...view.models.map(x => `| ${mdCell(x.label)} | ${shareLabel(x.share)} | ${x.count} |`)].join('\n')
+        : [tr('stats.modelTable'), '|---|---:|---:|', ...view.models.map(x => `| ${mdCell(x.label)} | ${shareLabel(x.share)} | ${x.count} |`)].join('\n')
     const modelsCard = card(head('🧠', 'MODELS', s.savedPct === undefined ? undefined : `SAVED ${Math.round(s.savedPct)}%`), [
       picture(
         stackedBarSvg(cardInner, view.models.map((x, i) => ({ share: x.share, color: MODEL_COLORS[i % MODEL_COLORS.length] ?? DT.orange })), GLASS),
@@ -500,7 +501,7 @@ export function drawDesktop(ui: DesktopUi, view: Cockpit, ctx: Ctx): RenderEleme
         1,
       ),
       modelsTable === '' ? (
-        <Text color={DT.textSub}>還沒有模型用量</Text>
+        <Text color={DT.textSub}>{tr('stats.noModelUsage')}</Text>
       ) : Markdown ? (
         <Markdown key="models-table" text={modelsTable} />
       ) : (

@@ -57,6 +57,7 @@ import type { BranchList, BranchRow, RepoView, StashInfo, WorktreeRow } from './
 import { graphWidth } from './commitGraph'
 import { hourlyOf, idleHourMax, idleSummary, reactorRows, sectionHeader, smallCard, suitLine, wideCard, windowFoot } from './fleetCards'
 import type { CardLines, ReactorRow } from './fleetCards'
+import { localized, t as tr } from './i18n'
 import {
   CHAIN_WARN,
   FAMILY_COLOR,
@@ -325,14 +326,17 @@ const NARROWEST: RowFit = { tag: false, full: false, badge: false, name: false, 
 const DESC_MIN = 8
 const TAG_DESC_MIN = 20
 
-export const TABS: { page: JarvisPage; icon: string; label: string }[] = [
-  { page: 'now', icon: TAB_ICON.now, label: '現況' },
-  { page: 'log', icon: TAB_ICON.log, label: '事件流' },
-  { page: 'stats', icon: TAB_ICON.stats, label: '統計' },
-  { page: 'fleet', icon: TAB_ICON.fleet, label: '艦隊' },
-  { page: 'changes', icon: TAB_ICON.changes, label: '異動' },
-  { page: 'tasks', icon: TAB_ICON.tasks, label: '任務' },
-]
+export let TABS: { page: JarvisPage; icon: string; label: string }[]
+localized(() => {
+  TABS = [
+    { page: 'now', icon: TAB_ICON.now, label: tr('tab.now') },
+    { page: 'log', icon: TAB_ICON.log, label: tr('tab.log') },
+    { page: 'stats', icon: TAB_ICON.stats, label: tr('tab.stats') },
+    { page: 'fleet', icon: TAB_ICON.fleet, label: tr('tab.fleet') },
+    { page: 'changes', icon: TAB_ICON.changes, label: tr('tab.changes') },
+    { page: 'tasks', icon: TAB_ICON.tasks, label: tr('tab.tasks') },
+  ]
+})
 
 // The burn chart's width at each breakpoint but wide (which takes the pane less 4).
 const BURN_MID_W = 48
@@ -656,9 +660,9 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // in its color; the column widens for a number of three digits or more
   const mkActor = cols >= MK_ACTOR_COLS
   const actorText = (n: number) => (mkActor ? `MK-${n}` : String(n))
-  const ACTOR_W = Math.max(mkActor ? 5 : cellWidth('主線'), ...[...view.roster.values()].map(x => cellWidth(actorText(x.n))))
+  const ACTOR_W = Math.max(mkActor ? 5 : cellWidth(tr('common.main')), ...[...view.roster.values()].map(x => cellWidth(actorText(x.n))))
   const actorSeg = (actor: string): Seg => {
-    if (actor === MAIN_ACTOR) return { t: padCells('主線', ACTOR_W), color: MAIN_COLOR, bold: true }
+    if (actor === MAIN_ACTOR) return { t: padCells(tr('common.main'), ACTOR_W), color: MAIN_COLOR, bold: true }
     const member = view.roster.get(actor)
     return member
       ? { t: padCells(actorText(member.n), ACTOR_W), color: member.color }
@@ -713,7 +717,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       {
         t: reactor.glyph,
         color: reactor.color,
-        ...(svgOn ? { svg: reactorSvg(live), alt: live ? '反應爐運轉中' : '反應爐待機', ...(live ? { animated: true } : {}) } : {}),
+        ...(svgOn ? { svg: reactorSvg(live), alt: live ? tr('alt.reactorOn') : tr('alt.reactorOff'), ...(live ? { animated: true } : {}) } : {}),
       },
     ]
     const health: Seg = { t: HEALTH_TEXT[view.health], color: HEALTH_COLOR[view.health], bold: true }
@@ -730,23 +734,23 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   const tabBar = (): Block => {
     const actions: { key: string; label: string; run: () => void }[] = []
-    if (page === 'detail') actions.push({ key: 'back', label: '返回', run: () => ctx.go(detailBack) })
-    if (page === 'roleDetail') actions.push({ key: 'back', label: '返回', run: () => ctx.go('stats') })
+    if (page === 'detail') actions.push({ key: 'back', label: tr('common.back'), run: () => ctx.go(detailBack) })
+    if (page === 'roleDetail') actions.push({ key: 'back', label: tr('common.back'), run: () => ctx.go('stats') })
     if (page === 'fleetDetail') {
-      actions.push({ key: 'back', label: '返回', run: () => ctx.go('fleet') })
+      actions.push({ key: 'back', label: tr('common.back'), run: () => ctx.go('fleet') })
       if (fleetSelected) {
         const paneId = fleetSelected.paneId
-        actions.push({ key: 'jump', label: '跳轉', run: () => ctx.jump(paneId) })
+        actions.push({ key: 'jump', label: tr('common.jump'), run: () => ctx.jump(paneId) })
       }
     }
-    if (page === 'changeDiff') actions.push({ key: 'back', label: '返回', run: () => ctx.go('changes') })
+    if (page === 'changeDiff') actions.push({ key: 'back', label: tr('common.back'), run: () => ctx.go('changes') })
     if (page === 'commitTree') {
-      actions.push({ key: 'cm-refresh', label: '重新整理', run: () => ctx.commits?.refreshTree() })
-      actions.push({ key: 'back', label: '返回', run: () => (ctx.commits ? ctx.commits.back() : ctx.go('changes')) })
+      actions.push({ key: 'cm-refresh', label: tr('common.refresh'), run: () => ctx.commits?.refreshTree() })
+      actions.push({ key: 'back', label: tr('common.back'), run: () => (ctx.commits ? ctx.commits.back() : ctx.go('changes')) })
     }
     // a commit's and a stash's diff go back to the tree page as it was: the branch, the sub-page
-    if (page === 'commitDiff' || page === 'stashDiff') actions.push({ key: 'back', label: '返回', run: () => ctx.go('commitTree') })
-    if (page === 'log') actions.push({ key: 'pause', label: ctx.paused ? '繼續' : '暫停', run: ctx.pause })
+    if (page === 'commitDiff' || page === 'stashDiff') actions.push({ key: 'back', label: tr('common.back'), run: () => ctx.go('commitTree') })
+    if (page === 'log') actions.push({ key: 'pause', label: ctx.paused ? tr('common.resume') : tr('common.pause'), run: ctx.pause })
     const tabText = (tab: (typeof TABS)[number], compact: boolean) =>
       compact && tab.page !== page ? withIcon(tab.icon, '') : withIcon(tab.icon, tab.label)
     const actionText = (a: (typeof actions)[number], compact: boolean) => (compact ? [...a.label][0] ?? a.label : a.label)
@@ -906,7 +910,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const family = nameFamilyOf(m.model)
     const head: Seg[] = [title(TITLE_ICON.main, 'MAIN LINE', PRIMARY)]
     if (m.model !== '') head.push({ t: ` · ${shortModel(m.model)}`, color: family ? FAMILY_COLOR[family] : FRAME })
-    const state: Seg = m.isRunning ? { t: '● 執行中', color: PRIMARY } : { t: '○ 閒置', color: FRAME }
+    const state: Seg = m.isRunning ? { t: tr('main.running'), color: PRIMARY } : { t: tr('main.idle'), color: FRAME }
     const lit = Math.min(m.chain, CHAIN_WARN)
     const chain: Seg[] = [
       { t: 'CHAIN ', color: FRAME },
@@ -1050,7 +1054,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         segs.push(sp(2), {
           t: brailleLine(vals, ROLE_BEAT_W),
           color,
-          ...(svgOn ? { svg: sparkSvg(vals, ROLE_BEAT_W, undefined, color), alt: `${r.label} 最近一小時` } : {}),
+          ...(svgOn ? { svg: sparkSvg(vals, ROLE_BEAT_W, undefined, color), alt: tr('alt.lastHourOf', { label: r.label }) } : {}),
         })
       }
       return segs
@@ -1087,7 +1091,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       }
     }
     const shown = cut === undefined ? statsRoles : statsRoles.slice(0, Math.max(0, cut - 1))
-    const more: Seg[][] = cut === undefined ? [] : [[{ t: `… 還有 ${statsRoles.length - shown.length} 種`, color: FRAME }]]
+    const more: Seg[][] = cut === undefined ? [] : [[{ t: tr('stats.moreKinds', { n: statsRoles.length - shown.length }), color: FRAME }]]
     return { w, color: ACCENT, lines: [[title(TITLE_ICON.dispatch, 'DISPATCH', ACCENT)], ...shown.map(roleRow), ...more] }
   }
 
@@ -1102,13 +1106,13 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
           : [{ t: 'OVER ', color: ERROR, bold: true }, { t: `${-savedPct}%`, color: ERROR, bold: true }]
     const figures: Seg[] =
       savedPct === undefined
-        ? [{ t: '沒有可計價的模型', color: FRAME }]
+        ? [{ t: tr('stats.noPriced'), color: FRAME }]
         : [{ t: `≈${fmtUsd(sum.cost)} vs Opus ${fmtUsd(sum.opusCost)}`, color: PRIMARY }]
-    if (view.models.length === 0) return { w, color: FRAME, lines: [head, [{ t: '還沒有 subagent', color: FRAME }], verdict, figures] }
+    if (view.models.length === 0) return { w, color: FRAME, lines: [head, [{ t: tr('stats.noSubagents'), color: FRAME }], verdict, figures] }
     const colorOf = (r: ModelShare) => (r.family ? FAMILY_COLOR[r.family] : FRAME)
     const labelW = Math.max(4, ...view.models.map(r => cellWidth(r.label)))
     const countW = Math.max(0, ...view.models.map(r => cellWidth(`×${r.count}`)))
-    const shareText = (r: ModelShare) => (r.family ? shareLabel(r.share) : '未計價')
+    const shareText = (r: ModelShare) => (r.family ? shareLabel(r.share) : tr('common.unpriced'))
     const shareW = Math.max(4, ...view.models.map(r => cellWidth(shareText(r))))
     const share = (r: ModelShare): Seg => ({ t: padCells(shareText(r), shareW, 'right'), color: r.family ? PRIMARY : FRAME })
     const parts: StackPart[] = view.models.filter(r => r.family).map(r => ({ share: r.share, color: colorOf(r) }))
@@ -1137,9 +1141,9 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // The list's rows, top to bottom, with the latest `shownFinished` finished units.
   const listItems = (shownFinished: number): Item[] => {
     const label: Record<string, Seg> = {
-      running: { t: `執行中 (${view.running.length})`, color: FRAME },
-      stale: { t: `失聯 (${view.stale.length})`, color: FRAME },
-      finished: { t: `已完成 (${view.finished.length})`, color: FRAME },
+      running: { t: tr('squad.running', { n: view.running.length }), color: FRAME },
+      stale: { t: tr('squad.stale', { n: view.stale.length }), color: FRAME },
+      finished: { t: tr('squad.finished', { n: view.finished.length }), color: FRAME },
     }
     const items: Item[] = []
     for (const section of view.sections) {
@@ -1195,15 +1199,15 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const done = view.finished.filter(a => a.status === 'done').length
     const failed = view.finished.length - done
     const counts: Seg[] = [
-      ...(view.running.length > 0 ? [{ t: `▶${view.running.length} 執行中`, color: PRIMARY, bold: true }] : []),
-      ...(done > 0 ? [{ t: `${done} 完成`, color: FRAME }] : []),
-      ...(failed > 0 ? [{ t: `${failed} 失敗`, color: ERROR }] : []),
-      ...(view.stale.length > 0 ? [{ t: `?${view.stale.length} 失聯`, color: FRAME }] : []),
+      ...(view.running.length > 0 ? [{ t: tr('squad.headRunning', { n: view.running.length }), color: PRIMARY, bold: true }] : []),
+      ...(done > 0 ? [{ t: tr('squad.headDone', { n: done }), color: FRAME }] : []),
+      ...(failed > 0 ? [{ t: tr('squad.headFailed', { n: failed }), color: ERROR }] : []),
+      ...(view.stale.length > 0 ? [{ t: tr('squad.headStale', { n: view.stale.length }), color: FRAME }] : []),
     ]
     const right = counts.flatMap((x, i): Seg[] => (i === 0 ? [x] : [{ t: ' · ', color: MUTED }, x]))
-    const head: Line = leftRight([title(TITLE_ICON.agents, '子代理', PRIMARY)], right, inner)
+    const head: Line = leftRight([title(TITLE_ICON.agents, tr('title.subagents'), PRIMARY)], right, inner)
     if (view.sections.length === 0) {
-      return cardRow([{ w: cols, color: LIST_COLOR, lines: [head, [{ t: '還沒有派工。派出 subagent 後這裡會即時顯示。', color: FRAME }]] }])
+      return cardRow([{ w: cols, color: LIST_COLOR, lines: [head, [{ t: tr('squad.empty'), color: FRAME }]] }])
     }
 
     const items = listItems(shownFinished)
@@ -1323,17 +1327,17 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const groupHead = (u: Group): Seg[] => {
       const count = (st: JarvisAgent['status']) => u.agents.filter(a => a.status === st).length
       const parts = [
-        `${u.agents.length} 個`,
+        tr('wf.agents', { n: u.agents.length }),
         ...([
-          ['執行中', count('running')],
-          ['完成', count('done')],
-          ['失敗', count('failed')],
-          ['失聯', count('stale')],
+          [tr('wf.running'), count('running')],
+          [tr('wf.done'), count('done')],
+          [tr('wf.failed'), count('failed')],
+          [tr('wf.stale'), count('stale')],
         ] as const)
           .filter(([, n]) => n > 0)
           .map(([text, n]) => `${text} ${n}`),
       ]
-      const id = u.runId === '' ? '(無 id)' : fitCells(u.runId, 8)
+      const id = u.runId === '' ? tr('common.noId') : fitCells(u.runId, 8)
       return [
         { t: '▾ ', color: ROLE_COLOR.workflow },
         { t: 'workflow', bold: true, color: ROLE_COLOR.workflow },
@@ -1348,20 +1352,20 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         : x.kind === 'group'
           ? groupHead(x.u)
           : x.kind === 'more'
-            ? [{ t: `… 還有 ${x.n} 個`, color: FRAME }]
+            ? [{ t: tr('common.more', { n: x.n }), color: FRAME }]
             : row(x.a, x.member),
     )
     const fit = Math.max(4, room - 3)
     const lines =
       body.length > fit
-        ? [...body.slice(0, fit - 1), [{ t: `… 還有 ${body.length - fit + 1} 列未顯示`, color: FRAME }] as Seg[]]
+        ? [...body.slice(0, fit - 1), [{ t: tr('squad.moreRows', { n: body.length - fit + 1 }), color: FRAME }] as Seg[]]
         : body
     return cardRow([{ w: cols, color: LIST_COLOR, lines: [head, ...lines] }])
   }
 
   // ---- 進行中 -------------------------------------------------------------
 
-  const idleFlight: Line[] = [[{ t: '目前沒有執行中的工具呼叫', color: FRAME }]]
+  const idleFlight: Line[] = [[{ t: tr('inflight.idle'), color: FRAME }]]
 
   // at most `cap` rows of calls, those that do not fit folded into `… 還有 N 個`
   const inflightBlock = (cap = Infinity): Block => {
@@ -1370,8 +1374,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const color = list.length > 0 ? FLIGHT_COLOR : IDLE_COLOR
     // the frame dark brown when idle, the title still in the frame gold
     const head = leftRight(
-      [title(TITLE_ICON.inflight, '進行中', list.length > 0 ? FLIGHT_COLOR : FRAME)],
-      list.length > 0 ? [{ t: `${list.length} 個`, color: FRAME }] : [],
+      [title(TITLE_ICON.inflight, tr('title.inflight'), list.length > 0 ? FLIGHT_COLOR : FRAME)],
+      list.length > 0 ? [{ t: tr('inflight.count', { n: list.length }), color: FRAME }] : [],
       inner,
     )
     const toolW = toolWidth(list.map(f => f.tool))
@@ -1393,7 +1397,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       list.length === 0
         ? idleFlight
         : list.length > cap
-          ? [...list.slice(0, cap - 1).map(line), [{ t: `… 還有 ${list.length - cap + 1} 個`, color: FRAME }]]
+          ? [...list.slice(0, cap - 1).map(line), [{ t: tr('common.more', { n: list.length - cap + 1 }), color: FRAME }]]
           : list.map(line)
     return cardRow([{ w: cols, color, lines: [head, ...body] }])
   }
@@ -1424,24 +1428,24 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const lines: Line[] = [
       [
         { t: `${a.status === 'running' ? `⌜ ${mkOf(a)} ⌝` : `⌞ ${mkOf(a)} ⌟`} `, color, bold: true },
-        title(TITLE_ICON.agents, '子代理', color),
+        title(TITLE_ICON.agents, tr('title.subagents'), color),
         { t: ` · ${typeLabel(a.type)}`, bold: true, color },
       ],
-      field('類型', [{ t: a.type, bold: true, color }]),
-      field('模型', [{ ...badge(a.model), t: shortModel(a.model) }]),
-      field('狀態', status),
-      field('任務', [{ t: a.description, color: PRIMARY }]),
-      field('開始', [{ t: fmtClock(a.runStartedAt), color: PRIMARY }]),
-      field('耗時', [{ t: fmtDur(elapsedMs(a, view.now)), color: BRIGHT, bold: true }]),
-      field('Token', [{ t: `輸入 ${tokens(a.input)} · 輸出 ${tokens(a.output)}`, color: PRIMARY }]),
+      field(tr('field.type'), [{ t: a.type, bold: true, color }]),
+      field(tr('field.model'), [{ ...badge(a.model), t: shortModel(a.model) }]),
+      field(tr('field.status'), status),
+      field(tr('field.task'), [{ t: a.description, color: PRIMARY }]),
+      field(tr('field.started'), [{ t: fmtClock(a.runStartedAt), color: PRIMARY }]),
+      field(tr('field.elapsed'), [{ t: fmtDur(elapsedMs(a, view.now)), color: BRIGHT, bold: true }]),
+      field('Token', [{ t: tr('detail.tokens', { input: tokens(a.input), output: tokens(a.output) }), color: PRIMARY }]),
       // cache traffic is most of a subagent's input: shown so the counts match the cost
       ...(a.cacheRead + a.cacheWrite > 0
         ? [
-            field('快取', [
+            field(tr('field.cache'), [
               {
                 t: [
-                  ...(a.cacheRead > 0 ? [`讀取 ${tokens(a.cacheRead)}`] : []),
-                  ...(a.cacheWrite > 0 ? [`寫入 ${tokens(a.cacheWrite)}`] : []),
+                  ...(a.cacheRead > 0 ? [tr('detail.cacheRead', { n: tokens(a.cacheRead) })] : []),
+                  ...(a.cacheWrite > 0 ? [tr('detail.cacheWrite', { n: tokens(a.cacheWrite) })] : []),
                 ].join(' · '),
                 color: PRIMARY,
               },
@@ -1450,11 +1454,11 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         : []),
     ]
     if (a.runId !== undefined) {
-      const id = a.runId === '' ? '(無 id)' : a.runId
+      const id = a.runId === '' ? tr('common.noId') : a.runId
       lines.push(
         field('Workflow', [
           { t: id, color: ROLE_COLOR.workflow },
-          ...(a.agentIndex !== undefined ? [{ t: ` · 第 ${a.agentIndex} 個`, color: FRAME }] : []),
+          ...(a.agentIndex !== undefined ? [{ t: tr('detail.agentIndex', { n: a.agentIndex }), color: FRAME }] : []),
         ]),
       )
     }
@@ -1480,18 +1484,18 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       .map(x => x.a)
     const head = leftRight(
       [{ t: withIcon(ROLE_ICON[role], ROLE_LABEL[role]), color: ROLE_COLOR[role], bold: true }],
-      [{ t: `${runs.length} 次`, color: FRAME }],
+      [{ t: tr('common.runs', { n: runs.length }), color: FRAME }],
       inner,
     )
     if (runs.length === 0) {
-      return card({ w: cols, color: ACCENT, lines: [head, [{ t: '這個角色還沒有派工', color: FRAME }]] }, Math.max(4, room))
+      return card({ w: cols, color: ACCENT, lines: [head, [{ t: tr('role.empty'), color: FRAME }]] }, Math.max(4, room))
     }
 
     const groups = roleBreakdown(listed, role, view.now)
     const widest = (xs: string[]) => Math.max(0, ...xs.map(cellWidth))
-    const countText = (g: RoleModelStat) => `${g.count} 次`
-    const costText = (g: RoleModelStat) => (g.cost === undefined ? '未計價' : `≈${fmtUsd(g.cost)}`)
-    const avgText = (g: RoleModelStat) => `平均 ${fmtReadout(g.avgMs)}`
+    const countText = (g: RoleModelStat) => tr('common.runs', { n: g.count })
+    const costText = (g: RoleModelStat) => (g.cost === undefined ? tr('common.unpriced') : `≈${fmtUsd(g.cost)}`)
+    const avgText = (g: RoleModelStat) => tr('common.avg', { v: fmtReadout(g.avgMs) })
     const failText = (g: RoleModelStat) => (g.failed > 0 ? `FAIL ${g.failed}` : '')
     const labelW = Math.max(4, widest(groups.map(g => g.label)))
     const countW = widest(groups.map(countText))
@@ -1564,7 +1568,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const fit = Math.max(1, height - 2 - top.length)
     const list: Line[] =
       runs.length > fit
-        ? [...runs.slice(0, fit - 1).map(runRow), [{ t: `… 還有 ${runs.length - fit + 1} 個`, color: FRAME }]]
+        ? [...runs.slice(0, fit - 1).map(runRow), [{ t: tr('common.more', { n: runs.length - fit + 1 }), color: FRAME }]]
         : runs.map(runRow)
     return card({ w: cols, color: ACCENT, lines: [...top, ...list] }, height)
   }
@@ -1633,7 +1637,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // rows for them all.
   const legionBlocks = (plan: FleetPlan, active: FleetSession[], idle: FleetSession[], room: number): Block[] => {
     if (active.length + idle.length === 0) {
-      return [{ h: 1, node: lineNode([{ t: fleetView.at === 0 ? '掃描艦隊中…' : '艦隊目前沒有 Claude session', color: FRAME }]) }]
+      return [{ h: 1, node: lineNode([{ t: fleetView.at === 0 ? tr('fleet.scanning') : tr('fleet.empty'), color: FRAME }]) }]
     }
     const now = view.now
     // every idle suit's day is scaled to the fleet's idle peak
@@ -1682,7 +1686,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       used += u.b.h
     }
     const hidden = active.length + idle.length - kept.reduce((k, u) => k + u.suits, 0)
-    return [...kept.map(u => u.b), { h: 1, node: lineNode(clip([{ t: `… 還有 ${hidden} 艘`, color: FRAME }], cols)) }]
+    return [...kept.map(u => u.b), { h: 1, node: lineNode(clip([{ t: tr('fleet.moreSuits', { n: hidden }), color: FRAME }], cols)) }]
   }
 
   const fleetBlocks = (room: number): Block[] => {
@@ -1692,7 +1696,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
           {
             w: cols,
             color: FRAME,
-            lines: [[title(TITLE_ICON.fleet, '艦隊', PRIMARY)], [{ t: '需要 herdr：艦隊頁從 herdr 讀取所有 Claude session', color: FRAME }]],
+            lines: [[title(TITLE_ICON.fleet, tr('tab.fleet'), PRIMARY)], [{ t: tr('fleet.needsHerdr'), color: FRAME }]],
           },
         ]),
       ]
@@ -1754,7 +1758,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const labelW = 9
     const inner = cols - 4
     const field = (label: string, value: Seg[]): Seg[] => [{ t: padCells(label, labelW), color: FRAME }, ...value]
-    const orNone = (text: string | undefined, color: string): Seg => (text ? { t: text, color } : { t: '（無）', color: FRAME })
+    const orNone = (text: string | undefined, color: string): Seg => (text ? { t: text, color } : { t: tr('common.none'), color: FRAME })
     // a paragraph under its label: wrapped to the card, at most `max` lines
     const para = (label: string, text: string | undefined, max: number, color: string): Seg[][] => {
       const wrapped = wrapCells(text ?? '', Math.max(1, inner - labelW), max)
@@ -1767,15 +1771,15 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const jumpError = jumpText === undefined ? undefined : fitCells(jumpText.split('\n').map(l => l.trim()).find(l => l !== '') ?? '', inner)
     const lines: Line[] = [
       [suitIcon(s), sp(1), { t: s.title, color: PRIMARY, bold: true }],
-      field('狀態', [FLEET_STATUS_TEXT[s.status]]),
-      field('工作區', [orNone(s.workspace, PRIMARY)]),
-      field('目錄', [orNone(s.cwd, PRIMARY)]),
-      field('模型', [orNone(s.model && shortModel(s.model), family ? FAMILY_COLOR[family] : FRAME)]),
-      field('閒置', [orNone(s.lastAt === undefined ? undefined : fmtAgo(view.now - s.lastAt), PRIMARY)]),
-      field('今日', [{ t: `${fmtBig(s.todayTokens)} tok · ${fmtUsd(s.todayCost)}`, color: BRIGHT, bold: true }]),
-      field('近期工具', [{ t: `${s.tools} 次`, color: PRIMARY }]),
-      ...para('最後提問', s.lastUser, 3, PRIMARY),
-      ...para('最後回覆', s.lastReply, 5, BRIGHT),
+      field(tr('field.status'), [FLEET_STATUS_TEXT[s.status]]),
+      field(tr('field.workspace'), [orNone(s.workspace, PRIMARY)]),
+      field(tr('field.dir'), [orNone(s.cwd, PRIMARY)]),
+      field(tr('field.model'), [orNone(s.model && shortModel(s.model), family ? FAMILY_COLOR[family] : FRAME)]),
+      field(tr('field.idle'), [orNone(s.lastAt === undefined ? undefined : fmtAgo(view.now - s.lastAt), PRIMARY)]),
+      field(tr('field.today'), [{ t: `${fmtBig(s.todayTokens)} tok · ${fmtUsd(s.todayCost)}`, color: BRIGHT, bold: true }]),
+      field(tr('field.recentTools'), [{ t: tr('fleet.tools', { n: s.tools }), color: PRIMARY }]),
+      ...para(tr('field.lastPrompt'), s.lastUser, 3, PRIMARY),
+      ...para(tr('field.lastReply'), s.lastReply, 5, BRIGHT),
       ...(jumpError ? [[{ t: jumpError, color: ERROR, bold: true }]] : []),
     ]
     const spec: CardSpec = { w: cols, color: FRAME, lines }
@@ -2025,18 +2029,18 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // ---- 異動 ---------------------------------------------------------------
 
   const CHANGE_MODES: { mode: ChangeMode; label: string }[] = [
-    { mode: 'session', label: '本次 session' },
-    { mode: 'unpushed', label: '未推送' },
-    { mode: 'commits', label: '提交' },
+    { mode: 'session', label: tr('changes.modeSession') },
+    { mode: 'unpushed', label: tr('changes.modeUnpushed') },
+    { mode: 'commits', label: tr('changes.modeCommits') },
   ]
 
   // who changed a file: the main loop by name, a squad member by its card's mark, more
   // than one as the first and `+N`; `其他` for an unpushed file this session did not touch
   const changeActor = (actors: readonly string[]): Seg[] => {
     const [first] = actors
-    if (first === undefined) return [{ t: '其他', color: MUTED }]
+    if (first === undefined) return [{ t: tr('common.other'), color: MUTED }]
     const more: Seg[] = actors.length > 1 ? [{ t: `+${actors.length - 1}`, color: FRAME }] : []
-    if (first === MAIN_ACTOR) return [{ t: '主線', color: MAIN_COLOR, bold: true }, ...more]
+    if (first === MAIN_ACTOR) return [{ t: tr('common.main'), color: MAIN_COLOR, bold: true }, ...more]
     const member = view.roster.get(first)
     if (!member) return [{ t: 'MK', color: FRAME }, ...more]
     const [open, close] = view.running.some(a => a.id === first) ? BRACKET.live : BRACKET.done
@@ -2059,9 +2063,9 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const repoListLines = (inner: number): Line[] => {
     const cm = ctx.commits
     const list = cm?.list
-    if (!cm || !list || (list.rows.length === 0 && list.scanning)) return [[{ t: '掃描 repo 中…', color: MUTED }]]
+    if (!cm || !list || (list.rows.length === 0 && list.scanning)) return [[{ t: tr('repo.scanning'), color: MUTED }]]
     if (list.error !== undefined) return [[{ t: list.error, color: MUTED }]]
-    if (list.rows.length === 0) return [[{ t: '找不到 repo', color: MUTED }]]
+    if (list.rows.length === 0) return [[{ t: tr('repo.notFound'), color: MUTED }]]
     const out: Line[] = [
       [
         { t: withIcon(CHANGE_ICON.repo, cm.cwdName), color: PRIMARY, bold: true },
@@ -2076,7 +2080,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         ...(r.ahead ? [{ t: ` ↑${r.ahead}`, color: ACCENT, bold: true }] : []),
       ]
       const right: Seg[] = r.pending
-        ? [{ t: '讀取中…', color: MUTED }]
+        ? [{ t: tr('common.loading'), color: MUTED }]
         : r.error !== undefined
           ? [{ t: r.error, color: MUTED }]
           : [{ t: relTime(cm.now - (r.time ?? 0)), color: FRAME }]
@@ -2088,7 +2092,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         ),
       })
     }
-    if (list.more > 0) out.push([{ t: `… 還有 ${list.more} 個 repo`, color: FRAME }])
+    if (list.more > 0) out.push([{ t: tr('repo.more', { n: list.more }), color: FRAME }])
     return out
   }
 
@@ -2096,7 +2100,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const inner = cols - 4
     const cv = ctx.changes ?? { mode: 'session' as const, groups: [], pending: false, total: 0 }
     const files = cv.groups.reduce((n, g) => n + g.entries.length, 0)
-    const head = leftRight([title(TAB_ICON.changes, '異動', PRIMARY)], cv.mode === 'commits' ? [] : [{ t: `${files} 檔`, color: FRAME }], inner)
+    const head = leftRight([title(TAB_ICON.changes, tr('tab.changes'), PRIMARY)], cv.mode === 'commits' ? [] : [{ t: tr('changes.files', { n: files }), color: FRAME }], inner)
     const modeRow = (
       <Box flexDirection="row" gap={TAB_GAP}>
         {CHANGE_MODES.map(m => (
@@ -2112,7 +2116,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         ))}
         {cv.mode !== 'session' ? (
           <Button key="chg-refresh" plain onPress={() => (cv.mode === 'commits' ? ctx.commits?.refreshList() : ctx.refreshChanges?.())}>
-            <Text color={FRAME}>重新整理</Text>
+            <Text color={FRAME}>{tr('common.refresh')}</Text>
           </Button>
         ) : null}
       </Box>
@@ -2123,7 +2127,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       return card({ w: cols, color: FRAME, lines: [...lines, ...body] }, Math.max(6, room, 2 + lines.length + body.length))
     }
     const markW = Math.max(
-      cellWidth('主線'),
+      cellWidth(tr('common.main')),
       ...cv.groups.flatMap(g => g.entries.map(e => segsWidth(changeActor(e.actors)))),
     )
     const countW = Math.max(1, ...cv.groups.flatMap(g => g.entries.map(e => segsWidth(countSegs(e)))))
@@ -2135,7 +2139,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
           ...(g.ahead ? [{ t: ` ↑${g.ahead}`, color: ACCENT, bold: true }] : []),
         ],
         [
-          { t: `${g.entries.length} 檔  `, color: FRAME },
+          { t: `${tr('changes.files', { n: g.entries.length })}  `, color: FRAME },
           { t: `+${g.add}`, color: SUCCESS },
           { t: ' ' },
           { t: `−${g.del}`, color: ERROR },
@@ -2164,20 +2168,20 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     if (cv.groups.length === 0) {
       body.push([
         {
-          t: cv.mode === 'session' ? '這個 session 還沒改過檔案' : '這個 session 還沒碰過任何 git repo',
+          t: cv.mode === 'session' ? tr('changes.noFiles') : tr('changes.noRepos'),
           color: FRAME,
         },
       ])
     }
     for (const g of cv.groups) {
       if (g.removed !== undefined) {
-        body.push([{ t: fitCells(`${g.name} 已移除（${g.removed} 檔）`, inner), color: MUTED }])
+        body.push([{ t: fitCells(tr('changes.removedNamed', { name: g.name, n: g.removed }), inner), color: MUTED }])
         continue
       }
       body.push(groupLine(g))
       if (g.note !== undefined) body.push([sp(1), { t: g.note, color: MUTED }])
       if (g.error !== undefined) body.push([sp(1), { t: g.error, color: MUTED }])
-      else if (g.entries.length === 0) body.push([sp(1), { t: g.pending ? '計算中…' : '沒有未推送的改動', color: MUTED }])
+      else if (g.entries.length === 0) body.push([sp(1), { t: g.pending ? tr('common.computing') : tr('changes.noUnpushed'), color: MUTED }])
       for (const e of g.entries) body.push(fileLine(e))
     }
     const height = Math.max(6, room)
@@ -2187,10 +2191,10 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const beyond = cv.mode === 'session' ? Math.max(0, cv.total - MAX_LISTED) : 0
     if (body.length + (beyond > 0 ? 1 : 0) > fit) {
       const shownFiles = body.slice(0, fit - 1).filter(l => !Array.isArray(l)).length
-      lines.push(...body.slice(0, fit - 1), [{ t: `… 還有 ${files - shownFiles + beyond} 檔`, color: FRAME }])
+      lines.push(...body.slice(0, fit - 1), [{ t: tr('changes.moreFiles', { n: files - shownFiles + beyond }), color: FRAME }])
     } else {
       lines.push(...body)
-      if (beyond > 0) lines.push([{ t: `… 還有 ${beyond} 檔`, color: FRAME }])
+      if (beyond > 0) lines.push([{ t: tr('changes.moreFiles', { n: beyond }), color: FRAME }])
     }
     return card({ w: cols, color: FRAME, lines }, height)
   }
@@ -2224,7 +2228,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const rows = ctx.diff?.rows
     const body: Line[] =
       rows === undefined
-        ? [[{ t: '計算中…', color: MUTED }]]
+        ? [[{ t: tr('common.computing'), color: MUTED }]]
         : isFailed(rows)
           ? [[{ t: rows.error, color: MUTED }]]
           : diffLines(rows, inner)
@@ -2254,8 +2258,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   }
 
   const REPO_VIEWS: { view: RepoView; label: string }[] = [
-    { view: 'log', label: '提交' },
-    { view: 'branches', label: '分支' },
+    { view: 'log', label: tr('repo.viewCommits') },
+    { view: 'branches', label: tr('repo.viewBranches') },
     { view: 'stash', label: 'Stash' },
     { view: 'worktrees', label: 'Worktree' },
   ]
@@ -2265,22 +2269,22 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // why the last fetch failed.
   const remoteLines = (r: RepoPage, cm: CommitsCtx, inner: number): Line[] => {
     const rem = r.remotes
-    if (rem === undefined) return [[{ t: '讀取 remote 中…', color: MUTED }]]
+    if (rem === undefined) return [[{ t: tr('remote.loading'), color: MUTED }]]
     if (isFailed(rem)) return [[{ t: rem.error, color: MUTED }]]
-    if (rem.remotes.length === 0) return [[{ t: '沒有 remote', color: MUTED }]]
+    if (rem.remotes.length === 0) return [[{ t: tr('remote.none'), color: MUTED }]]
     const out: Line[] = rem.remotes.slice(0, MAX_REMOTES).map(x => {
       const name: Seg = { t: withIcon(COMMIT_ICON.remote, x.name), color: PRIMARY }
       return [sp(1), name, sp(2), { t: tailCells(x.url, Math.max(1, inner - segsWidth([name]) - 3)), color: FRAME }]
     })
-    if (rem.remotes.length > MAX_REMOTES) out.push([{ t: `還有 ${rem.remotes.length - MAX_REMOTES} 個 remote`, color: MUTED }])
-    const when = rem.fetchedAt === undefined ? '從未 fetch' : `fetch ${relTime(cm.now - rem.fetchedAt)}`
+    if (rem.remotes.length > MAX_REMOTES) out.push([{ t: tr('remote.more', { n: rem.remotes.length - MAX_REMOTES }), color: MUTED }])
+    const when = rem.fetchedAt === undefined ? tr('remote.neverFetched') : `fetch ${relTime(cm.now - rem.fetchedAt)}`
     out.push({
       h: 1,
       node: (
         <Box flexDirection="row" gap={TAB_GAP}>
           <Text color={MUTED}>{` ${when}`}</Text>
           {r.fetching ? (
-            <Text color={MUTED}>fetch 中…</Text>
+            <Text color={MUTED}>{tr('remote.fetching')}</Text>
           ) : (
             <Button key="cm-fetch" plain onPress={() => cm.fetch()}>
               <Text color={ACCENT}>fetch</Text>
@@ -2347,16 +2351,16 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // deleted, 無 upstream, 已 merge (whole), the subject when it fits and the age; a row opens
   // the branch's tree.
   const branchLines = (b: BranchList | Failed | undefined, cm: CommitsCtx, inner: number, open: { remote: boolean; gone: boolean }): Line[] => {
-    if (b === undefined) return [[{ t: '讀取中…', color: MUTED }]]
+    if (b === undefined) return [[{ t: tr('common.loading'), color: MUTED }]]
     if (isFailed(b)) return [[{ t: b.error, color: MUTED }]]
-    if (b.total === 0) return [[{ t: '沒有分支', color: MUTED }]]
+    if (b.total === 0) return [[{ t: tr('branch.none'), color: MUTED }]]
     const statusOf = (r: BranchRow): Seg[] =>
       [
         ...(r.ahead > 0 ? [{ t: `↑${r.ahead}`, color: SUCCESS }] : []),
         ...(r.behind > 0 ? [{ t: `↓${r.behind}`, color: PRIMARY }] : []),
         ...(r.gone ? [{ t: 'gone', color: MUTED }] : []),
-        ...(r.kind !== 'remote' && !r.upstream ? [{ t: '無 upstream', color: MUTED }] : []),
-        ...(r.merged ? [{ t: '已 merge', color: MUTED }] : []),
+        ...(r.kind !== 'remote' && !r.upstream ? [{ t: tr('branch.noUpstream'), color: MUTED }] : []),
+        ...(r.merged ? [{ t: tr('branch.merged'), color: MUTED }] : []),
       ].flatMap((x, i) => (i === 0 ? [x] : [sp(1), x]))
     const ageOf = (r: BranchRow): Seg[] => [{ t: fmtAgo(cm.now - r.time), color: FRAME }]
     const drawnRows = [...(b.current ? [b.current] : []), ...b.active.rows, ...(open.remote ? b.remote.rows : []), ...(open.gone ? b.gone.rows : [])]
@@ -2391,17 +2395,17 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
         ),
       }
     }
-    const more = (n: number): Line[] => (n > 0 ? [[{ t: `還有 ${n} 個分支`, color: MUTED }]] : [])
+    const more = (n: number): Line[] => (n > 0 ? [[{ t: tr('branch.more', { n }), color: MUTED }]] : [])
     const out: Line[] = b.current ? [row(b.current)] : []
     if (b.active.rows.length > 0) {
-      out.push([sp(1), { t: fitCells(`進行中 ${b.active.rows.length + b.active.more}`, inner - 1), color: MUTED }], ...b.active.rows.map(row), ...more(b.active.more))
+      out.push([sp(1), { t: fitCells(tr('branch.active', { n: b.active.rows.length + b.active.more }), inner - 1), color: MUTED }], ...b.active.rows.map(row), ...more(b.active.more))
     }
     for (const [key, title, g, isOpen, toggle] of [
-      ['remote', '只在遠端', b.remote, open.remote, cm.toggleRemote],
+      ['remote', tr('branch.remoteOnly'), b.remote, open.remote, cm.toggleRemote],
       ['gone', 'gone', b.gone, open.gone, cm.toggleGone],
     ] as const) {
       if (g.rows.length === 0) continue
-      const label = `${isOpen ? '▾' : '▸'} ${title} ${g.rows.length + g.more} 個${key === 'gone' ? '（遠端已刪，多半已 merge）' : ''}`
+      const label = `${isOpen ? '▾' : '▸'} ${title} ${tr('branch.count', { n: g.rows.length + g.more })}${key === 'gone' ? tr('branch.goneNote') : ''}`
       out.push({
         h: 1,
         node: (
@@ -2416,10 +2420,10 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // The stashes, shared by every worktree of the repo: stash@{n}, the branch it was made on,
   // its message and age; a row opens its diff.
   const stashLines = (s: StashInfo[] | Failed | undefined, cm: CommitsCtx, inner: number): Line[] => {
-    if (s === undefined) return [[{ t: '讀取中…', color: MUTED }]]
+    if (s === undefined) return [[{ t: tr('common.loading'), color: MUTED }]]
     if (isFailed(s)) return [[{ t: s.error, color: MUTED }]]
-    const out: Line[] = [[{ t: 'stash 由這個 repo 的所有 worktree 共用', color: MUTED }]]
-    if (s.length === 0) return [...out, [{ t: '沒有 stash', color: MUTED }]]
+    const out: Line[] = [[{ t: tr('stash.shared'), color: MUTED }]]
+    if (s.length === 0) return [...out, [{ t: tr('stash.none'), color: MUTED }]]
     for (const x of s) {
       const left: Seg[] = [
         sp(1),
@@ -2443,16 +2447,16 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // 已不存在 when pruned, locked, agent for a subagent's; a row (not a pruned one) opens its tree.
   // A long path is cut first, from its start, then the branch: the marks after them stay.
   const worktreeLines = (w: WorktreeRow[] | Failed | undefined, cm: CommitsCtx, inner: number): Line[] => {
-    if (w === undefined) return [[{ t: '讀取中…', color: MUTED }]]
+    if (w === undefined) return [[{ t: tr('common.loading'), color: MUTED }]]
     if (isFailed(w)) return [[{ t: w.error, color: MUTED }]]
-    if (w.length === 0) return [[{ t: '沒有 worktree', color: MUTED }]]
+    if (w.length === 0) return [[{ t: tr('worktree.none'), color: MUTED }]]
     return w.map(x => {
       const lead: Seg[] = [sp(1), { t: `${x.main ? COMMIT_ICON.head : COMMIT_ICON.node} `, color: x.main ? ACCENT : SUCCESS }]
       const branch: Seg =
         x.branch !== undefined ? { t: withIcon(COMMIT_ICON.branch, x.branch), color: FRAME } : { t: `detached ${x.head.slice(0, 7)}`, color: MUTED }
       const marks: Seg[] = [
-        ...(x.prunable ? [{ t: ' 已不存在', color: ERROR }] : []),
-        ...(!x.prunable && x.dirty !== undefined ? [x.dirty > 0 ? { t: ` ±${x.dirty}`, color: PRIMARY } : { t: ' 乾淨', color: MUTED }] : []),
+        ...(x.prunable ? [{ t: ` ${tr('worktree.missing')}`, color: ERROR }] : []),
+        ...(!x.prunable && x.dirty !== undefined ? [x.dirty > 0 ? { t: ` ±${x.dirty}`, color: PRIMARY } : { t: ` ${tr('worktree.clean')}`, color: MUTED }] : []),
         ...(x.locked ? [{ t: ' locked', color: MUTED }] : []),
         ...(x.agent ? [{ t: ' agent', color: MUTED }] : []),
       ]
@@ -2483,9 +2487,9 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // the rest, cut first.
   const logLines = (t: RepoPage['tree'], cm: CommitsCtx, inner: number): Line[] => {
     const lines: Line[] = []
-    if (t === undefined) lines.push([{ t: '讀取中…', color: MUTED }])
+    if (t === undefined) lines.push([{ t: tr('common.loading'), color: MUTED }])
     else if (isFailed(t)) lines.push([{ t: t.error, color: MUTED }])
-    else if (t.commits.length === 0) lines.push([{ t: '這個 repo 還沒有 commit', color: MUTED }])
+    else if (t.commits.length === 0) lines.push([{ t: tr('repo.noCommits'), color: MUTED }])
     else {
       const list = commitRows(t, cm.startedAt)
       const gw = graphWidth(list.map(r => r.graph))
@@ -2560,13 +2564,13 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   ): Block => {
     const inner = cols - 4
     const lines: Line[] = [head]
-    if (files === undefined) lines.push([{ t: '讀取中…', color: MUTED }])
+    if (files === undefined) lines.push([{ t: tr('common.loading'), color: MUTED }])
     else if (isFailed(files)) lines.push([{ t: files.error, color: MUTED }])
     else if (files.length === 0 || !file) lines.push([{ t: empty, color: MUTED }])
     else {
       const at = Math.max(0, files.findIndex(x => x.path === file.path))
       const counts: Seg[] = file.binary
-        ? [{ t: '二進位', color: MUTED }]
+        ? [{ t: tr('common.binary'), color: MUTED }]
         : [{ t: `+${file.add}`, color: SUCCESS }, sp(1), { t: `−${file.del}`, color: ERROR }]
       lines.push(leftRight([{ t: tailCells(file.path, Math.max(1, inner - segsWidth(counts) - 1)), color: BRIGHT }], counts, inner))
       const step = (by: number) => () => {
@@ -2587,7 +2591,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
           </Box>
         ),
       })
-      if (rows === undefined) lines.push([{ t: '計算中…', color: MUTED }])
+      if (rows === undefined) lines.push([{ t: tr('common.computing'), color: MUTED }])
       else if (isFailed(rows)) lines.push([{ t: rows.error, color: MUTED }])
       else lines.push(...diffLines(rows, inner))
     }
@@ -2603,7 +2607,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       [{ t: cm.repo?.name ?? '', color: FRAME }],
       cols - 4,
     )
-    return fileDiffBlock(room, head, d.files, d.file, d.rows, cm.openFile, { prev: 'cdiff-prev', next: 'cdiff-next' }, '這個 commit 沒有改檔案')
+    return fileDiffBlock(room, head, d.files, d.file, d.rows, cm.openFile, { prev: 'cdiff-prev', next: 'cdiff-next' }, tr('commit.noFiles'))
   }
 
   // One stash's diff: tracked files against its base, untracked ones whole.
@@ -2615,7 +2619,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       [{ t: cm.repo?.name ?? '', color: FRAME }],
       cols - 4,
     )
-    return fileDiffBlock(room, head, d.files, d.file, d.rows, cm.openStashFile, { prev: 'sdiff-prev', next: 'sdiff-next' }, '這個 stash 沒有檔案')
+    return fileDiffBlock(room, head, d.files, d.file, d.rows, cm.openStashFile, { prev: 'sdiff-prev', next: 'sdiff-next' }, tr('stash.noFiles'))
   }
 
   // ---- 任務 ---------------------------------------------------------------
@@ -2664,7 +2668,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   const tasksBlock = (room: number): Block => {
     const inner = cols - 4
     const board = ctx.tasks ?? EMPTY_BOARD
-    const head = leftRight([title(TAB_ICON.tasks, '任務', PRIMARY)], [{ t: countsText(boardCounts(board)), color: FRAME }], inner)
+    const head = leftRight([title(TAB_ICON.tasks, tr('tab.tasks'), PRIMARY)], [{ t: countsText(boardCounts(board)), color: FRAME }], inner)
     const h = Math.max(6, room)
     const lines = taskLines(board, inner, h - 3, taskOwner, view.now, ctx.taskFolds ?? {})
     return card({ w: cols, color: FRAME, lines: [head, ...lines.map(taskLine)] }, h)
@@ -2707,30 +2711,30 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     if (withRecent) recent = Math.max(recent, Math.min(total, room - listHeight(shown) - 3))
     blocks.push(...(suit ? [suit] : []), agentBlock(shown, listHeight(shown)), ...gaps(listGap), flight)
     if (withRecent)
-      blocks.push(...gaps(recentGap), eventCard([title(TITLE_ICON.recent, '最近事件', PRIMARY)], view.events, recentH(recent), '還沒有工具呼叫', false))
+      blocks.push(...gaps(recentGap), eventCard([title(TITLE_ICON.recent, tr('title.recent'), PRIMARY)], view.events, recentH(recent), tr('log.noCalls'), false))
   } else if (page === 'log') {
     const total = view.events.length
     const list = ctx.paused ? view.events.slice(0, Math.max(0, total - ctx.fresh)) : view.events
     const head = leftRight(
       [
-        title(TITLE_ICON.log, '事件流', PRIMARY),
-        ...(ctx.paused ? [sp(1), { t: `⏸ 已暫停 · 新增 ${ctx.fresh} 則`, color: ACCENT, bold: true }] : []),
+        title(TITLE_ICON.log, tr('tab.log'), PRIMARY),
+        ...(ctx.paused ? [sp(1), { t: tr('log.paused', { n: ctx.fresh }), color: ACCENT, bold: true }] : []),
       ],
-      [{ t: `${total}/${MAX_EVENTS} 則`, color: FRAME }],
+      [{ t: tr('log.total', { total, max: MAX_EVENTS }), color: FRAME }],
       cols - 4,
     )
-    blocks.push(eventCard(head, list, Math.max(MIN_EVENT_ROWS + 3, left()), '還沒有工具呼叫', true))
+    blocks.push(eventCard(head, list, Math.max(MIN_EVENT_ROWS + 3, left()), tr('log.noCalls'), true))
   } else if (page === 'detail' && selected) {
     blocks.push(detailBlock(selected))
     const own = view.events.filter(ev => ev.actor === selected.id)
     const head = leftRight(
-      [title(TITLE_ICON.log, '事件流', PRIMARY), { t: ' · 這個 subagent', color: FRAME }],
-      [{ t: `${own.length} 則`, color: FRAME }],
+      [title(TITLE_ICON.log, tr('tab.log'), PRIMARY), { t: tr('log.thisSubagent'), color: FRAME }],
+      [{ t: tr('log.count', { n: own.length }), color: FRAME }],
       cols - 4,
     )
     const gap = left() - cardGap >= MIN_EVENT_ROWS + 3 ? cardGap : 0
     blocks.push(...gaps(gap))
-    blocks.push(eventCard(head, own, Math.max(MIN_EVENT_ROWS + 3, left()), '這個 subagent 還沒有工具呼叫', true, false))
+    blocks.push(eventCard(head, own, Math.max(MIN_EVENT_ROWS + 3, left()), tr('log.subagentNoCalls'), true, false))
   } else if (page === 'roleDetail' && roleShown) {
     blocks.push(roleBlock(roleShown, left()))
   } else if (page === 'fleet') {
@@ -2773,7 +2777,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       )
     }
     if (hint) {
-      footer = <Text color={FRAME}>{fitCells('還沒有派工。派出 subagent 後這裡會即時顯示。', cols)}</Text>
+      footer = <Text color={FRAME}>{fitCells(tr('squad.empty'), cols)}</Text>
     }
   }
 

@@ -4,6 +4,8 @@ import { MIN_EVENT_ROWS } from './cockpit'
 import type { Ctx } from './cockpit'
 import { DT, GLASS } from './desktopTheme'
 import type { DesktopUi } from './desktopView'
+import { t as tr } from './i18n'
+import type { MsgKey } from './i18n'
 import { ROLE_ICON } from './icons'
 import {
   FAMILY_NAME,
@@ -153,7 +155,7 @@ function eventsCard(kit: KitA, top: RenderElement, list: readonly JarvisEvent[],
     top,
     rowsShown.length === 0
       ? [<Text color={DT.textSub}>{empty}</Text>]
-      : [row({ time: sub('時間'), who: sub('誰'), tool: sub('工具'), desc: sub('描述'), took: sub('耗時'), mark: sub('結果') }), ...rowsShown.map(line)],
+      : [row({ time: sub(tr('col.time')), who: sub(tr('col.who')), tool: sub(tr('col.tool')), desc: sub(tr('col.desc')), took: sub(tr('col.took')), mark: sub(tr('col.result')) }), ...rowsShown.map(line)],
     undefined,
     true,
   )
@@ -172,24 +174,24 @@ function logPage(kit: KitA): RenderElement {
     kit.ui,
     [
       <Text color={DT.orange} bold>
-        📜 事件流
+        {`📜 ${tr('tab.log')}`}
       </Text>,
       ...(ctx.paused
         ? [
             <Text color={DT.data} bold>
-              {`⏸ 已暫停 · 新增 ${ctx.fresh} 則`}
+              {tr('log.paused', { n: ctx.fresh })}
             </Text>,
           ]
         : []),
     ],
-    <Text color={DT.textSub}>{`${total}/${MAX_EVENTS} 則`}</Text>,
+    <Text color={DT.textSub}>{tr('log.total', { total, max: MAX_EVENTS })}</Text>,
   )
   return (
     <Box flexDirection="column" gap={1}>
       <Box flexDirection="row" gap={1} flexWrap="wrap">
-        {kit.pill('pause', ctx.paused ? '▶ 繼續' : '⏸ 暫停', ctx.paused, ctx.pause)}
+        {kit.pill('pause', ctx.paused ? `▶ ${tr('common.resume')}` : `⏸ ${tr('common.pause')}`, ctx.paused, ctx.pause)}
       </Box>
-      {eventsCard(kit, top, list, eventLimit(kit.rows, 14), '還沒有工具呼叫', true)}
+      {eventsCard(kit, top, list, eventLimit(kit.rows, 14), tr('log.noCalls'), true)}
     </Box>
   )
 }
@@ -222,7 +224,7 @@ function actionsRow(kit: KitA, back: () => void): RenderElement {
   const { Box } = kit.ui
   return (
     <Box flexDirection="row" gap={1} flexWrap="wrap">
-      {kit.pill('back', '← 返回', false, back)}
+      {kit.pill('back', `← ${tr('common.back')}`, false, back)}
     </Box>
   )
 }
@@ -254,7 +256,7 @@ function detailPage(kit: KitA): RenderElement {
     </Box>
   )
   const status = p === 'active' ? `${ctx.frame} ${PHASE_WORDS.active}${a.tool !== '' ? ` · ${a.tool}` : ''}` : PHASE_WORDS[p]
-  const cache = [...(a.cacheRead > 0 ? [`讀取 ${tokens(a.cacheRead)}`] : []), ...(a.cacheWrite > 0 ? [`寫入 ${tokens(a.cacheWrite)}`] : [])].join(' · ')
+  const cache = [...(a.cacheRead > 0 ? [tr('detail.cacheRead', { n: tokens(a.cacheRead) })] : []), ...(a.cacheWrite > 0 ? [tr('detail.cacheWrite', { n: tokens(a.cacheWrite) })] : [])].join(' · ')
   const typeLabel = a.type === WORKFLOW_TYPE ? 'workflow' : a.type
   const infoTop = topLine(
     kit.ui,
@@ -262,7 +264,7 @@ function detailPage(kit: KitA): RenderElement {
       <Text color={member.color} bold>
         {markOf(a, member.n)}
       </Text>,
-      <Text color={DT.orange} bold>{`👥 子代理 · ${typeLabel}`}</Text>,
+      <Text color={DT.orange} bold>{`👥 ${tr('title.subagents')} · ${typeLabel}`}</Text>,
     ],
     <Text color={phaseColor(p)} bold>
       {PHASE_SHORT[p]}
@@ -272,26 +274,26 @@ function detailPage(kit: KitA): RenderElement {
     infoTop,
     [
       <Box flexDirection="column">
-        {field('類型', a.type, member.color, true)}
-        {field('模型', shortModel(a.model), DT.text)}
-        {field('狀態', status, phaseColor(p), true)}
-        {field('任務', a.description, DT.text, false, true)}
-        {field('開始', fmtClock(a.runStartedAt), DT.textSub)}
-        {field('耗時', fmtDur(elapsedMs(a, view.now)), DT.orangeBright, true)}
-        {field('Token', `輸入 ${tokens(a.input)} · 輸出 ${tokens(a.output)}`, DT.data)}
-        {cache === '' ? null : field('快取', cache, DT.data)}
-        {a.runId === undefined ? null : field('Workflow', `${a.runId === '' ? '(無 id)' : a.runId}${a.agentIndex !== undefined ? ` · 第 ${a.agentIndex} 個` : ''}`, DT.textSub)}
+        {field(tr('field.type'), a.type, member.color, true)}
+        {field(tr('field.model'), shortModel(a.model), DT.text)}
+        {field(tr('field.status'), status, phaseColor(p), true)}
+        {field(tr('field.task'), a.description, DT.text, false, true)}
+        {field(tr('field.started'), fmtClock(a.runStartedAt), DT.textSub)}
+        {field(tr('field.elapsed'), fmtDur(elapsedMs(a, view.now)), DT.orangeBright, true)}
+        {field('Token', tr('detail.tokens', { input: tokens(a.input), output: tokens(a.output) }), DT.data)}
+        {cache === '' ? null : field(tr('field.cache'), cache, DT.data)}
+        {a.runId === undefined ? null : field('Workflow', `${a.runId === '' ? tr('common.noId') : a.runId}${a.agentIndex !== undefined ? tr('detail.agentIndex', { n: a.agentIndex }) : ''}`, DT.textSub)}
       </Box>,
     ],
     DT.orangeEdge,
   )
   const own = view.events.filter(ev => ev.actor === a.id)
-  const eventsTop = topLine(kit.ui, [<Text color={DT.orange} bold>📜 事件流 · 這個 subagent</Text>], <Text color={DT.textSub}>{`${own.length} 則`}</Text>)
+  const eventsTop = topLine(kit.ui, [<Text color={DT.orange} bold>{`📜 ${tr('tab.log')}${tr('log.thisSubagent')}`}</Text>], <Text color={DT.textSub}>{tr('log.count', { n: own.length })}</Text>)
   return (
     <Box flexDirection="column" gap={1}>
       {actionsRow(kit, back)}
       {infoCard}
-      {eventsCard(kit, eventsTop, own, eventLimit(kit.rows, 30), '這個 subagent 還沒有工具呼叫', false)}
+      {eventsCard(kit, eventsTop, own, eventLimit(kit.rows, 30), tr('log.subagentNoCalls'), false)}
     </Box>
   )
 }
@@ -336,7 +338,7 @@ function rolePage(kit: KitA): RenderElement {
     return (
       <Box flexDirection="column" gap={1}>
         {actionsRow(kit, back)}
-        {kit.card(kit.head(ROLE_ICON[role], ROLE_LABEL[role], '0 次'), [<Text color={DT.textSub}>這個角色還沒有派工</Text>], DT.orangeEdge)}
+        {kit.card(kit.head(ROLE_ICON[role], ROLE_LABEL[role], tr('common.runs', { n: 0 })), [<Text color={DT.textSub}>{tr('role.empty')}</Text>], DT.orangeEdge)}
       </Box>
     )
 
@@ -354,16 +356,16 @@ function rolePage(kit: KitA): RenderElement {
     <Box flexDirection="row" gap={1} alignItems="center">
       {cell(MCOL.label, say(g.label, DT.text, true))}
       {barW >= 1
-        ? kit.picture(rampBarSvg(barW, g.count / runs.length, g.failed > 0 ? [DT.orangeBright, DT.orange, DT.fail] : [DT.orangeBright, DT.orange], GLASS), `${g.label} ${g.count} 次`, barW, 1)
+        ? kit.picture(rampBarSvg(barW, g.count / runs.length, g.failed > 0 ? [DT.orangeBright, DT.orange, DT.fail] : [DT.orangeBright, DT.orange], GLASS), `${g.label} ${tr('common.runs', { n: g.count })}`, barW, 1)
         : null}
-      {cell(MCOL.count, say(`${g.count} 次`, DT.orangeBright, true), true)}
+      {cell(MCOL.count, say(tr('common.runs', { n: g.count }), DT.orangeBright, true), true)}
       {mShown.has('tok') ? cell(MCOL.tok, say(fmtK(g.tokens), DT.data), true) : null}
-      {mShown.has('cost') ? cell(MCOL.cost, say(g.cost === undefined ? '未計價' : `≈${fmtUsd(g.cost)}`, g.cost === undefined ? DT.textFaint : DT.text), true) : null}
-      {mShown.has('avg') ? cell(MCOL.avg, say(`平均 ${fmtReadout(g.avgMs)}`), true) : null}
+      {mShown.has('cost') ? cell(MCOL.cost, say(g.cost === undefined ? tr('common.unpriced') : `≈${fmtUsd(g.cost)}`, g.cost === undefined ? DT.textFaint : DT.text), true) : null}
+      {mShown.has('avg') ? cell(MCOL.avg, say(tr('common.avg', { v: fmtReadout(g.avgMs) })), true) : null}
       {mShown.has('fail') ? cell(MCOL.fail, say(g.failed > 0 ? `FAIL ${g.failed}` : '', DT.fail), true) : null}
     </Box>
   )
-  const modelsCard = kit.card(kit.head(ROLE_ICON[role], ROLE_LABEL[role], `${runs.length} 次`), groups.map(modelRow), DT.orangeEdge)
+  const modelsCard = kit.card(kit.head(ROLE_ICON[role], ROLE_LABEL[role], tr('common.runs', { n: runs.length })), groups.map(modelRow), DT.orangeEdge)
 
   // the runs: where the card is narrow the model, the tokens, the time and last the description
   // give way: the mark and its icon stay
@@ -398,8 +400,8 @@ function rolePage(kit: KitA): RenderElement {
   }
   const fit = Math.max(3, kit.rows - 16 - groups.length)
   const runsBody =
-    runs.length > fit ? [...runs.slice(0, fit - 1).map(runRow), <Text color={DT.textSub}>{`… 還有 ${runs.length - fit + 1} 個`}</Text>] : runs.map(runRow)
-  const runsCard = kit.card(kit.head('📋', '派工紀錄', title), runsBody, undefined, true)
+    runs.length > fit ? [...runs.slice(0, fit - 1).map(runRow), <Text color={DT.textSub}>{tr('common.more', { n: runs.length - fit + 1 })}</Text>] : runs.map(runRow)
+  const runsCard = kit.card(kit.head('📋', tr('title.dispatchLog'), title), runsBody, undefined, true)
 
   return (
     <Box flexDirection="column" gap={1}>
@@ -415,17 +417,17 @@ function rolePage(kit: KitA): RenderElement {
 // a task row's column past its title: its width, and when it gives way (higher first)
 type Col = { w: number; node: RenderElement; drop: number }
 
-const STATUS_WORD: Record<JarvisTaskStatus, { t: string; color: string }> = {
-  in_progress: { t: '進行中', color: DT.data },
-  pending: { t: '預計', color: DT.textSub },
-  completed: { t: '完成', color: DT.ok },
+const STATUS_WORD: Record<JarvisTaskStatus, { t: MsgKey; color: string }> = {
+  in_progress: { t: 'tasks.wordRunning', color: DT.data },
+  pending: { t: 'tasks.wordPlanned', color: DT.textSub },
+  completed: { t: 'tasks.wordDone', color: DT.ok },
 }
 
 // the board's three parts in order, each under its heading
 const TASK_SECTIONS = [
-  ['running', '進行中'],
-  ['planned', '預計'],
-  ['done', '已完成'],
+  ['running', 'tasks.running'],
+  ['planned', 'tasks.planned'],
+  ['done', 'tasks.done'],
 ] as const
 
 // an item's or a subtask's indent under the row it belongs to
@@ -522,7 +524,7 @@ function tasksPage(kit: KitA): RenderElement {
   const progressCols = (done: number, total: number, since: number | undefined, status: JarvisTaskStatus): Col[] => {
     const word = STATUS_WORD[status]
     return [
-      { w: 6, node: faint(word.t, word.color), drop: 1 },
+      { w: 6, node: faint(tr(word.t), word.color), drop: 1 },
       ...(total > 0 ? [{ w: 5, node: faint(`${done}/${total}`), drop: 2 }] : []),
       ...(since === undefined ? [] : [{ w: 7, node: faint(fmtReadout(now - since), DT.data), drop: 3 }]),
     ]
@@ -540,13 +542,13 @@ function tasksPage(kit: KitA): RenderElement {
       const a = agentById.get(s.agentId)
       if (a !== undefined) {
         const took: Col = { w: 7, node: faint(fmtReadout(elapsedMs(a, now))), drop: 2 }
-        if (a.status === 'running' && a.waiting === true) cols.push({ w: 4, node: faint('等待', DT.data), drop: 1 }, took)
+        if (a.status === 'running' && a.waiting === true) cols.push({ w: 4, node: faint(tr('member.waiting'), DT.data), drop: 1 }, took)
         else if (a.status === 'running') {
           if (a.tool !== '') cols.push({ w: TOOL_MAX, node: faint(fitCells(a.tool, TOOL_MAX), DT.data), drop: 3 })
           cols.push(took)
         } else if (a.status === 'done' || a.status === 'failed')
-          cols.push({ w: 4, node: faint(a.status === 'done' ? '完成' : '失敗', a.status === 'done' ? DT.ok : DT.fail), drop: 1 }, took)
-        else cols.push({ w: 4, node: faint('失聯', DT.fail), drop: 1 })
+          cols.push({ w: 4, node: faint(a.status === 'done' ? tr('member.done') : tr('member.failed'), a.status === 'done' ? DT.ok : DT.fail), drop: 1 }, took)
+        else cols.push({ w: 4, node: faint(tr('member.stale'), DT.fail), drop: 1 })
       }
       cols.push({ w: 6, node: faint(member ? `MK-${member.n}` : 'MK', member?.color ?? DT.orange), drop: 0 })
     }
@@ -609,12 +611,12 @@ function tasksPage(kit: KitA): RenderElement {
           if (groups.length === 0) return []
           return [
             <Box flexDirection="column" gap={1}>
-              <Text color={DT.textSub} bold>{`${label} ${groups.length}`}</Text>
+              <Text color={DT.textSub} bold>{`${tr(label)} ${groups.length}`}</Text>
               {groups.map(groupTile)}
             </Box>,
           ]
         })
-  return kit.card(kit.head('✅', '任務', countsText(boardCounts(board))), body, parts.running.length > 0 ? DT.orangeEdge : undefined)
+  return kit.card(kit.head('✅', tr('tab.tasks'), countsText(boardCounts(board))), body, parts.running.length > 0 ? DT.orangeEdge : undefined)
 }
 
 // One of A_PAGES as `page` (from shownPageA).
