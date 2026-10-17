@@ -344,21 +344,21 @@ const en: Record<MsgKey, string> = {
   'squad.headFailed': '{n} failed',
   'squad.headStale': '?{n} lost',
   'squad.desktopHead': '▶{n} running · {done} done',
-  'squad.moreRows': '… {n} more rows not shown',
-  'wf.agents': '{n} agents',
+  'squad.moreRows': '… {n} more {n|row|rows} not shown',
+  'wf.agents': '{n} {n|agent|agents}',
   'wf.running': 'running',
   'wf.done': 'done',
   'wf.failed': 'failed',
   'wf.stale': 'lost',
   'inflight.idle': 'No tool calls running',
-  'inflight.count': '{n} calls',
+  'inflight.count': '{n} {n|call|calls}',
 
   'stats.moreKinds': '… {n} more',
   'stats.noPriced': 'No priced models',
   'stats.noSubagents': 'No subagents yet',
   'stats.noModelUsage': 'No model usage yet',
   'stats.modelTable': '| Model | Share | Count |',
-  'stats.dispatches': '{n} dispatches',
+  'stats.dispatches': '{n} {n|dispatch|dispatches}',
   'role.empty': 'Nothing dispatched to this role yet',
 
   'field.type': 'Type',
@@ -368,7 +368,7 @@ const en: Record<MsgKey, string> = {
   'field.started': 'Started',
   'field.elapsed': 'Elapsed',
   'field.cache': 'Cache',
-  'field.workspace': 'Space',
+  'field.workspace': 'Wkspace',
   'field.dir': 'Dir',
   'field.idle': 'Idle',
   'field.today': 'Today',
@@ -382,8 +382,8 @@ const en: Record<MsgKey, string> = {
 
   'log.noCalls': 'No tool calls yet',
   'log.paused': '⏸ Paused · {n} new',
-  'log.total': '{total}/{max} events',
-  'log.count': '{n} events',
+  'log.total': '{total}/{max} {max|event|events}',
+  'log.count': '{n} {n|event|events}',
   'log.thisSubagent': ' · this subagent',
   'log.subagentNoCalls': 'This subagent has made no tool calls yet',
   'col.time': 'Time',
@@ -391,7 +391,7 @@ const en: Record<MsgKey, string> = {
   'col.tool': 'Tool',
   'col.desc': 'Description',
   'col.took': 'Took',
-  'col.result': 'Res',
+  'col.result': 'Out',
 
   'fleet.scanning': 'Scanning the fleet…',
   'fleet.empty': 'No Claude sessions in the fleet',
@@ -399,9 +399,9 @@ const en: Record<MsgKey, string> = {
   'fleet.needsHerdr': 'Needs herdr: the fleet page reads every Claude session from herdr',
   'fleet.needsHerdrShort': 'Needs herdr',
   'fleet.herdrHint': "Run Claude Code inside herdr (HERDR_ENV=1) and each session's status, today's usage and quota are listed here.",
-  'fleet.toolCount': '{n} tool calls',
-  'fleet.tools': '{n} calls',
-  'fleet.suits': ' suits',
+  'fleet.toolCount': '{n} tool {n|call|calls}',
+  'fleet.tools': '{n} {n|call|calls}',
+  'fleet.suits': ' {n|suit|suits}',
   'fleet.retirable': ' retirable',
   'fleet.jumpFailed': 'Jump failed: {why}',
   'fleet.herdrNoReply': 'herdr did not respond',
@@ -410,13 +410,13 @@ const en: Record<MsgKey, string> = {
   'changes.modeSessionShort': 'This session',
   'changes.modeUnpushed': 'Unpushed',
   'changes.modeCommits': 'Commits',
-  'changes.files': '{n} files',
-  'changes.moreFiles': '… {n} more files',
-  'changes.moreLines': '… {n} more lines',
+  'changes.files': '{n} {n|file|files}',
+  'changes.moreFiles': '… {n} more {n|file|files}',
+  'changes.moreLines': '… {n} more {n|line|lines}',
   'changes.noFiles': 'No files changed in this session yet',
   'changes.noRepos': 'No git repo touched in this session yet',
-  'changes.removedNamed': '{name} removed ({n} files)',
-  'changes.removed': 'Removed ({n} files)',
+  'changes.removedNamed': '{name} removed ({n} {n|file|files})',
+  'changes.removed': 'Removed ({n} {n|file|files})',
   'changes.noUnpushed': 'No unpushed changes',
   'changes.noDiff': 'No differences',
   'changes.deleted': 'deleted',
@@ -426,19 +426,19 @@ const en: Record<MsgKey, string> = {
 
   'repo.scanning': 'Scanning repos…',
   'repo.notFound': 'No repo found',
-  'repo.more': '… {n} more repos',
+  'repo.more': '… {n} more {n|repo|repos}',
   'repo.viewCommits': 'Commits',
   'repo.viewBranches': 'Branches',
   'repo.noCommits': 'This repo has no commits yet',
   'remote.loading': 'Loading remotes…',
   'remote.none': 'No remotes',
-  'remote.more': '{n} more remotes',
+  'remote.more': '{n} more {n|remote|remotes}',
   'remote.neverFetched': 'never fetched',
   'remote.fetching': 'fetching…',
   'branch.none': 'No branches',
   'branch.noUpstream': 'no upstream',
   'branch.merged': 'merged',
-  'branch.more': '{n} more branches',
+  'branch.more': '{n} more {n|branch|branches}',
   'branch.active': 'Active {n}',
   'branch.remoteOnly': 'Remote only',
   'branch.count': '{n}',
@@ -467,7 +467,7 @@ const en: Record<MsgKey, string> = {
   'err.boardWrite': 'The board cannot be written right now',
 
   'cost.saved': 'saved {pct}%',
-  'cost.over': '{pct}% more',
+  'cost.over': '{pct}% over',
   'cost.summary': '{models} · ≈{cost} vs Opus {opus} ({tail})',
   'health.loop': '⚠looping ',
   'health.stuck': '⚠stuck ',
@@ -488,7 +488,7 @@ const en: Record<MsgKey, string> = {
   'tasks.wordRunning': 'Active',
   'tasks.wordPlanned': 'Later',
   'tasks.wordDone': 'Done',
-  'tasks.moreRows': '{n} more rows',
+  'tasks.moreRows': '{n} more {n|row|rows}',
   'tasks.counts': '{itemsDone}/{items} items · subtasks {subtasksDone}/{subtasks}',
   'tasks.builtin': 'Built-in tasks',
   'member.waiting': 'wait',
@@ -512,7 +512,7 @@ const en: Record<MsgKey, string> = {
   'board.subUpdateNeeds': 'update on a subtask needs status, title or agent',
   'board.badOp': 'op must be one of {ops}',
   'board.requestContext':
-    'jarvis task board: this request is recorded as item {id}, and its title will be summarized into one line automatically. If this turn calls tools or adds subtasks, the item is marked done and its result recorded when the reply ends (with subtasks, the result is recorded only once all of them are done); if it only answers a question, it is removed once answered. For multi-step work, use mcp__jarvis__task add with only subtasks to hang them under this item; if the summary is wrong, fix it with update id={id} and title.',
+    'jarvis task board: this request is recorded as item {id}, and its title will be summarized into one line automatically. If this turn calls tools or adds subtasks, the item is marked done and its result recorded when the reply ends (with subtasks, the result is recorded only once all of them are done); if it only answers a question, it is removed once answered. For multi-step work, use mcp__jarvis__task add with only subtasks to hang them under this item; if the summary is wrong, fix it by calling update id={id} with title.',
 
   'prompt.head': '# Task board',
   'prompt.intro':
@@ -521,7 +521,7 @@ const en: Record<MsgKey, string> = {
     '- Before multi-step work (three or more steps, or work that dispatches subagents), list the subtasks with add: subtasks alone hang under the current request; with item, if the current request has no subtasks yet, the plan merges into it (its title becomes item) instead of adding another item.',
   'prompt.mark': '- Mark a subtask in_progress when you start it and completed as soon as it is done; do not leave the marking until the end.',
   'prompt.title':
-    "- jarvis summarizes each request item's title into one line automatically and records the result when the reply ends (for a request with subtasks, only once all of them are done); if the summary is wrong, fix it with update and title.",
+    "- jarvis summarizes each request item's title into one line automatically and records the result when the reply ends (for a request with subtasks, only once all of them are done); if the summary is wrong, fix it with update, passing title.",
   'prompt.later': '- Work for later, not this turn: add with item only (no subtasks), recorded as a planned item.',
   'prompt.change': '- When the plan changes, add new subtasks or remove the ones no longer needed.',
   'prompt.agent': '- After dispatching a subagent for a subtask, update it with agent (the agentId the Agent tool returned).',
@@ -546,7 +546,7 @@ const en: Record<MsgKey, string> = {
   'sum.system':
     'You write a one-line summary for a work board. Reply with only that one line, in English: no quotes, no trailing period, no prefix such as "Title:", no explanation, and no symbols like → × — – or curly quotes.',
   'sum.result':
-    'In at most {max} characters, write the result or conclusion of this request, e.g. "42", "lock-free atomic update via compare-and-swap", "merged into master".\n\nRequest:\n{prompt}{subtasks}\n\nAnswer:\n{answer}',
+    'In at most {max} characters, write the result or conclusion of this request, e.g. "42", "CAS-based atomic update", "merged into master".\n\nRequest:\n{prompt}{subtasks}\n\nAnswer:\n{answer}',
   'sum.subtasks': '\n\nSubtasks:\n{list}',
   'cls.system':
     'You sort requests for a work board. Reply in English with exactly the number of lines asked for: no quotes, no trailing period, no prefix such as "Title:", no explanation, and no symbols like → × — – or curly quotes.',
@@ -559,7 +559,7 @@ const en: Record<MsgKey, string> = {
   'cls.twoLines': 'Reply with only two lines:',
   'cls.line1': 'Line 1: the request title.',
   'cls.line2':
-    'Line 2: if it belongs to an existing topic, the topic number (digits only); if none fits, "New " followed by a topic name of at most {max} characters, e.g. "New Jamie 7-day check-in top-up total".',
+    'Line 2: if it belongs to an existing topic, the topic number (digits only); if none fits, "New " followed by a topic name of at most {max} characters, e.g. "New Check-in top-ups".',
   'cls.short': 'A very short request (e.g. "confirm", "ok", "1", "push") usually continues the previous request\'s topic.',
   'cls.topics': 'Existing topics (most recently active first):\n{topics}',
   'cls.request': '{last}Request:\n{prompt}',
@@ -599,10 +599,16 @@ export async function loadLocale($: Pick<EngineInterface, 'env'>): Promise<Local
   return current
 }
 
-// A message in the current locale, each {name} filled from `vars` in one pass, so a value is
-// never read for placeholders of its own; a name `vars` lacks stays as written.
+// A message in the current locale, each {name} filled from `vars` and each {name|one|other} the
+// word for the count in `name` (one when it is 1), in one pass, so a value is never read for
+// placeholders of its own; a name `vars` lacks stays as written.
 export function t(key: MsgKey, vars?: Readonly<Record<string, string | number>>): string {
   const text = DICTIONARIES[current][key]
   if (vars === undefined) return text
-  return text.replace(/\{(\w+)\}/g, (whole, name: string) => (Object.hasOwn(vars, name) ? String(vars[name]) : whole))
+  return text.replace(/\{(\w+)(?:\|([^|{}]*)\|([^|{}]*))?\}/g, (whole, name: string, one?: string, other?: string) => {
+    if (!Object.hasOwn(vars, name)) return whole
+    const value = vars[name]
+    if (one === undefined || other === undefined) return String(value)
+    return Number(value) === 1 ? one : other
+  })
 }

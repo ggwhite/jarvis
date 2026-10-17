@@ -8,9 +8,17 @@ export const SUMMARY_MODEL = 'haiku'
 export const SUMMARY_TIMEOUT_MS = 15_000
 // a prompt, and an answer, are cut to this many characters before they are sent
 export const SUMMARY_INPUT_MAX = 2000
-// a summary title and a result are kept to this many characters
-export const SUMMARY_TITLE_MAX = 20
-export const RESULT_MAX = 40
+// a summary title, a result and a new topic's title are kept to this many characters; English
+// takes about twice the characters CJK does for the same panel width
+export let SUMMARY_TITLE_MAX: number
+export let RESULT_MAX: number
+export let TOPIC_TITLE_MAX: number
+localized(() => {
+  const en = locale() === 'en'
+  SUMMARY_TITLE_MAX = en ? 40 : 20
+  RESULT_MAX = en ? 80 : 40
+  TOPIC_TITLE_MAX = en ? 32 : 16
+})
 // the reply's token cap: one short line
 export const SUMMARY_TOKENS = 100
 
@@ -54,16 +62,23 @@ const ECHOES_EN = [/result or conclusion of this request/i, /in at most \d+ char
 // Whether a reply repeats the instructions back instead of following them.
 const echoesAsk = (text: string): boolean => ECHOES.some(p => p.test(text)) || (locale() === 'en' && ECHOES_EN.some(p => p.test(text)))
 
+// A line cut to `max` characters with an ellipsis; under English at the last word boundary
+// that leaves a word, else mid-word as zh-TW always is.
+function cutLine(line: string, max: number): string {
+  const chars = [...line]
+  if (locale() !== 'en' || chars.length <= max) return lineOf(line, max)
+  const head = chars.slice(0, max - 1).join('')
+  const space = head.lastIndexOf(' ')
+  return space > 0 ? `${head.slice(0, space).trimEnd()}…` : lineOf(line, max)
+}
+
 // A reply as one line: its first non-blank line, unwrapped, cut to `max` characters; '' when
 // it repeats the instructions back.
 export function cleanSummary(text: string, max: number): string {
   const plain = WIDE.reduce((t, [from, to]) => t.replace(from, to), text)
   const line = lineOf(plain, Number.MAX_SAFE_INTEGER).replace(STOP, '').replace(WRAPS, '').replace(STOP, '').trim()
-  return echoesAsk(line) ? '' : lineOf(line, max)
+  return echoesAsk(line) ? '' : cutLine(line, max)
 }
-
-// a new topic's title is kept to this many characters
-export const TOPIC_TITLE_MAX = 16
 
 export let CLASSIFY_SYSTEM: string
 localized(() => {

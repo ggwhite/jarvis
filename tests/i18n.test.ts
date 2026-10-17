@@ -7,7 +7,7 @@ import type { Locale, MsgKey } from '../hooks/i18n'
 import { relTime } from '../hooks/commitsView'
 import { cellWidth } from '../hooks/jarvis'
 import { jarvisOpenText } from '../hooks/register'
-import { CLASSIFY_SYSTEM, SUMMARY_SYSTEM, classifyAsk, cleanSummary, parseClassify, resultAsk } from '../hooks/summary'
+import { CLASSIFY_SYSTEM, RESULT_MAX, SUMMARY_SYSTEM, SUMMARY_TITLE_MAX, TOPIC_TITLE_MAX, classifyAsk, cleanSummary, parseClassify, resultAsk } from '../hooks/summary'
 import { TASK_PROMPT, TASK_TOOL, TASK_TOOL_SPEC, TASKS_TITLE, applyTask, boardText, requestContext } from '../hooks/tasks'
 import { EMPTY_TEXT } from '../hooks/tasksView'
 import { HAIKU, drawOn, pressOn, spawnInput, textOf } from './helpers'
@@ -78,6 +78,50 @@ describe('locale and lookup', () => {
   })
 })
 
+describe('en: counts', () => {
+  const COUNTED: [MsgKey, Record<string, string | number>, string, string][] = [
+    ['changes.files', {}, '1 file', '2 files'],
+    ['changes.moreFiles', {}, '… 1 more file', '… 2 more files'],
+    ['changes.moreLines', {}, '… 1 more line', '… 2 more lines'],
+    ['changes.removedNamed', { name: 'wt' }, 'wt removed (1 file)', 'wt removed (2 files)'],
+    ['changes.removed', {}, 'Removed (1 file)', 'Removed (2 files)'],
+    ['log.count', {}, '1 event', '2 events'],
+    ['inflight.count', {}, '1 call', '2 calls'],
+    ['wf.agents', {}, '1 agent', '2 agents'],
+    ['fleet.tools', {}, '1 call', '2 calls'],
+    ['fleet.toolCount', {}, '1 tool call', '2 tool calls'],
+    ['fleet.suits', {}, ' suit', ' suits'],
+    ['stats.dispatches', {}, '1 dispatch', '2 dispatches'],
+    ['remote.more', {}, '1 more remote', '2 more remotes'],
+    ['branch.more', {}, '1 more branch', '2 more branches'],
+    ['repo.more', {}, '… 1 more repo', '… 2 more repos'],
+    ['squad.moreRows', {}, '… 1 more row not shown', '… 2 more rows not shown'],
+    ['tasks.moreRows', {}, '1 more row', '2 more rows'],
+  ]
+
+  test('a count of 1 takes the singular, 2 the plural', () => {
+    inLocale('en', () => {
+      for (const [key, vars, one, two] of COUNTED) {
+        expect([key, t(key, { ...vars, n: 1 })]).toEqual([key, one])
+        expect([key, t(key, { ...vars, n: 2 })]).toEqual([key, two])
+      }
+      expect(t('log.total', { total: 1, max: 200 })).toBe('1/200 events')
+      expect(t('log.total', { total: 1, max: 1 })).toBe('1/1 event')
+    })
+  })
+
+  test('zh-TW counts read as before for 1 and 2', () => {
+    expect(t('changes.files', { n: 1 })).toBe('1 檔')
+    expect(t('changes.files', { n: 2 })).toBe('2 檔')
+    expect(t('fleet.suits', { n: 1 })).toBe(' 艘')
+    expect(t('log.count', { n: 2 })).toBe('2 則')
+  })
+
+  test('a plural form whose count is missing stays as written', () => {
+    expect(inLocale('en', () => t('changes.files', { m: 1 }))).toBe('{n} {n|file|files}')
+  })
+})
+
 describe('en: the task board as the model reads it', () => {
   test('the tool description and every parameter description are English', () => {
     inLocale('en', () => {
@@ -119,7 +163,7 @@ describe('en: the small model asks', () => {
   test('the summary and classify asks are English, the request kept as sent', () => {
     inLocale('en', () => {
       const result = resultAsk('compute 7*6', '42', ['multiply'])
-      expect(result).toContain('In at most 40 characters')
+      expect(result).toContain('In at most 80 characters')
       expect(result).toContain('Request:\ncompute 7*6')
       expect(result).toContain('Subtasks:\n- multiply')
       expect(result).toContain('Answer:\n42')
@@ -142,6 +186,39 @@ describe('en: the small model asks', () => {
     // zh-TW reads only what it read before
     expect(parseClassify('修 bug\nNew billing', offered).choice).toEqual({ kind: 'new', title: '修 bug' })
     expect(cleanSummary('Reply with only two lines', 40)).toBe('Reply with only two lines')
+  })
+})
+
+describe('en: summary lengths', () => {
+  test('English keeps about twice the characters, and the asks say so; zh-TW keeps its limits', () => {
+    expect([SUMMARY_TITLE_MAX, RESULT_MAX, TOPIC_TITLE_MAX]).toEqual([20, 40, 16])
+    inLocale('en', () => {
+      expect([SUMMARY_TITLE_MAX, RESULT_MAX, TOPIC_TITLE_MAX]).toEqual([40, 80, 32])
+      expect(resultAsk('p', 'a')).toContain('In at most 80 characters')
+      const ask = classifyAsk('p', [])
+      expect(ask).toContain('In at most 40 characters')
+      expect(ask).toContain('a topic name of at most 32 characters')
+    })
+  })
+
+  test("each English example fits the limit its ask states", () => {
+    inLocale('en', () => {
+      const quoted = (key: MsgKey) => [...DICTIONARIES.en[key].matchAll(/"([^"]+)"/g)].map(m => m[1] ?? '')
+      for (const x of quoted('sum.result').filter(x => x !== 'Title:')) expect([x, x.length <= RESULT_MAX]).toEqual([x, true])
+      for (const x of quoted('cls.title')) expect([x, x.length <= SUMMARY_TITLE_MAX]).toEqual([x, true])
+      const topic = quoted('cls.line2').find(x => x.startsWith('New ') && x.length > 4) ?? ''
+      expect(topic).toBe('New Check-in top-ups')
+      expect(topic.slice(4).length).toBeLessThanOrEqual(TOPIC_TITLE_MAX)
+    })
+  })
+
+  test('English is cut at a word boundary; a single long word, and zh-TW, are cut mid-word', () => {
+    inLocale('en', () => {
+      expect(cleanSummary('Add English to jarvis', SUMMARY_TITLE_MAX)).toBe('Add English to jarvis')
+      expect(cleanSummary('Add English locale support to the jarvis mod panel', 40)).toBe('Add English locale support to the…')
+      expect(cleanSummary('x'.repeat(50), 40)).toBe(`${'x'.repeat(39)}…`)
+    })
+    expect(cleanSummary('Add English locale support to the jarvis mod panel', 40)).toBe('Add English locale support to the jarvi…')
   })
 })
 
@@ -174,7 +251,9 @@ describe('en: time and the /jarvis answer', () => {
 
 type Registered = { name: string; description?: string }
 
-const wired = (on: On, env: Record<string, string>) => {
+const USAGE = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+
+const wired = (on: On, env: Record<string, string>, reply?: (prompt: string) => string) => {
   const registered: Registered[] = []
   const clock = mock.clock(on, { now: 0 })
   mock.env(on, env)
@@ -189,8 +268,11 @@ const wired = (on: On, env: Record<string, string>) => {
     return { value: { tool: `mcp__jarvis__${e.name}` } }
   })
   on('prompt.compose', async () => ({ sections: [] }))
-  on('model.complete', async () => ({
-    value: { isAnswered: false, reason: 'empty-reply', usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+  on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
+  on('model.complete', async (_$, e) => ({
+    value: (reply === undefined
+      ? { isAnswered: false, reason: 'empty-reply', usage: USAGE }
+      : { isAnswered: true, text: reply(e.prompt), usage: USAGE }) as never,
   }))
   return { registered, clock }
 }
@@ -259,6 +341,31 @@ describe('en wired', () => {
     }
     const now = textOf(await drawOn($, 'terminal', 40, 120))
     for (const word of ['Now', 'Events', 'Stats', 'Fleet', 'Changes', 'Tasks']) expect(now).toContain(word)
+  })
+
+  test('JARVIS_LANG=en: long English titles and results stay within the task page, wide and narrow', async ($, on) => {
+    const { clock } = wired(on, { JARVIS_LANG: 'en', JARVIS_DESKTOP_LAYOUT: 'cells' }, prompt =>
+      prompt.includes('Answer:')
+        ? 'Shipped the English locale with plurals, word-boundary cuts and wider summary limits everywhere'
+        : 'Add English locale support to the jarvis mod panel and every desktop page\nNew Jarvis internationalization and localization work',
+    )
+    await start($)
+    const text = 'Add English to jarvis'
+    await $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } } as never)
+    await clock.settle()
+    await $.turn.start({ text, turnId: 't1' })
+    await $.tool.call({ tool: 'Read', file_path: '/tmp/a.md' } as never)
+    await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as never)
+    await clock.settle()
+    const board = String((await $.tool.call({ tool: TASK_TOOL, op: 'list' } as never)).result)
+    expect(board).toContain('[x] 1 Add English locale support to the… →')
+    expect(board).toContain('→ Shipped the English locale with plurals, word-boundary cuts and wider summary…')
+    await pressOn($, 'terminal', 'tab-tasks')
+    for (const cols of [40, 80]) {
+      const tree = await drawOn($, 'terminal', 40, cols)
+      expect([cols, CJK.test(textOf(tree))]).toEqual([cols, false])
+      expect([cols, Math.max(...rowWidths(tree)) <= cols]).toEqual([cols, true])
+    }
   })
 
   test('JARVIS_LANG=en: the native Desktop pages are English', async ($, on) => {

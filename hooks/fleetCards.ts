@@ -381,7 +381,7 @@ export function idleSummary(idle: readonly FleetSession[], now: number): ChartSe
     { t: '◇ ', color: F },
     { t: 'STANDBY', color: P, bold: true },
     { t: ` ${idle.length}`, color: B, bold: true },
-    { t: tr('fleet.suits'), color: F },
+    { t: tr('fleet.suits', { n: idle.length }), color: F },
     ...(m > 0 ? [{ t: ' · ', color: M }, { t: String(m), color: A, bold: true }, { t: tr('fleet.retirable'), color: F }] : []),
   ]
 }
