@@ -700,7 +700,7 @@ describe('hooks', () => {
     expect(linesOf(tree).some(l => l.includes('API 價格'))).toBe(false)
   })
 
-  test('the tick: every ANIM_MS while a subagent runs in a drawn pane, none unseen, none idle', async ($, on) => {
+  test('the tick: every ANIM_MS while a subagent runs in a drawn pane, 1s unseen, none idle', async ($, on) => {
     const clock = engine(on, 'agent-41')
     const count = ticks(on)
     await start($)
@@ -725,11 +725,12 @@ describe('hooks', () => {
     let base = count.n
     await clock.advance(ANIM_MS * 10)
     expect(count.n - base).toBe(10)
-    // the pane is not drawn again: past SEEN_MS nothing is written for it
+    // the pane is not drawn again and the engine cannot say whether it shows it: past
+    // SEEN_MS the tick drops to once a second
     await clock.advance(SEEN_MS + IDLE_MS)
     base = count.n
     await clock.advance(IDLE_MS * 3)
-    expect(count.n).toBe(base)
+    expect(count.n - base).toBe(3)
     // drawn again: animating at once
     await draw($)
     base = count.n

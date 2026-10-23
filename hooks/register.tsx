@@ -829,15 +829,27 @@ async function tasksMoving($: Pick<EngineInterface, 'state'>, now: number, drawn
   }
 }
 
+// Whether the engine shows the pane: only it can say once the pane has gone undrawn past
+// SEEN_MS, as only a drawing marks it seen. Shown when it cannot say, so a late tick still
+// brings the drawing back.
+async function paneShown($: Pick<EngineInterface, 'ui'>): Promise<boolean> {
+  try {
+    const pane = (await $.ui.panes()).find(p => p.id === PANE)
+    return pane !== undefined && pane.isShown && pane.isPlaced
+  } catch {
+    return true
+  }
+}
+
 // The session's one tick, started at session.start: it counts the clock of running
 // rows and turns the spinners; at most once per IDLE_MS it also marks lost subagents
 // and feeds the Herdr row (`slow.at` is when it last did). It runs every ANIM_MS while
 // a subagent runs (not waiting) or the tasks page has work that moves, every BOOT_ANIM_MS
 // while the boot plays, and the pane is in view, every IDLE_MS otherwise (`pace` picks);
-// with nothing running and nothing animating, or the pane out of view (`seen`), it only
-// reads state, so nothing redraws.
+// with nothing running and nothing animating, or the pane not shown, it only reads state,
+// so nothing redraws.
 async function tickOnce(
-  $: Pick<EngineInterface, 'clock' | 'state' | 'agent'>,
+  $: Pick<EngineInterface, 'clock' | 'state' | 'agent' | 'ui'>,
   reporter: Reporter | undefined,
   pace: (list: readonly JarvisAgent[], now: number, live: boolean) => void,
   slow: { at: number },
@@ -859,7 +871,8 @@ async function tickOnce(
       list = await read($, agents)
     }
     const live = await animating(now)
-    if (live || (runningOf(list).length > 0 && seen(now))) await update($, tick, t => ({ n: t.n + 1, now }))
+    if (live || (runningOf(list).length > 0 && (seen(now) || (await paneShown($)))))
+      await update($, tick, t => ({ n: t.n + 1, now }))
     pace(list, now, live)
     if (!due) return
     slow.at = now

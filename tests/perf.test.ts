@@ -11,7 +11,8 @@ const SUBTASKS = 10
 
 // a session at its limits: MAX_AGENTS squad members (RUNNING still at work), MAX_EVENTS calls,
 // a board of MAX_ITEMS items with SUBTASKS subtasks each
-const maxed = (on: On) => {
+// `shown`: whether $.ui.panes() lists the pane as shown
+const maxed = (on: On, shown = { is: true }) => {
   const clock = mock.clock(on, { now: 0 })
   mock.env(on, {})
   let seq = 0
@@ -24,6 +25,7 @@ const maxed = (on: On) => {
   on('tool.register', async (_$, e) => ({ value: { tool: `mcp__jarvis__${e.name}` } }))
   on('turn.complete', async (_$, e) => ({ text: e.answer }))
   on('tool.call', async () => ({ result: {} as never }))
+  on('ui.panes', async () => ({ value: [{ id: 'jarvis', title: 'Jarvis', isShown: shown.is, isFocused: false, isPlaced: true }] }))
   return clock
 }
 
@@ -55,8 +57,9 @@ const ticks = (on: On) => {
 
 describe('a maxed-out session', () => {
   for (const page of ['now', 'tasks'] as const) {
-    test(`the ${page} page: a tick every ANIM_MS in view, none out of view, animating again once drawn`, { timeoutMs: 30_000 }, async ($, on) => {
-      const clock = maxed(on)
+    test(`the ${page} page: a tick every ANIM_MS in view, none while not shown, animating again once drawn`, { timeoutMs: 30_000 }, async ($, on) => {
+      const shown = { is: false }
+      const clock = maxed(on, shown)
       const count = ticks(on)
       await seed($)
       if (page === 'tasks') await pressOn($, 'terminal', 'tab-tasks')
@@ -70,10 +73,41 @@ describe('a maxed-out session', () => {
       await clock.advance(IDLE_MS * 3)
       expect(count.n).toBe(base)
 
+      shown.is = true
       await drawOn($, 'terminal')
       base = count.n
       await clock.advance(1000)
       expect(count.n - base).toBe(1000 / ANIM_MS)
     })
   }
+
+  test('a shown pane undrawn past SEEN_MS keeps a tick once a second, so its drawing comes back', { timeoutMs: 30_000 }, async ($, on) => {
+    const clock = maxed(on)
+    const count = ticks(on)
+    await seed($)
+    await drawOn($, 'terminal')
+    await clock.advance(SEEN_MS + IDLE_MS)
+    const base = count.n
+    await clock.advance(IDLE_MS * 3)
+    expect(count.n - base).toBe(3)
+  })
+
+  test('one tick running SEEN_MS and more late in a shown pane: the ticks go on at the next timer fire', { timeoutMs: 30_000 }, async ($, on) => {
+    const late = { ms: 0 }
+    on('clock.every', { ms: ANIM_MS }, async (_$, e, next) => {
+      const ms = late.ms
+      late.ms = 0
+      if (ms > 0) await clock.sleep(ms)
+      return next(e)
+    })
+    const clock = maxed(on)
+    const count = ticks(on)
+    await seed($)
+    await drawOn($, 'terminal')
+    late.ms = 10_000
+    await clock.advance(10_000 + ANIM_MS)
+    const base = count.n
+    await clock.advance(IDLE_MS + ANIM_MS)
+    expect(count.n).toBeGreaterThan(base)
+  })
 })
