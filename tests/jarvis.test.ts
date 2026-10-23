@@ -700,7 +700,7 @@ describe('hooks', () => {
     expect(linesOf(tree).some(l => l.includes('API 價格'))).toBe(false)
   })
 
-  test('the tick: every 150ms while a subagent runs in a drawn pane, 1s unseen, none idle', async ($, on) => {
+  test('the tick: every ANIM_MS while a subagent runs in a drawn pane, none unseen, none idle', async ($, on) => {
     const clock = engine(on, 'agent-41')
     const count = ticks(on)
     await start($)
@@ -708,27 +708,28 @@ describe('hooks', () => {
     expect(count.n).toBe(0) // idle: no tick is written
     await draw($)
     await $.agent.spawn(spawnInput({ description: 'animated job', subagentType: 'worker' }))
-    // the spawn writes one; then one every ANIM_MS
-    let base = count.n
-    await clock.advance(ANIM_MS * 10)
-    expect(count.n - base).toBe(10)
-    // the scan sweep turns with it while initializing
+    // the scan sweep turns with the tick while initializing
     const sweep = new RegExp(`^(${SCAN.join('|')})$`)
     const scanAt = async () => {
       const node = findText(await draw($), sweep)
       return node ? textOf(node) : undefined
     }
+    await clock.advance(ANIM_MS)
     const s1 = await scanAt()
     await clock.advance(ANIM_MS)
     const s2 = await scanAt()
     expect(s1).toBeDefined()
     expect(s2).toBeDefined()
     expect(s2).not.toBe(s1)
-    // the pane is not drawn again: past SEEN_MS the tick drops to once a second
+    // one every ANIM_MS
+    let base = count.n
+    await clock.advance(ANIM_MS * 10)
+    expect(count.n - base).toBe(10)
+    // the pane is not drawn again: past SEEN_MS nothing is written for it
     await clock.advance(SEEN_MS + IDLE_MS)
     base = count.n
     await clock.advance(IDLE_MS * 3)
-    expect(count.n - base).toBe(3)
+    expect(count.n).toBe(base)
     // drawn again: animating at once
     await draw($)
     base = count.n
@@ -745,6 +746,7 @@ describe('hooks', () => {
     const clock = engine(on, 'agent-6')
     const count = ticks(on)
     await start($)
+    await draw($)
     await $.agent.spawn(spawnInput({ description: 'quick job', subagentType: 'worker' }))
     await clock.advance(3000)
     const running = count.n
@@ -2779,8 +2781,8 @@ describe('HUD logic', () => {
     expect([0, 1, 2, 3].map(scanFrame)).toEqual([SCAN[0], SCAN[1], SCAN[2], SCAN[0]])
   })
 
-  test('the tick runs at 150ms while a squad member runs in a pane in view, and at the idle pace otherwise', () => {
-    expect(ANIM_MS).toBe(150)
+  test('the tick runs at 500ms while a squad member runs in a pane in view, and at the idle pace otherwise', () => {
+    expect(ANIM_MS).toBe(500)
     const run = [agent({ status: 'running' })]
     expect(tickMs([], 1000, 1000)).toBe(IDLE_MS)
     expect(tickMs([agent({ status: 'done' }), agent({ status: 'stale' })], 1000, 1000)).toBe(IDLE_MS)
@@ -5355,7 +5357,7 @@ describe('background wait, wired', () => {
     count.n = 0
     await clock.advance(1000)
     // the tick animates all the while
-    expect(count.n).toBeGreaterThan(4)
+    expect(count.n).toBe(1000 / ANIM_MS)
     expect(calls).toBeLessThanOrEqual(1)
   })
 

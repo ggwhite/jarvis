@@ -1345,7 +1345,8 @@ describe('task board page', () => {
     await clock.advance(1000)
     await turnEnds($, 't1')
     await draw($)
-    await clock.advance(FRESH_MS - ANIM_MS)
+    // the tick after the one due as the highlight ends runs late
+    await clock.advance(FRESH_MS - ANIM_MS * 2)
     late.ms = ANIM_MS * 2
     await clock.advance(ANIM_MS)
     const base = count.n

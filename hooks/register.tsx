@@ -5,6 +5,8 @@ import type { FleetJumpError, FleetQuota, JarvisAgent, JarvisPage, JarvisTaskBoa
 
 import {
   ANIM_MS,
+  BOOT_ANIM_MS,
+  BOOT_MS,
   IDLE_MS,
   LIST_FAILS_MAX,
   SEEN_MS,
@@ -830,9 +832,10 @@ async function tasksMoving($: Pick<EngineInterface, 'state'>, now: number, drawn
 // The session's one tick, started at session.start: it counts the clock of running
 // rows and turns the spinners; at most once per IDLE_MS it also marks lost subagents
 // and feeds the Herdr row (`slow.at` is when it last did). It runs every ANIM_MS while
-// a subagent runs (not waiting) or the boot plays or the tasks page has work that moves,
-// and the pane is in view, every IDLE_MS otherwise (`pace` picks); with nothing running
-// and nothing animating it only reads state, so nothing redraws.
+// a subagent runs (not waiting) or the tasks page has work that moves, every BOOT_ANIM_MS
+// while the boot plays, and the pane is in view, every IDLE_MS otherwise (`pace` picks);
+// with nothing running and nothing animating, or the pane out of view (`seen`), it only
+// reads state, so nothing redraws.
 async function tickOnce(
   $: Pick<EngineInterface, 'clock' | 'state' | 'agent'>,
   reporter: Reporter | undefined,
@@ -840,6 +843,7 @@ async function tickOnce(
   slow: { at: number },
   animating: (now: number) => Promise<boolean>,
   listing: { fails: number },
+  seen: (now: number) => boolean,
 ): Promise<void> {
   try {
     const now = await $.clock.now()
@@ -855,7 +859,7 @@ async function tickOnce(
       list = await read($, agents)
     }
     const live = await animating(now)
-    if (runningOf(list).length > 0 || live) await update($, tick, t => ({ n: t.n + 1, now }))
+    if (live || (runningOf(list).length > 0 && seen(now))) await update($, tick, t => ({ n: t.n + 1, now }))
     pace(list, now, live)
     if (!due) return
     slow.at = now
@@ -949,6 +953,9 @@ export const register: Register = on => {
   let bootAt: number | undefined
   // the boot animates only while the pane is in view
   const booting = (now: number) => bootAt !== undefined && now - drawnAt <= SEEN_MS
+  // the tick period at `now`: the boot's own while it plays, else tickMs's
+  const periodOf = (list: readonly JarvisAgent[], now: number, live: boolean) =>
+    booting(now) && bootAt !== undefined && now - bootAt < BOOT_MS ? BOOT_ANIM_MS : tickMs(list, now, drawnAt, live)
   // the fleet page: its poll runs while it is the page and was drawn within FLEET_SEEN_MS
   let fleetEnabled = false
   let fleetSeenAt = -Infinity
@@ -1048,10 +1055,11 @@ export const register: Register = on => {
           tickOnce(
             $,
             reporter,
-            (list, now, live) => setPace(tickMs(list, now, drawnAt, live)),
+            (list, now, live) => setPace(periodOf(list, now, live)),
             slow,
             async now => booting(now) || (await tasksMoving($, now, drawnAt)),
             listing,
+            now => now - drawnAt <= SEEN_MS,
           ),
         )
       } catch {
@@ -1293,7 +1301,7 @@ export const register: Register = on => {
         await update($, tick, t => ({ n: t.n + 1, now }))
         // a suit held still plays no deployment
         if ((await read($, suit)).paused !== true) await update($, suit, s => ({ ...s, deployedAt: now }))
-        pace?.(tickMs(await read($, agents), now, drawnAt, booting(now) || (await tasksMoving($, now, drawnAt))))
+        pace?.(periodOf(await read($, agents), now, booting(now) || (await tasksMoving($, now, drawnAt))))
       }
     } catch {
       // recording failed; the spawn itself already happened
@@ -1395,7 +1403,7 @@ export const register: Register = on => {
         await update($, agents, list => noteTool(list, id, tool, now))
         await update($, tick, t => ({ n: t.n + 1, now }))
         const list = await read($, agents)
-        pace?.(tickMs(list, now, drawnAt, booting(now) || (await tasksMoving($, now, drawnAt))))
+        pace?.(periodOf(list, now, booting(now) || (await tasksMoving($, now, drawnAt))))
         source = list.find(a => a.id === id)?.type ?? 'subagent'
       }
     } catch {
@@ -1660,7 +1668,8 @@ export const register: Register = on => {
     // a pane in view with a squad member running (not waiting), booting, or a tasks page whose
     // work moves animates at once, not at the next idle tick
     drawnAt = now
-    if (view.running.some(a => a.waiting !== true) || boot !== undefined || (board !== undefined && boardLive(board, now))) pace?.(ANIM_MS)
+    if (boot !== undefined) pace?.(BOOT_ANIM_MS)
+    else if (view.running.some(a => a.waiting !== true) || (board !== undefined && boardLive(board, now))) pace?.(ANIM_MS)
     const changesMode: ChangeMode = shown.changesMode ?? 'session'
     const onChanges = shown.page === 'changes' || shown.page === 'changeDiff'
     // the commits mode lists repos, not files: git is not asked of the session's files

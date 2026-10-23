@@ -19,8 +19,10 @@ export const SCAN = ['░▒▓', '▒▓░', '▓░▒']
 // How long after its dispatch a squad member reads INITIALIZING.
 export const INIT_MS = 2000
 // The tick period while a squad member runs and the pane is in view (the animation),
-// and otherwise; the pane counts as in view for SEEN_MS after it was last drawn.
-export const ANIM_MS = 150
+// while the boot plays (fast enough to show each of its stages), and otherwise; the pane
+// counts as in view for SEEN_MS after it was last drawn.
+export const ANIM_MS = 500
+export const BOOT_ANIM_MS = 150
 export const IDLE_MS = 1000
 export const SEEN_MS = 5000
 // Two events further apart than this are drawn with a dated rule between them.
