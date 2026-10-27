@@ -2,9 +2,7 @@
 
 A [Claude Code](https://claude.com/claude-code) mod that opens a live HUD pane beside the chat. It shows what your subagents are doing right now, what they cost, which files the session touched, and every other Claude Code session running on the machine.
 
-<!-- Screenshot: terminal pane (Now tab) -->
-<!-- Screenshot: Claude Desktop (native layout) -->
-<!-- Screenshot: Fleet tab -->
+![Jarvis beside a Claude Code session in herdr, with three Explore subagents in flight](docs/screenshots/now.png)
 
 ## Features
 
@@ -18,6 +16,8 @@ The pane has six tabs:
 | **Fleet** | Every Claude Code session in [herdr](#herdr): status (working / blocked / idle), last prompt and reply, today's tokens, and the 5-hour and 7-day quota. Click a session to jump to its pane. |
 | **Changes** | Files this session edited, grouped by git repo, with diffs. Unpushed changes, ahead/behind counts and a commit graph per repo. |
 | **Tasks** | A task board the model fills through the `mcp__jarvis__task` tool, so you can see its plan and progress. |
+
+![The Tasks, Changes, Commits, Fleet, Stats and Events tabs](docs/screenshots/tabs.png)
 
 Other details:
 
