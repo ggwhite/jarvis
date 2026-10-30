@@ -51,8 +51,12 @@ export type OwnerMark = { t: string; color: string; agent?: AgentBadge }
 export type TaskFolds = Readonly<Record<string, boolean>>
 
 // A drawn row; an item's row with subtasks also carries the item its icon and title fold or
-// open, and whether it is folded now.
-export type TaskLine = { segs: Seg[]; item?: { id: string; folded: boolean } }
+// open, and whether it is folded now; a row saying how many rows are left out above or below
+// carries the first row its press scrolls to.
+export type TaskLine = { segs: Seg[]; item?: { id: string; folded: boolean }; scroll?: number }
+
+// The rows drawn from the first row shown, `top` (clamped), and the last `top` can be.
+export type TaskWindow = { lines: TaskLine[]; top: number; max: number }
 
 // Whether an item's subtasks are hidden: the press's choice, else hidden once it is done.
 export const isFolded = (item: JarvisTaskItem, folds: TaskFolds): boolean => folds[item.id] ?? itemStatus(item) === 'completed'
@@ -218,17 +222,20 @@ function groupLines(group: TaskGroup, width: number, owner: (agentId: string) =>
 }
 
 // The board as lines at `now` in three parts (進行中, 預計, 已完成), each under its heading,
-// an empty part left out; past `room` lines the last says how many are left out.
-export function taskLines(
+// an empty part left out; past `room` lines the window from line `top` is drawn, the first row
+// saying how many are left out above and the last how many below. A press on either scrolls
+// a page less one row; with fewer than three rows of room it stays at the top.
+export function taskWindow(
   board: JarvisTaskBoard,
   width: number,
   room: number,
   owner: (agentId: string) => OwnerMark,
   now = 0,
   folds: TaskFolds = {},
-): TaskLine[] {
-  if (room <= 0) return []
-  if (board.items.length === 0) return [{ segs: [{ t: fitCells(EMPTY_TEXT, width), color: THEME.frame }] }]
+  top = 0,
+): TaskWindow {
+  if (room <= 0) return { lines: [], top: 0, max: 0 }
+  if (board.items.length === 0) return { lines: [{ segs: [{ t: fitCells(EMPTY_TEXT, width), color: THEME.frame }] }], top: 0, max: 0 }
   const parts = boardGroups(board)
   const lines: TaskLine[] = []
   for (const [key, label] of SECTIONS) {
@@ -237,9 +244,41 @@ export function taskLines(
     lines.push({ segs: headingRow(t(label), groups.length, width) })
     for (const group of groups) lines.push(...groupLines(group, width, owner, now, folds))
   }
-  if (lines.length <= room) return lines
-  const kept = lines.slice(0, room - 1)
-  return [...kept, { segs: [{ t: fitCells(t('tasks.moreRows', { n: lines.length - kept.length }), width), color: THEME.frame }] }]
+  if (lines.length <= room) return { lines, top: 0, max: 0 }
+  const more = (key: 'tasks.moreRows' | 'tasks.moreAbove', n: number): Seg[] => [{ t: fitCells(t(key, { n }), width), color: THEME.frame }]
+  if (room < 3) {
+    const kept = lines.slice(0, room - 1)
+    return { lines: [...kept, { segs: more('tasks.moreRows', lines.length - kept.length) }], top: 0, max: 0 }
+  }
+  // at the bottom the rows under the above row run to the end
+  const max = lines.length - (room - 1)
+  const at = Math.min(max, Math.max(0, Math.floor(top)))
+  // a page in the middle, less the row kept in view
+  const step = Math.max(1, room - 3)
+  const body = lines.slice(at, at + room - (at > 0 ? 1 : 0) - (at < max ? 1 : 0))
+  const below = lines.length - at - body.length
+  return {
+    lines: [
+      ...(at > 0 ? [{ segs: more('tasks.moreAbove', at), scroll: Math.max(0, at - step) }] : []),
+      ...body,
+      ...(below > 0 ? [{ segs: more('tasks.moreRows', below), scroll: Math.min(max, at + Math.max(1, body.length - 1)) }] : []),
+    ],
+    top: at,
+    max,
+  }
+}
+
+// The window's rows alone.
+export function taskLines(
+  board: JarvisTaskBoard,
+  width: number,
+  room: number,
+  owner: (agentId: string) => OwnerMark,
+  now = 0,
+  folds: TaskFolds = {},
+  top = 0,
+): TaskLine[] {
+  return taskWindow(board, width, room, owner, now, folds, top).lines
 }
 
 // The board's lines as segments alone.
@@ -250,6 +289,7 @@ export function taskRows(
   owner: (agentId: string) => OwnerMark,
   now = 0,
   folds: TaskFolds = {},
+  top = 0,
 ): Seg[][] {
-  return taskLines(board, width, room, owner, now, folds).map(l => l.segs)
+  return taskLines(board, width, room, owner, now, folds, top).map(l => l.segs)
 }

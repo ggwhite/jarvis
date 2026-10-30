@@ -1001,6 +1001,9 @@ export const register: Register = on => {
   }
   // the person closed the pane by hand since it last opened
   let paneClosed = false
+  // the 任務 page's window as last drawn on the cell grid; undefined while another page or the
+  // desktop's own layout is drawn
+  let tasksWindow: { top: number; max: number } | undefined
 
   on('session.start', async ($, e, next) => {
     unknown.clear()
@@ -1641,10 +1644,13 @@ export const register: Register = on => {
         await update($, changes, () => [])
         // the commit tree, commit diff and stash diff pages go back to the repo list, as a diff page
         // does; the branches' gone and 只在遠端 groups fold; the 任務 page forgets its fold choices
+        // and goes back to its top
         await update($, ui, (u): JarvisUi => {
-          const { goneOpen: _g, remoteOpen: _o, taskFolds: _t, ...kept } = u
+          const { goneOpen: _g, remoteOpen: _o, taskFolds: _t, taskTop: _p, ...kept } = u
           if (u.page !== 'commitTree' && u.page !== 'commitDiff' && u.page !== 'stashDiff')
-            return u.goneOpen === undefined && u.remoteOpen === undefined && u.taskFolds === undefined ? u : kept
+            return u.goneOpen === undefined && u.remoteOpen === undefined && u.taskFolds === undefined && u.taskTop === undefined
+              ? u
+              : kept
           const { commitRef: _r, repoBack: _b, repoView: _v, stashSha: _s, ...rest } = kept
           return { ...rest, page: 'changes' }
         })
@@ -1653,6 +1659,19 @@ export const register: Register = on => {
       }
     }
     return next(e)
+  })
+
+  // The wheel over the 任務 page scrolls its board within the card while the board is taller
+  // than it; anywhere else the engine moves its own window.
+  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    const w = tasksWindow
+    if (w === undefined || w.max === 0 || (await read($, ui)).page !== 'tasks') return next(e)
+    const top = Math.min(w.max, Math.max(0, w.top + e.by))
+    if (top !== w.top) {
+      tasksWindow = { ...w, top }
+      await update($, ui, u => ({ ...u, taskTop: top }))
+    }
+    return {}
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -1678,6 +1697,7 @@ export const register: Register = on => {
     if (boot === undefined) bootAt = undefined
     const shown = await read($, ui)
     const board = shown.page === 'tasks' ? await read($, tasks) : undefined
+    tasksWindow = undefined
     // a pane in view with a squad member running (not waiting), booting, or a tasks page whose
     // work moves animates at once, not at the next idle tick
     drawnAt = now
@@ -1954,6 +1974,11 @@ export const register: Register = on => {
             taskFolds: shown.taskFolds ?? {},
             toggleTask: (id: string, folded: boolean) =>
               setUi(u => ({ ...u, taskFolds: { ...keptFolds(u.taskFolds, board), [id]: folded } })),
+            ...(shown.taskTop === undefined ? {} : { taskTop: shown.taskTop }),
+            scrollTasks: (top: number) => setUi(u => ({ ...u, taskTop: top })),
+            tasksDrawn: (top: number, max: number) => {
+              tasksWindow = { top, max }
+            },
           }),
       commits,
     }

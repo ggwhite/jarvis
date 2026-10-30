@@ -278,6 +278,9 @@ export type JarvisUi = {
   // the 任務 page's fold choices by item id (true: its subtasks hidden); absent is each item's
   // default; a /clear forgets them
   taskFolds?: Record<string, boolean>
+  // the 任務 page's first row shown when its board is taller than the card (absent: the top);
+  // a /clear forgets it
+  taskTop?: number
 }
 
 declare module 'claude-code' {

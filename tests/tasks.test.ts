@@ -73,7 +73,7 @@ import {
   resultAsk,
 } from '../hooks/summary'
 import type { TaskReply, TopicCandidate, TopicChoice } from '../hooks/tasks'
-import { EMPTY_TEXT, SUB_INDENT, TITLE_MIN, TOOL_MAX, isFolded, keptFolds, spinnerAt, splitLead, taskLines, taskRows, topicFolded, topicKey } from '../hooks/tasksView'
+import { EMPTY_TEXT, SUB_INDENT, TITLE_MIN, TOOL_MAX, isFolded, keptFolds, spinnerAt, splitLead, taskLines, taskRows, taskWindow, topicFolded, topicKey } from '../hooks/tasksView'
 import type { AgentBadge, OwnerMark } from '../hooks/tasksView'
 
 const ok = (r: TaskReply): JarvisTaskBoard => {
@@ -651,6 +651,90 @@ describe('task board rows', () => {
     expect(rows[2]).toBe('還有 6 列')
     expect(taskRows(board(), 60, 0, owner)).toEqual([])
     expect(taskRows(board(), 60, 1, owner).map(text)).toEqual(['還有 8 列'])
+  })
+})
+
+describe('task board window', () => {
+  const owner = () => ({ t: 'MK', color: THEME.frame })
+  const text = (row: readonly Seg[]) => row.map(s => s.t).join('').trimEnd()
+  // a heading, the item and its ten subtasks: twelve lines
+  const tall = () => build({ op: 'add', item: 'A', subtasks: Array.from({ length: 10 }, (_, k) => `s${k}`) })
+  const shown = (top: number, room = 5) => taskWindow(tall(), 40, room, owner, 0, {}, top)
+
+  test('at the top: as before, the last row says how many are below and scrolls a page less one row', () => {
+    const w = shown(0)
+    const rows = w.lines.map(l => text(l.segs))
+    expect(rows).toHaveLength(5)
+    expect(rows[0]).toBe('預計 1')
+    expect(rows[1]?.startsWith(`${TASK_ICON.pending} A`)).toBe(true)
+    expect(rows.slice(2, 4).map(r => r.trim())).toEqual(['s0', 's1'].map(t => `${TASK_ICON.pending} ${t}`))
+    expect(rows[4]).toBe('還有 8 列')
+    expect(w.lines.at(-1)?.scroll).toBe(3)
+    expect(w.lines.slice(0, -1).every(l => l.scroll === undefined)).toBe(true)
+    expect({ top: w.top, max: w.max }).toEqual({ top: 0, max: 8 })
+    expect(taskRows(tall(), 40, 5, owner)).toEqual(w.lines.map(l => l.segs))
+  })
+
+  test('in the middle: the first row says how many are above, the last how many below; each scrolls a page less one row', () => {
+    const w = shown(3)
+    const rows = w.lines.map(l => text(l.segs))
+    expect(rows).toHaveLength(5)
+    expect(rows[0]).toBe('上面還有 3 列')
+    expect(w.lines[0]?.scroll).toBe(1)
+    expect(rows.slice(1, 4).map(r => r.trim())).toEqual(['s1', 's2', 's3'].map(t => `${TASK_ICON.pending} ${t}`))
+    expect(rows[4]).toBe('還有 6 列')
+    expect(w.lines[4]?.scroll).toBe(5)
+    for (const l of w.lines.slice(1, -1)) expect(cellWidth(l.segs.map(s => s.t).join(''))).toBe(40)
+  })
+
+  test('at the bottom: the rows under the above row run to the end, with no row below', () => {
+    const w = shown(8)
+    const rows = w.lines.map(l => text(l.segs))
+    expect(rows[0]).toBe('上面還有 8 列')
+    expect(w.lines[0]?.scroll).toBe(6)
+    expect(rows.slice(1).map(r => r.trim())).toEqual(['s6', 's7', 's8', 's9'].map(t => `${TASK_ICON.pending} ${t}`))
+    expect(w.lines.slice(1).every(l => l.scroll === undefined)).toBe(true)
+  })
+
+  test('a top past either end is clamped; a board that shrinks to fit or folds draws whole from the top', () => {
+    expect(shown(100)).toEqual(shown(8))
+    expect(shown(-4)).toEqual(shown(0))
+    expect(shown(100).top).toBe(8)
+    const folded = taskWindow(tall(), 40, 5, owner, 0, { '1': true }, 8)
+    expect(folded.lines.map(l => text(l.segs))).toHaveLength(2)
+    expect({ top: folded.top, max: folded.max }).toEqual({ top: 0, max: 0 })
+    const short = build({ op: 'add', item: 'A', subtasks: ['a1'] })
+    expect(taskWindow(short, 40, 5, owner, 0, {}, 3).lines).toEqual(taskLines(short, 40, 5, owner))
+  })
+
+  test('pressing the below row from the top and the above row from the bottom reaches every line', () => {
+    const all = taskLines(tall(), 40, 100, owner).map(l => text(l.segs))
+    for (const room of [3, 4, 5, 7]) {
+      const seen = new Set<string>()
+      let top = 0
+      for (let k = 0; k < 20; k++) {
+        const w = shown(top, room)
+        expect(w.lines).toHaveLength(room)
+        for (const l of w.lines) if (l.scroll === undefined) seen.add(text(l.segs))
+        const down = w.lines.at(-1)?.scroll
+        if (down === undefined) break
+        expect(down).toBeGreaterThan(top)
+        top = down
+      }
+      expect([...seen].sort()).toEqual([...all].sort())
+      expect(top).toBe(shown(top, room).max)
+      for (let k = 0; k < 20 && top > 0; k++) {
+        const up = shown(top, room).lines[0]?.scroll
+        expect(up).toBeLessThan(top)
+        top = up ?? 0
+      }
+      expect(top).toBe(0)
+    }
+  })
+
+  test('with fewer than three rows of room the window stays at the top and nothing scrolls', () => {
+    expect(shown(4, 2).lines.map(l => text(l.segs))).toEqual(['預計 1', '還有 11 列'])
+    expect(shown(4, 2).lines.every(l => l.scroll === undefined)).toBe(true)
   })
 })
 
@@ -1432,6 +1516,65 @@ describe('task board page', () => {
     await openTasks($)
     await pressKey($, 'task-1')
     expect(await boardOf($)).toBe(before)
+  })
+
+  // the item and its forty subtasks: taller than the card
+  const tallTask = ($: Engine) => task($, { op: 'add', item: '長清單', subtasks: Array.from({ length: 40 }, (_, k) => `細項${k}`) })
+  const wheel = ($: Engine, by: number) =>
+    $.ui.scroll({ component: 'Pane', requestId: 'jarvis', offset: 0, by, bodyRows: 30, contentRows: 30, origin: { kind: 'person' } })
+
+  test('a board taller than the card: pressing the below row scrolls down to the last subtask, the above row back up', async ($, on) => {
+    world(on)
+    await tallTask($)
+    await openTasks($)
+    let root = await draw($)
+    expect(linesOf(root).some(l => l.includes('細項39'))).toBe(false)
+    expect(buttonsOf(root).find(b => b.props?.['key'] === 'task-scroll-down')).toBeDefined()
+    expect(buttonsOf(root).find(b => b.props?.['key'] === 'task-scroll-up')).toBeUndefined()
+    for (let k = 0; k < 10 && buttonsOf(root).some(b => b.props?.['key'] === 'task-scroll-down'); k++) {
+      await pressKey($, 'task-scroll-down')
+      root = await draw($)
+    }
+    expect(linesOf(root).some(l => l.includes('細項39'))).toBe(true)
+    expect(linesOf(root).some(l => l.includes('上面還有'))).toBe(true)
+    for (let k = 0; k < 10 && buttonsOf(root).some(b => b.props?.['key'] === 'task-scroll-up'); k++) {
+      await pressKey($, 'task-scroll-up')
+      root = await draw($)
+    }
+    expect(linesOf(root).some(l => l.includes('細項0'))).toBe(true)
+    expect(linesOf(root).some(l => l.includes('上面還有'))).toBe(false)
+  })
+
+  test('the wheel scrolls the board within the card, clamped at either end; a /clear goes back to the top', async ($, on) => {
+    world(on)
+    await tallTask($)
+    await openTasks($)
+    const top = linesOf(await draw($))
+    expect(await wheel($, 3)).toEqual({})
+    const moved = linesOf(await draw($))
+    expect(moved.some(l => l.includes('上面還有 3 列'))).toBe(true)
+    await wheel($, 1000)
+    expect(linesOf(await draw($)).some(l => l.includes('細項39'))).toBe(true)
+    await wheel($, -1)
+    expect(linesOf(await draw($)).some(l => l.includes('細項39'))).toBe(false)
+    await wheel($, -1000)
+    expect(linesOf(await draw($))).toEqual(top)
+    await wheel($, 5)
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    await tallTask($)
+    await openTasks($)
+    expect(linesOf(await draw($))).toEqual(top)
+  })
+
+  test('the wheel on a board that fits, or on another page, is the engine\'s', async ($, on) => {
+    world(on)
+    const seen: number[] = []
+    on('ui.scroll', async (_$, e) => (seen.push(e.by), {}))
+    await task($, { op: 'add', item: 'A', subtasks: ['a1'] })
+    await openTasks($)
+    await draw($)
+    await wheel($, 1)
+    expect(seen).toEqual([1])
   })
 })
 

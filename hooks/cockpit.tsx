@@ -47,7 +47,7 @@ import type { DiffRow, Failed, NumstatRow } from './gitDiff'
 import { tailCells } from './changes'
 import type { ChangeMode } from './changes'
 import { EMPTY_BOARD, boardCounts, countsText } from './tasks'
-import { splitLead, taskLines } from './tasksView'
+import { splitLead, taskWindow } from './tasksView'
 import type { OwnerMark, TaskFolds, TaskLine } from './tasksView'
 import { commitRows, laneColor, relTime } from './commitsView'
 import type { CommitsCtx, RefLabel, RepoPage } from './commitsView'
@@ -232,6 +232,11 @@ export type Ctx = {
   // the task page's fold choices, and the press that folds (true) or opens an item
   taskFolds?: TaskFolds
   toggleTask?: (id: string, folded: boolean) => void
+  // the task page's first row shown, the press that scrolls it there, and the window as drawn
+  // (its clamped first row and the last it can be), for the wheel
+  taskTop?: number
+  scrollTasks?: (top: number) => void
+  tasksDrawn?: (top: number, max: number) => void
 }
 
 const FRAME = THEME.frame
@@ -2640,12 +2645,34 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   }
 
   // An item's row with subtasks: its icon and title are the Button that folds or opens
-  // them, so a pointer over the row inverts them alone; other rows are plain.
-  const taskLine = (l: TaskLine): Line => {
+  // them, so a pointer over the row inverts them alone; a row saying how many rows are left
+  // out above or below is the Button that scrolls there (`top`: the first row shown now);
+  // other rows are plain.
+  const taskLine = (l: TaskLine, top = 0): Line => {
     const { lead, rest: segs } = splitLead(l.segs)
     const [icon, title, ...rest] = segs
     const it = l.item
     const toggle = ctx.toggleTask
+    const [more] = l.segs
+    const scroll = ctx.scrollTasks
+    const to = l.scroll
+    if (to !== undefined && scroll !== undefined && more !== undefined) {
+      const words = more.t.trimEnd()
+      return {
+        h: 1,
+        node: (
+          <Box flexDirection="row">
+            {pressBox(
+              [{ ...more, t: words }],
+              <Button key={`task-scroll-${to < top ? 'up' : 'down'}`} plain onPress={() => scroll(to)}>
+                {plainTexts([{ ...more, t: words }])}
+              </Button>,
+            )}
+            {texts([{ ...more, t: more.t.slice(words.length) }])}
+          </Box>
+        ),
+      }
+    }
     if (it === undefined || toggle === undefined || icon === undefined || title === undefined) return l.segs
     const name = title.t.trimEnd()
     return {
@@ -2670,8 +2697,9 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     const board = ctx.tasks ?? EMPTY_BOARD
     const head = leftRight([title(TAB_ICON.tasks, tr('tab.tasks'), PRIMARY)], [{ t: countsText(boardCounts(board)), color: FRAME }], inner)
     const h = Math.max(6, room)
-    const lines = taskLines(board, inner, h - 3, taskOwner, view.now, ctx.taskFolds ?? {})
-    return card({ w: cols, color: FRAME, lines: [head, ...lines.map(taskLine)] }, h)
+    const win = taskWindow(board, inner, h - 3, taskOwner, view.now, ctx.taskFolds ?? {}, ctx.taskTop ?? 0)
+    ctx.tasksDrawn?.(win.top, win.max)
+    return card({ w: cols, color: FRAME, lines: [head, ...win.lines.map(l => taskLine(l, win.top))] }, h)
   }
 
   // ---- 組版 ---------------------------------------------------------------
