@@ -70,6 +70,8 @@ describe('rowFlags', () => {
   test('error-end', () => {
     expect(rowFlags(row({ reason: 'refusal' }))).toEqual(['error-end'])
     expect(rowFlags(row({ reason: 'answer' }))).toEqual([])
+    expect(rowFlags(row({ reason: 'aborted' }))).toEqual(['error-end'])
+    expect(rowFlags(row({ reason: 'aborted', backfill: true }))).toEqual(['error-end'])
   })
 
   test('health and corrected come from the row', () => {

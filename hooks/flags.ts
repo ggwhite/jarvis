@@ -57,7 +57,7 @@ export function rowFlags(row: DispatchRow): FlagKind[] {
   if (!row.backfill) {
     for (const h of row.health ?? []) out.push(h)
   }
-  if (row.reason === 'refusal' || row.reason === 'error') out.push('error-end')
+  if (row.reason === 'refusal' || row.reason === 'error' || row.reason === 'aborted') out.push('error-end')
   if (row.toolErrors >= FLAG_RULES.toolErrorsMin && row.toolErrors / row.tools >= FLAG_RULES.toolErrorsRatio) out.push('tool-errors')
   if (row.tools <= FLAG_RULES.tinyMaxTools && !includes(FLAG_RULES.tinyExempt, row.type)) out.push('tiny')
   if (includes(FLAG_RULES.heavyTypes, row.type)) {
