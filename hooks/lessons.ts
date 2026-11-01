@@ -60,6 +60,7 @@ const ANY_FAMILY = '*'
 // the imperative word the rule must start with, kept out of the en dictionary (no CJK there)
 const MUST = '一律'
 
+const FLAG_KINDS: readonly string[] = ['verify-fail', 'redispatch', 'loop', 'stuck', 'error-end', 'tool-errors', 'tiny', 'heavy', 'corrected']
 const EVENT_KINDS: readonly string[] = ['approve', 'memory', 'memory-error', 'apply-cancel', 'applied', 'reject', 'revert-request', 'reverted']
 
 export function lessonKey(kind: FlagKind, row: DispatchRow): string {
@@ -69,10 +70,11 @@ export function lessonKey(kind: FlagKind, row: DispatchRow): string {
 type KeyParts = { kind: FlagKind; type: string; family: string }
 
 // The type may itself hold a colon (`plugin:agent`), so kind is the first part and family the last.
+// A kind that is not a flag kind (a hand edit) has no lesson text, so the key is not a lesson.
 function keyParts(key: string): KeyParts | undefined {
   const first = key.indexOf(':')
   const last = key.lastIndexOf(':')
-  if (first < 0 || last <= first) return undefined
+  if (first < 0 || last <= first || !FLAG_KINDS.includes(key.slice(0, first))) return undefined
   return { kind: key.slice(0, first) as FlagKind, type: key.slice(first + 1, last), family: key.slice(last + 1) }
 }
 
@@ -82,7 +84,7 @@ export function encodeEvents(events: readonly LessonEvent[]): string {
   return events.map(e => `${JSON.stringify(e)}\n`).join('')
 }
 
-/** Skips lines that are not JSON or lack a string `key` and `session`, a known `kind` and a numeric `at`. */
+/** Skips lines that are not JSON or lack a lesson `key`, a string `session`, a known `kind` and a numeric `at`. */
 export function decodeEvents(text: string): LessonEvent[] {
   const out: LessonEvent[] = []
   for (const line of text.split('\n')) {
@@ -95,7 +97,7 @@ export function decodeEvents(text: string): LessonEvent[] {
     }
     if (typeof e !== 'object' || e === null) continue
     const o = e as Partial<LessonEvent>
-    if (typeof o.key !== 'string' || typeof o.session !== 'string' || typeof o.at !== 'number') continue
+    if (typeof o.key !== 'string' || !keyParts(o.key) || typeof o.session !== 'string' || typeof o.at !== 'number') continue
     if (typeof o.kind !== 'string' || !EVENT_KINDS.includes(o.kind)) continue
     out.push(o as LessonEvent)
   }
@@ -244,11 +246,11 @@ export function lessonLine(l: Lesson): string {
   return t('lesson.line', { n: l.strikes, key: l.key, text: lessonText(l.kind, l.type, l.family) })
 }
 
-/** Candidate lines, most strikes first, leaving out keys already shown at their current count. */
+/** Candidate lines, most strikes first, leaving out keys already shown at their current count or more. */
 export function injectLines(lessons: readonly Lesson[], shown: ReadonlyMap<string, number>): { lines: string[]; shown: Map<string, number> } {
   const next = new Map(shown)
   const picked = lessons
-    .filter(l => l.state === 'candidate' && shown.get(l.key) !== l.strikes)
+    .filter(l => l.state === 'candidate' && (shown.get(l.key) ?? -1) < l.strikes)
     .sort((a, b) => b.strikes - a.strikes || a.key.localeCompare(b.key))
     .slice(0, INJECT_MAX)
   for (const l of picked) next.set(l.key, l.strikes)

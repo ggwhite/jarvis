@@ -190,6 +190,11 @@ describe('foldLessons', () => {
     expect(l.family).toBe('*')
   })
 
+  test('an event whose key has an unknown kind yields no lesson', () => {
+    const events = [ev('approve', NOW - DAY, { key: 'bogus:worker:sonnet' }), ev('applied', NOW - DAY + 1, { key: 'bogus:worker:sonnet', file: '/f' })]
+    expect(foldLessons([], events, NOW)).toEqual([])
+  })
+
   test('a type with a colon keeps its whole name', () => {
     const rows = [row({ type: 'plug:agent', tools: 1 }), row({ type: 'plug:agent', tools: 1 })]
     const l = only(foldLessons(rows, [], NOW), 'tiny:plug:agent:haiku')!
@@ -281,6 +286,13 @@ describe('injectLines', () => {
     expect(third.lines[0]).toContain('tiny:C:haiku')
     expect(third.shown.get('tiny:C:haiku')).toBe(6)
   })
+
+  test('a count that drops as rows age out is not shown again', () => {
+    const lessons = [lesson('tiny:A:haiku', 3)]
+    const out = injectLines(lessons, new Map([['tiny:A:haiku', 4]]))
+    expect(out.lines).toEqual([])
+    expect(out.shown.get('tiny:A:haiku')).toBe(4)
+  })
 })
 
 describe('suggestedFile', () => {
@@ -342,7 +354,7 @@ describe('texts', () => {
 describe('events codec', () => {
   test('decodeEvents skips bad lines', () => {
     const good = [ev('approve', 5), ev('memory', 6, { memoryId: 3 })]
-    const text = `${encodeEvents([good[0]!])}{oops\n${JSON.stringify({ key: KEY, kind: 'nope', at: 1, session: 's' })}\n${JSON.stringify({ kind: 'reject', at: 1, session: 's' })}\n\n${encodeEvents([good[1]!])}`
+    const text = `${encodeEvents([good[0]!])}{oops\n${JSON.stringify({ key: KEY, kind: 'nope', at: 1, session: 's' })}\n${JSON.stringify({ kind: 'reject', at: 1, session: 's' })}\n${JSON.stringify({ key: 'bogus:worker:sonnet', kind: 'approve', at: 1, session: 's' })}\n\n${encodeEvents([good[1]!])}`
     expect(decodeEvents(text)).toEqual(good)
   })
 })
