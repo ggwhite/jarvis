@@ -288,6 +288,22 @@ const zhTW = {
   'cls.short': '很短的請求（例如「確認送出」「好」「1」「push」）通常接續前一個請求的話題。',
   'cls.topics': '既有話題（最近活動的在前）：\n{topics}',
   'cls.request': '{last}請求：\n{prompt}',
+
+  // ---- lessons from the dispatch ledger ----
+  'lesson.line': 'Jarvis 教訓（30 天內 {n} 次）：{key} — {text}',
+  'lesson.text.tiny': '{type}（{family}）只用了 ≤ 2 次工具就結束；3 次工具內做得完的事自己做。',
+  'lesson.text.heavy': '{type}（{family}）用了超過 300k token 或 10 分鐘；縮小派工說明，或改派別的 agent。',
+  'lesson.text.redispatch': '{type}（{family}）的任務被重派了一次；第一次派工就寫清楚驗收標準。',
+  'lesson.text.verify-fail': 'verifier 判 {type}（{family}）的成果不通過；派工說明要求附上測試與 RED/GREEN 輸出。',
+  'lesson.text.loop': '{type}（{family}）卡在同一個失敗的工具上打轉；告訴它失敗 2 次就停下回報。',
+  'lesson.text.stuck': '{type}（{family}）5 分鐘沒有動靜；設定時限或把任務拆小。',
+  'lesson.text.tool-errors': '{type}（{family}）遇到很多工具錯誤；派工說明給出確切的路徑與命令。',
+  'lesson.text.error-end': '{type}（{family}）以錯誤、拒絕或中止結束；檢查派工說明與權限。',
+  'lesson.text.corrected': '使用者糾正了 {type} 派工的結果；重述目標，回報前先自己檢查。',
+  'lesson.apply':
+    'Jarvis：使用者核准了教訓 {key}（{n} 次）：{text} 證據：{evidence}。記憶 #{id}。為它在 {file} 加一條命令式規則（{must} / NEVER），行尾加上 <!-- ev: #{id} -->，顯示 diff，然後呼叫 mcp__jarvis__lesson，op 為 "applied"、key 為 "{key}"、file 為 "<你編輯的檔案>"。如果別的檔案更合適，就改用它並說明原因。',
+  'lesson.revert':
+    'Jarvis：教訓 {key} 沒有幫助（之前 {before}，之後 {after}）。從 {file} 移除它的規則行（帶有 <!-- ev: #{id} --> 的那一行），顯示 diff，然後呼叫 mcp__jarvis__lesson，op 為 "reverted"、key 為 "{key}"。',
 } as const satisfies Record<string, string>
 
 export type MsgKey = keyof typeof zhTW
@@ -565,6 +581,23 @@ const en: Record<MsgKey, string> = {
   'cls.short': 'A very short request (e.g. "confirm", "ok", "1", "push") usually continues the previous request\'s topic.',
   'cls.topics': 'Existing topics (most recently active first):\n{topics}',
   'cls.request': '{last}Request:\n{prompt}',
+
+  // ---- lessons from the dispatch ledger ----
+  'lesson.line': 'Jarvis lesson ({n}× in 30d): {key} — {text}',
+  'lesson.text.tiny': '{type} ({family}) finished with ≤ 2 tool calls; do it yourself when it fits in 3 calls.',
+  'lesson.text.heavy': '{type} ({family}) used over 300k tokens or 10 min; narrow the brief or pick another agent.',
+  'lesson.text.redispatch': 'a {type} ({family}) task was dispatched again; give the first brief clear acceptance criteria.',
+  'lesson.text.verify-fail': 'a verifier failed {type} ({family}) work; require tests and RED/GREEN output in the brief.',
+  'lesson.text.loop': '{type} ({family}) looped on one failing tool; tell it to stop and report after 2 failures.',
+  'lesson.text.stuck': '{type} ({family}) went quiet for 5 min; set a time limit or split the task.',
+  'lesson.text.tool-errors': '{type} ({family}) hit many tool errors; give exact paths and commands in the brief.',
+  'lesson.text.error-end': '{type} ({family}) ended with an error, refusal or abort; check the brief and permissions.',
+  'lesson.text.corrected': 'the user corrected the result of a {type} dispatch; restate the goal and check it before reporting.',
+  // {must} is the Chinese imperative word, filled in by lessons.ts so this text stays free of CJK
+  'lesson.apply':
+    'Jarvis: the user approved lesson {key} ({n}×): {text} Evidence: {evidence}. Memory #{id}. Add ONE imperative rule ({must} / NEVER) for it to {file}, ending with <!-- ev: #{id} -->, show the diff, then call mcp__jarvis__lesson with op "applied", key "{key}", file "<the file you edited>". If another file fits better, use it and say why.',
+  'lesson.revert':
+    'Jarvis: lesson {key} is not helping (before {before}, after {after}). Remove its rule line (the one with <!-- ev: #{id} -->) from {file}, show the diff, then call mcp__jarvis__lesson with op "reverted", key "{key}".',
 }
 
 export const DICTIONARIES: Readonly<Record<Locale, Readonly<Record<MsgKey, string>>>> = { 'zh-TW': zhTW, en }
