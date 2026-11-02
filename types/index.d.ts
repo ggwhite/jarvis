@@ -83,6 +83,8 @@ export type JarvisSubtask = {
   title: string
   status: JarvisTaskStatus
   agentId?: string
+  // earlier agents of this subtask, oldest first; absent until a different agent takes over
+  prevAgents?: string[]
   extId?: string
   // when it last started running, and when it completed (ms); absent without a clock
   startedAt?: number

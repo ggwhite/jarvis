@@ -155,6 +155,23 @@ describe('task board ops', () => {
     expect(b3.items[0]?.subtasks[0]).toMatchObject({ status: 'completed', agentId: 'agent-7' })
   })
 
+  test('an update with a new agent keeps the old one in prevAgents', () => {
+    const b0 = build({ op: 'add', item: 'A', subtasks: ['a1'] })
+    const b1 = ok(applyTask(b0, { op: 'update', id: '1.1', status: 'in_progress' }, 'agent-7'))
+    expect(b1.items[0]?.subtasks[0]?.prevAgents).toBeUndefined()
+    const b2 = ok(applyTask(b1, { op: 'update', id: '1.1', agent: 'agent-9' }))
+    expect(b2.items[0]?.subtasks[0]).toMatchObject({ agentId: 'agent-9', prevAgents: ['agent-7'] })
+    const b3 = ok(applyTask(b2, { op: 'update', id: '1.1', agent: 'agent-7' }))
+    expect(b3.items[0]?.subtasks[0]).toMatchObject({ agentId: 'agent-7', prevAgents: ['agent-7', 'agent-9'] })
+  })
+
+  test('the same agent again changes nothing', () => {
+    const b0 = build({ op: 'add', item: 'A', subtasks: ['a1'] })
+    const b1 = ok(applyTask(b0, { op: 'update', id: '1.1', status: 'in_progress' }, 'agent-7'))
+    const b2 = ok(applyTask(b1, { op: 'update', id: '1.1', status: 'completed' }, 'agent-7'))
+    expect(b2.items[0]?.subtasks[0]?.prevAgents).toBeUndefined()
+  })
+
   test('subtasks a subagent adds are its own', () => {
     const b0 = build({ op: 'add', item: 'A' })
     const b1 = ok(applyTask(b0, { op: 'add', to: '1', subtasks: ['x'] }, 'agent-7'))

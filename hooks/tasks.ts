@@ -12,6 +12,8 @@ export const EMPTY_BOARD: JarvisTaskBoard = { items: [], nextItem: 1 }
 
 export const MAX_ITEMS = 50
 export const MAX_SUBTASKS = 50
+// how many earlier agents a subtask remembers
+const MAX_PREV_AGENTS = 5
 // a title is kept to this many characters
 export const TITLE_MAX = 120
 // how long a just-completed item or subtask stays lit
@@ -185,10 +187,17 @@ function update(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>
   const { item, sub } = found
   if (status === undefined && title === undefined && agent === '') return t('board.subUpdateNeeds')
   const owner = agent !== '' ? agent : (actor ?? sub.agentId)
+  // a different agent taking over keeps the old id (no duplicates, newest 5)
+  const old = sub.agentId
+  const prevAgents =
+    old !== undefined && owner !== undefined && owner !== old
+      ? [...new Set([...(sub.prevAgents ?? []), old])].slice(-MAX_PREV_AGENTS)
+      : sub.prevAgents
   const next: JarvisSubtask = {
     ...(status === undefined ? sub : stamped(sub, status, now)),
     ...(title === undefined ? {} : { title }),
     ...(owner === undefined ? {} : { agentId: owner }),
+    ...(prevAgents === undefined ? {} : { prevAgents }),
   }
   return replaceItem(board, { ...item, subtasks: item.subtasks.map(s => (s.id === id ? next : s)) })
 }
