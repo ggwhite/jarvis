@@ -10,6 +10,7 @@ export const TAB_ICON = {
   fleet: '\uf135',
   changes: '\uf47f',
   tasks: '\uf0ae',
+  lessons: '\uf0eb',
 } as const
 
 export const TITLE_ICON = {
@@ -80,6 +81,7 @@ export const EMOJI_OF: Record<string, string> = {
   [TAB_ICON.fleet]: '🚀',
   [TAB_ICON.changes]: '✏️',
   [TAB_ICON.tasks]: '✅',
+  [TAB_ICON.lessons]: '💡',
   [TITLE_ICON.main]: '💻',
   [TITLE_ICON.dispatch]: '📨',
   [TITLE_ICON.models]: '🧠',

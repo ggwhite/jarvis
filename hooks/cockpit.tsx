@@ -51,6 +51,8 @@ import { splitLead, taskWindow } from './tasksView'
 import type { OwnerMark, TaskFolds, TaskLine } from './tasksView'
 import { commitRows, laneColor, relTime } from './commitsView'
 import type { CommitsCtx, RefLabel, RepoPage } from './commitsView'
+import { actSeg, lessonRows } from './lessonsView'
+import type { LessonOp, LessonRow, LessonsView } from './lessonsView'
 import { MAX_REMOTES } from './repoViews'
 import { CELL_PX_H, bigTextSvg, burnSvg, cellPx, meterSvg, rampBarSvg, reactorSvg, rowPx, ruleSvg, sparkSvg, stackedBarSvg, suitSvg, svgSafe } from './svgArt'
 import type { BranchList, BranchRow, RepoView, StashInfo, WorktreeRow } from './repoViews'
@@ -237,6 +239,9 @@ export type Ctx = {
   taskTop?: number
   scrollTasks?: (top: number) => void
   tasksDrawn?: (top: number, max: number) => void
+  // the Lessons page: what it shows, read only while it is drawn, and the press that acts on a lesson
+  lessons?: LessonsView
+  lessonAct?: (op: LessonOp, key: string) => void
 }
 
 const FRAME = THEME.frame
@@ -340,6 +345,7 @@ localized(() => {
     { page: 'fleet', icon: TAB_ICON.fleet, label: tr('tab.fleet') },
     { page: 'changes', icon: TAB_ICON.changes, label: tr('tab.changes') },
     { page: 'tasks', icon: TAB_ICON.tasks, label: tr('tab.tasks') },
+    { page: 'lessons', icon: TAB_ICON.lessons, label: tr('tab.lessons') },
   ]
 })
 
@@ -2702,6 +2708,37 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     return card({ w: cols, color: FRAME, lines: [head, ...win.lines.map(l => taskLine(l, win.top))] }, h)
   }
 
+  // ---- 教訓 ---------------------------------------------------------------
+
+  // A lesson's line; with presses, each `[Label]` after it a Button.
+  const lessonLine = (r: LessonRow): Line => {
+    const act = ctx.lessonAct
+    if (r.acts.length === 0 || act === undefined) return [...r.segs, ...r.acts.flatMap(a => [sp(1), actSeg(a)])]
+    return {
+      h: 1,
+      node: (
+        <Box flexDirection="row">
+          {texts(r.segs)}
+          {r.acts.flatMap(a => [
+            ...texts([sp(1)]),
+            pressBox(
+              [actSeg(a)],
+              <Button key={`lesson-${a.op}-${a.key}`} plain onPress={() => act(a.op, a.key)}>
+                {plainTexts([actSeg(a)])}
+              </Button>,
+            ),
+          ])}
+        </Box>
+      ),
+    }
+  }
+
+  const lessonsBlock = (room: number): Block => {
+    const v = ctx.lessons ?? { health: [], lessons: [], ledgerPath: '', session: ctx.sessionId }
+    const lines: Line[] = [[title(TAB_ICON.lessons, tr('tab.lessons'), PRIMARY)], ...lessonRows(v, cols).map(lessonLine)]
+    return card({ w: cols, color: FRAME, lines }, Math.max(room, lines.length + 2))
+  }
+
   // ---- 組版 ---------------------------------------------------------------
 
   const blocks: Block[] = [titleBar(), tabBar()]
@@ -2781,6 +2818,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     blocks.push(stashDiffBlock(left(), ctx.commits))
   } else if (page === 'tasks') {
     blocks.push(tasksBlock(left()))
+  } else if (page === 'lessons') {
+    blocks.push(lessonsBlock(left()))
   } else {
     const hint = view.summary.groups.length === 0
     const shape = { cols, room: left() - (hint ? 1 : 0), roles: statsRoles.length, models: view.models.length }

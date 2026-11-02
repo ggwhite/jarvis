@@ -33,8 +33,10 @@ import {
   MAIN_SOURCE,
 } from './jarvis'
 import type { Completion, EngineAgent } from './jarvis'
-import { createLearn } from './learn'
+import { LOAD_MS, createLearn } from './learn'
 import type { Learn } from './learn'
+import { ledgerDir } from './ledger'
+import type { LessonOp, LessonsView } from './lessonsView'
 import { LESSON_TOOL, LESSON_TOOL_SPEC } from './lessons'
 import { drawCockpit } from './cockpit'
 import type { Ctx } from './cockpit'
@@ -911,6 +913,8 @@ export const register: Register = on => {
   let cacheDir = ''
   // the learning loop's recorder, set once session.start has loaded what the ledger holds
   let learn: Learn | undefined
+  // the Lessons page as last worked out, by which recorder and when; dropped by a flush or a press
+  let lessonsCache: { of: Learn; at: number; view: LessonsView } | undefined
   const repoCache = new Map<string, string | null>()
   // each file's original as its first edit settles it
   const origs = new Map<string, Promise<string>>()
@@ -1111,7 +1115,10 @@ export const register: Register = on => {
               if (!l) return
               try {
                 l.health(loopActors(evs, new Set(runningOf(list).map(a => a.id))), stuckAgents(list, evs, fl, now))
-                if (l.due(now)) void l.flush(now)
+                if (l.due(now)) {
+                  lessonsCache = undefined
+                  void l.flush(now)
+                }
               } catch {
                 // bookkeeping only
               }
@@ -1671,7 +1678,10 @@ export const register: Register = on => {
             now,
           )
         }
-        if (l.due(now)) void l.flush(now)
+        if (l.due(now)) {
+          lessonsCache = undefined
+          void l.flush(now)
+        }
       }
     } catch {
       // bookkeeping only
@@ -1952,6 +1962,40 @@ export const register: Register = on => {
     } catch {
       // no session id: no row is marked as this one
     }
+    // the Lessons page: worked out again after a press, a flush, or LOAD_MS (when load reads the
+    // ledger again); no recorder (no HOME) is the empty page
+    let lessonsView: LessonsView | undefined
+    if (shown.page === 'lessons') {
+      const l = learn
+      if (!l) lessonsView = { health: [], lessons: [], ledgerPath: ledgerDir(changesHome || '~'), session: sessionId }
+      else {
+        if (lessonsCache === undefined || lessonsCache.of !== l || now - lessonsCache.at >= LOAD_MS) {
+          await l.load(now)
+          lessonsCache = { of: l, at: now, view: { health: l.health14(now), lessons: l.lessons(now), ledgerPath: ledgerDir(changesHome), session: sessionId } }
+        }
+        lessonsView = lessonsCache.view
+      }
+    }
+    // a lesson's press: the recorder acts, writes it down, and the page is worked out again
+    const lessonAct = (op: LessonOp, key: string) => {
+      const l = learn
+      if (!l) return
+      void (async () => {
+        try {
+          const at = await $.clock.now()
+          if (op === 'approve') await l.approve(key, at)
+          else if (op === 'reject') l.reject(key, at)
+          else if (op === 'cancel') l.cancel(key, at)
+          else if (op === 'retry') await l.retry(key, at)
+          else l.requestRevert(key, at)
+          await l.flush(at)
+        } catch {
+          // the lesson stays as it was
+        }
+        lessonsCache = undefined
+        redraw($)
+      })()
+    }
     const total = await read($, eventTotal)
     // what a press changes, written from its onPress (state is not written while drawing)
     const setUi = (fn: (u: JarvisUi, recorded: number) => JarvisUi) => {
@@ -2124,6 +2168,7 @@ export const register: Register = on => {
             },
           }),
       commits,
+      ...(lessonsView ? { lessons: lessonsView, lessonAct } : {}),
     }
     if (e.surface === 'desktop' && desktopLayout === undefined) {
       try {

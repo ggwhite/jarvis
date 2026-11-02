@@ -1872,6 +1872,7 @@ describe('pages', () => {
       ['tab-fleet', undefined, true, `${TAB_ICON.fleet} 艦隊`],
       ['tab-changes', undefined, true, `${TAB_ICON.changes} 異動`],
       ['tab-tasks', undefined, true, `${TAB_ICON.tasks} 任務`],
+      ['tab-lessons', undefined, true, `${TAB_ICON.lessons} 教訓`],
     ])
     // the page shown is the marked tab: its label in the accent gold, the rest in the frame teal
     expect((await ui.find({ key: 'tab-now' }))?.children).toEqual([
@@ -1900,7 +1901,7 @@ describe('pages', () => {
     engineAll(on)
     await press($, 'tab-log', 30, 40)
     let ui = await mountPane($, 30, 40)
-    // six tabs and 暫停 are too wide for 40 columns with every label: the tabs not shown keep their icon
+    // seven tabs and 暫停 are too wide for 40 columns with every label: the tabs not shown keep their icon
     const bar = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('tab-') || b.key === 'pause')
     expect(bar.filter(b => b.key?.startsWith('tab-')).map(b => b.text)).toEqual([
       `${TAB_ICON.now} `,
@@ -1909,6 +1910,7 @@ describe('pages', () => {
       `${TAB_ICON.fleet} `,
       `${TAB_ICON.changes} `,
       `${TAB_ICON.tasks} `,
+      `${TAB_ICON.lessons} `,
     ])
     expect(bar.reduce((n, b) => n + cellWidth(b.text ?? ''), 0) + (bar.length - 1) * 2).toBeLessThanOrEqual(40)
     await ui.unmount()
@@ -1921,6 +1923,7 @@ describe('pages', () => {
       ['tab-fleet', `${TAB_ICON.fleet} `],
       ['tab-changes', `${TAB_ICON.changes} `],
       ['tab-tasks', `${TAB_ICON.tasks} `],
+      ['tab-lessons', `${TAB_ICON.lessons} `],
     ])
     await ui.unmount()
   })
@@ -2027,6 +2030,7 @@ describe('subagent list and detail page', () => {
       ['tab-fleet', undefined],
       ['tab-changes', undefined],
       ['tab-tasks', undefined],
+      ['tab-lessons', undefined],
       ['back', undefined],
     ])
     await ui.unmount()
@@ -5806,7 +5810,7 @@ describe('nerd font icons', () => {
     engineAll(on)
     const ui = await mountPane($, 30, 100)
     const tabs = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('tab-'))
-    expect(tabs.map(b => b.text)).toEqual([`${TAB_ICON.now} 現況`, `${TAB_ICON.log} 事件流`, `${TAB_ICON.stats} 統計`, `${TAB_ICON.fleet} 艦隊`, `${TAB_ICON.changes} 異動`, `${TAB_ICON.tasks} 任務`])
+    expect(tabs.map(b => b.text)).toEqual([`${TAB_ICON.now} 現況`, `${TAB_ICON.log} 事件流`, `${TAB_ICON.stats} 統計`, `${TAB_ICON.fleet} 艦隊`, `${TAB_ICON.changes} 異動`, `${TAB_ICON.tasks} 任務`, `${TAB_ICON.lessons} 教訓`])
     await ui.unmount()
   })
 
