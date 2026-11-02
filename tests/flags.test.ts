@@ -30,6 +30,12 @@ describe('parseVerdict', () => {
     expect(parseVerdict('**VERDICT:** pass')).toBe('pass')
   })
 
+  test('parseVerdict reads a VERDICT line or value wrapped in backticks', () => {
+    expect(parseVerdict('done\n`VERDICT: FAIL`')).toBe('fail')
+    expect(parseVerdict('VERDICT: `PASS`')).toBe('pass')
+    expect(parseVerdict('**VERDICT:** `partial`')).toBe('partial')
+  })
+
   test('parseVerdict falls back to the 結論 line', () => {
     expect(parseVerdict('- **結論**：不通過')).toBe('fail')
     expect(parseVerdict('結論：部分未驗證')).toBe('partial')

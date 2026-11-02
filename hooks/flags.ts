@@ -24,7 +24,8 @@ export const FLAG_RULES = {
   correctionMs: 900_000,
 } as const
 
-const VERDICT_LINE = /^\s*\**\s*VERDICT\s*\**\s*[:：]\s*\**\s*(PASS|FAIL|PARTIAL)/im
+// bold (`**`) or code (`` ` ``) marks may wrap the word, the value or the whole line
+const VERDICT_LINE = /^[\s*`]*VERDICT[\s*`]*[:：][\s*`]*(PASS|FAIL|PARTIAL)/im
 const ZH_LINE = /結論\**\s*[:：]?\s*\**\s*(.*)$/m
 const EN_LINE = /conclusion\**\s*[:：]\s*\**\s*(pass|fail|partial)/im
 const CORRECTION = /你不是說|不是叫你|不對|錯了|為什麼沒|為什麼又|又忘|you said|that's wrong|not what i|why didn't you|you forgot/i
