@@ -5,9 +5,10 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import { TABS } from '../hooks/cockpit'
 import type { Seg } from '../hooks/cockpit'
 import { setLocale } from '../hooks/i18n'
-import { BOOT_MS, THEME } from '../hooks/jarvis'
+import { BOOT_MS, IDLE_MS, THEME } from '../hooks/jarvis'
+import { LOAD_MS } from '../hooks/learn'
 import { type DispatchRow, type HealthRow, dayKey, encodeRows, ledgerFile, lessonsFile } from '../hooks/ledger'
-import type { Lesson } from '../hooks/lessons'
+import { type Lesson, decodeEvents, encodeEvents } from '../hooks/lessons'
 import { lessonsLines } from '../hooks/lessonsView'
 import type { LessonsView } from '../hooks/lessonsView'
 import { HAIKU, all, drawOn, textOf } from './helpers'
@@ -93,19 +94,38 @@ describe('lessons lines', () => {
   )
 
   test(
-    'approved: waiting has Retry and Cancel, a memory error has Retry, another session reads only',
+    'approved: waiting has Retry and Cancel, a memory error has Retry, requested here reads only, and one not requested here has Retry here and Cancel in any session',
     en(() => {
       const of = (l: Partial<Lesson>) => texts(lessonsLines(view({ lessons: [lesson({ state: 'approved', ...l })] }), 80)).join('\n')
-      const waiting = of({ approvedIn: SESSION, memoryId: 7, waiting: true })
+      const waiting = of({ approvedIn: SESSION, memoryId: 1901, waiting: true })
+      expect(waiting).toContain('#1901')
       expect(waiting).toContain('[Retry]')
       expect(waiting).toContain('[Cancel]')
-      const failed = of({ approvedIn: SESSION, memoryError: 'no id' })
+      const requested = of({ approvedIn: SESSION, memoryId: 1901, requestedHere: true })
+      expect(requested).toContain('rule edit requested #1901')
+      expect(requested).not.toContain('[')
+      const failed = of({ approvedIn: 'sess-2', memoryError: 'no id' })
       expect(failed).toContain('no id')
       expect(failed).toContain('[Retry]')
       expect(failed).not.toContain('[Cancel]')
-      const other = of({ approvedIn: 'sess-2', memoryId: 7 })
+      const other = of({ approvedIn: 'sess-2', memoryId: 1901 })
       expect(other).toContain('approved in another session')
-      expect(other).not.toContain('[')
+      expect(other).toContain('[Retry here]')
+      expect(other).toContain('[Cancel]')
+      const left = of({ approvedIn: SESSION, memoryId: 1901 })
+      expect(left).toContain('[Retry here]')
+      expect(left).toContain('[Cancel]')
+    }),
+  )
+
+  test(
+    'applied with a revert requested: Revert again when not requested here, read only when it is',
+    en(() => {
+      const of = (l: Partial<Lesson>) => texts(lessonsLines(view({ lessons: [lesson({ state: 'applied', revertRequested: true, ...l })] }), 80)).join('\n')
+      expect(of({})).toContain('revert requested')
+      expect(of({})).toContain('[Revert]')
+      expect(of({ requestedHere: true })).toContain('revert requested')
+      expect(of({ requestedHere: true })).not.toContain('[Revert]')
     }),
   )
 
@@ -205,6 +225,12 @@ const tinyRow = (at: number): DispatchRow => {
 
 // the engine beneath the mod, with a file system kept in `files`
 const world = (on: On, files = new Map<string, string>()) => {
+  const runs: string[][] = []
+  // the reads and lists of the learning loop's files
+  const io = { reads: 0, lists: 0 }
+  const counted = (path: string, kind: 'reads' | 'lists') => {
+    if (path.startsWith(`${HOME}/.claude/jarvis`)) io[kind]++
+  }
   const clock = mock.clock(on, { now: NOW })
   mock.env(on, { HOME, JARVIS_LANG: 'en' })
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
@@ -217,6 +243,7 @@ const world = (on: On, files = new Map<string, string>()) => {
   on('prompt.submit', async (_$, e) => ({ text: e.text, ...(e.context === undefined ? {} : { context: e.context }) }))
   on('turn.complete', async (_$, e) => ({ text: e.answer }))
   on('fs.read', async (_$, e) => {
+    counted(e.path, 'reads')
     const t = files.get(e.path)
     if (t === undefined) throw new Error('ENOENT')
     return { value: t }
@@ -231,6 +258,7 @@ const world = (on: On, files = new Map<string, string>()) => {
     return { value: { kind: 'file' as const, size: t.length, mtimeMs: NOW, isLink: false } }
   })
   on('fs.list', async (_$, e) => {
+    counted(e.path, 'lists')
     const out = new Map<string, 'file' | 'dir'>()
     for (const k of files.keys()) {
       if (!k.startsWith(`${e.path}/`)) continue
@@ -241,10 +269,11 @@ const world = (on: On, files = new Map<string, string>()) => {
     if (out.size === 0) throw new Error('ENOENT')
     return { value: [...out].map(([name, kind]) => ({ name, kind, size: 0, mtimeMs: NOW, isLink: false })) }
   })
-  on('process.run', async () => ({
-    value: { exitCode: 0, stdout: '{"id":1901}', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
-  }))
-  return { files, clock }
+  on('process.run', async (_$, e) => {
+    runs.push([...e.argv])
+    return { value: { exitCode: 0, stdout: '{"id":1901}', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  return { files, clock, runs, io }
 }
 
 // two tiny strikes of another session, yesterday
@@ -319,6 +348,75 @@ describe('lessons tab wired', () => {
       const keys = buttonKeys(await drawOn($, 'terminal'))
       expect(keys).toContain(`lesson-retry-${KEY}`)
       expect(keys).toContain(`lesson-cancel-${KEY}`)
+    } finally {
+      setLocale('zh-TW')
+    }
+  })
+
+  test('two quick Approve presses store one memory and record one approve', async ($, on) => {
+    const w = world(on, twoStrikes())
+    try {
+      await onLessons($, w)
+      // the same Button pressed twice before the page is drawn again
+      const ui = await mount($)
+      await Promise.all([ui.press({ key: `lesson-approve-${KEY}` }), ui.press({ key: `lesson-approve-${KEY}` })])
+      await ui.unmount()
+      await settle()
+      const kinds = decodeEvents(w.files.get(lessonsFile(HOME, SESSION)) ?? '').map(e => e.kind)
+      expect(kinds).toEqual(['approve', 'memory'])
+      expect(w.runs.filter(a => a[0]?.endsWith('memory-mcp')).length).toBe(1)
+    } finally {
+      setLocale('zh-TW')
+    }
+  })
+
+  test('an approval left by an ended session shows Retry here and Cancel; Retry here asks for the rule edit in this session', async ($, on) => {
+    const files = twoStrikes()
+    files.set(
+      lessonsFile(HOME, 'sess-A'),
+      encodeEvents([
+        { key: KEY, kind: 'approve', at: NOW - 60_000, session: 'sess-A' },
+        { key: KEY, kind: 'memory', at: NOW - 60_000, session: 'sess-A', memoryId: 1901 },
+      ]),
+    )
+    const w = world(on, files)
+    try {
+      await onLessons($, w)
+      const keys = buttonKeys(await drawOn($, 'terminal'))
+      expect(keys).toContain(`lesson-retryHere-${KEY}`)
+      expect(keys).toContain(`lesson-cancel-${KEY}`)
+      const ui = await mount($)
+      await ui.press({ key: `lesson-retryHere-${KEY}` })
+      await ui.unmount()
+      await settle()
+      const out = await $.prompt.submit({ text: 'go on', wait: false, origin: { kind: 'composer' } } as never)
+      expect((out.context ?? []).join('\n')).toContain('mcp__jarvis__lesson')
+      expect((out.context ?? []).join('\n')).toContain('#1901')
+      const tree = await drawOn($, 'terminal')
+      expect(textOf(tree)).toContain('#1901')
+      expect(buttonKeys(tree)).not.toContain(`lesson-retryHere-${KEY}`)
+    } finally {
+      setLocale('zh-TW')
+    }
+  })
+
+  test('drawing the page reads no file; the slow tick reloads the ledger and the page shows what it found', async ($, on) => {
+    const w = world(on, twoStrikes())
+    try {
+      await onLessons($, w)
+      await drawOn($, 'terminal')
+      // another session's two tiny workers, written after this session loaded
+      w.files.set(ledgerFile(HOME, dayKey(NOW), 'other'), encodeRows([{ ...tinyRow(NOW - 60_000), type: 'worker' }, { ...tinyRow(NOW - 30_000), type: 'worker' }]))
+      w.io.lists = 0
+      w.io.reads = 0
+      await w.clock.advance(LOAD_MS + IDLE_MS)
+      await settle()
+      expect(w.io.lists).toBeGreaterThan(0)
+      w.io.lists = 0
+      w.io.reads = 0
+      const tree = await drawOn($, 'terminal')
+      expect(w.io).toEqual({ reads: 0, lists: 0 })
+      expect(textOf(tree)).toContain('tiny:worker:haiku')
     } finally {
       setLocale('zh-TW')
     }

@@ -913,8 +913,11 @@ export const register: Register = on => {
   let cacheDir = ''
   // the learning loop's recorder, set once session.start has loaded what the ledger holds
   let learn: Learn | undefined
-  // the Lessons page as last worked out, by which recorder and when; dropped by a flush or a press
+  // the Lessons page as last worked out, by which recorder and when; dropped by a flush, a press
+  // or a load that found something new
   let lessonsCache: { of: Learn; at: number; view: LessonsView } | undefined
+  // lessons whose press is still being carried out: a second press on one is ignored
+  const lessonBusy = new Set<string>()
   const repoCache = new Map<string, string | null>()
   // each file's original as its first edit settles it
   const origs = new Map<string, Promise<string>>()
@@ -1119,6 +1122,13 @@ export const register: Register = on => {
                   lessonsCache = undefined
                   void l.flush(now)
                 }
+                // other sessions' rows and lessons, read again at most every LOAD_MS, for every
+                // session whether its page is shown or not; the page is worked out again when they changed
+                void l.load(now).then(changed => {
+                  if (!changed) return
+                  lessonsCache = undefined
+                  redraw($)
+                })
               } catch {
                 // bookkeeping only
               }
@@ -1966,35 +1976,44 @@ export const register: Register = on => {
     } catch {
       // no session id: no row is marked as this one
     }
-    // the Lessons page: worked out again after a press, a flush, or LOAD_MS (when load reads the
-    // ledger again); no recorder (no HOME) is the empty page
+    // the Lessons page, from what the recorder holds (the slow tick reads the ledger, never a
+    // drawing): worked out again after a press, a flush, a load that found something new, or
+    // LOAD_MS; no recorder (no HOME) is the empty page
     let lessonsView: LessonsView | undefined
     if (shown.page === 'lessons') {
       const l = learn
       if (!l) lessonsView = { health: [], lessons: [], ledgerPath: ledgerDir(changesHome || '~'), session: sessionId }
       else {
         if (lessonsCache === undefined || lessonsCache.of !== l || now - lessonsCache.at >= LOAD_MS) {
-          await l.load(now)
           lessonsCache = { of: l, at: now, view: { health: l.health14(now), lessons: l.lessons(now), ledgerPath: ledgerDir(changesHome), session: sessionId } }
         }
         lessonsView = lessonsCache.view
       }
     }
-    // a lesson's press: the recorder acts, writes it down, and the page is worked out again
+    // a lesson's press: the recorder acts, the page is worked out again at once (memory-mcp may
+    // take a while), then once more when the press is written down; a second press on the same
+    // lesson before that is ignored
     const lessonAct = (op: LessonOp, key: string) => {
       const l = learn
-      if (!l) return
+      if (!l || lessonBusy.has(key)) return
+      lessonBusy.add(key)
       void (async () => {
         try {
           const at = await $.clock.now()
-          if (op === 'approve') await l.approve(key, at)
+          let pending: Promise<void> | undefined
+          if (op === 'approve') pending = l.approve(key, at)
           else if (op === 'reject') l.reject(key, at)
           else if (op === 'cancel') l.cancel(key, at)
-          else if (op === 'retry') await l.retry(key, at)
+          else if (op === 'retry' || op === 'retryHere') pending = l.retry(key, at)
           else l.requestRevert(key, at)
+          lessonsCache = undefined
+          redraw($)
+          await pending
           await l.flush(at)
         } catch {
           // the lesson stays as it was
+        } finally {
+          lessonBusy.delete(key)
         }
         lessonsCache = undefined
         redraw($)

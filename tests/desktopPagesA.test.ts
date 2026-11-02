@@ -415,6 +415,24 @@ describe('desktop native: lessons', () => {
     expect(badProps(tree)).toEqual([])
   })
 
+  test('an approved lesson shows its memory id natively', async ($, on) => {
+    const clock = withLedger(on)
+    on('process.run', async () => ({
+      value: { exitCode: 0, stdout: '{"id":1901}', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+    }))
+    await $.session.start({ cwd: '/w/proj', surface: 'desktop', isInteractive: true } as never)
+    await clock.advance(BOOT_MS)
+    await pressOn($, 'desktop', 'tab-lessons')
+    await drawOn($, 'desktop', 50, 100)
+    await pressOn($, 'desktop', `lesson-approve-${KEY}`, 50, 100)
+    // the test runtime's timer, which the mod's es2023 lib does not declare
+    const later = (globalThis as unknown as { setTimeout: (f: () => void, ms: number) => unknown }).setTimeout
+    await new Promise<void>(r => later(() => r(), 5))
+    const tree = await drawOn($, 'desktop', 50, 100)
+    expect(textOf(tree)).toContain('#1901')
+    expect(badProps(tree)).toEqual([])
+  })
+
   test('with no ledger the page draws the empty state natively', async ($, on) => {
     native(on)
     await pressOn($, 'desktop', 'tab-lessons')

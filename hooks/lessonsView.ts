@@ -7,10 +7,10 @@ import type { Lesson, Measure } from './lessons'
 // The Lessons tab's lines: dispatch health over the last 14 days, then the lessons by state,
 // each press a `[Label]` the cockpit draws as a Button.
 
-// `session`: this session's id; an approval from any other session is drawn read-only
+// `session`: this session's id, to tell an approval left by another session from one left by this one
 export type LessonsView = { health: HealthRow[]; lessons: Lesson[]; ledgerPath: string; session: string }
 
-export type LessonOp = 'approve' | 'reject' | 'cancel' | 'retry' | 'revert'
+export type LessonOp = 'approve' | 'reject' | 'cancel' | 'retry' | 'retryHere' | 'revert'
 
 export type LessonAct = { op: LessonOp; key: string; label: string }
 
@@ -107,13 +107,17 @@ function candidateRows(l: Lesson): LessonRow[] {
   return [head, ...evidence]
 }
 
+// An approval's request lives only in the session that queued it; one this session does not hold
+// (its session ended first, or another session's) can be asked for again here, or cancelled.
 function approvedRow(l: Lesson, session: string): LessonRow {
   const key: Seg = { t: l.key, color: THEME.primary, bold: true }
-  if (l.approvedIn !== session) return { segs: [key, sp(2), { t: t('lessons.otherSession'), color: THEME.frame }], acts: [] }
+  const id = l.memoryId ?? ''
+  if (l.waiting === true) return { segs: [key, sp(2), { t: t('lessons.waiting', { id }), color: THEME.accent }], acts: [act('retry', l.key), act('cancel', l.key)] }
+  if (l.requestedHere === true) return { segs: [key, sp(2), { t: t('lessons.requested', { id }), color: THEME.frame }], acts: [] }
   if (l.memoryError !== undefined)
     return { segs: [key, sp(2), { t: t('lessons.memoryError', { error: l.memoryError }), color: THEME.error }], acts: [act('retry', l.key)] }
-  if (l.waiting === true) return { segs: [key, sp(2), { t: t('lessons.waiting'), color: THEME.accent }], acts: [act('retry', l.key), act('cancel', l.key)] }
-  return { segs: [key, sp(2), { t: t('lessons.requested'), color: THEME.frame }], acts: [] }
+  const left = t(l.approvedIn === session ? 'lessons.notRequested' : 'lessons.otherSession')
+  return { segs: [key, sp(2), { t: left, color: THEME.frame }], acts: [act('retryHere', l.key), act('cancel', l.key)] }
 }
 
 function appliedRow(l: Lesson): LessonRow {
@@ -125,7 +129,8 @@ function appliedRow(l: Lesson): LessonRow {
   const tail: Seg = l.revertRequested ? { t: t('lessons.revertRequested'), color: THEME.frame } : { t: t(`lessons.verdict.${verdict}`), color: VERDICT_COLOR[verdict] }
   return {
     segs: [{ t: l.key, color: THEME.primary, bold: true }, sp(2), ...figures, tail],
-    acts: verdict === 'not-helping' && !l.revertRequested ? [act('revert', l.key)] : [],
+    // a revert request this session does not hold can be asked for again
+    acts: (verdict === 'not-helping' && !l.revertRequested) || (l.revertRequested === true && l.requestedHere !== true) ? [act('revert', l.key)] : [],
   }
 }
 
