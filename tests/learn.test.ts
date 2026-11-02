@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { createLearn, type LearnIo } from '../hooks/learn'
 import { type DispatchRow, decodeRows, encodeRows, ledgerFile, lessonsFile } from '../hooks/ledger'
-import { decodeEvents } from '../hooks/lessons'
+import { type LessonEvent, decodeEvents, encodeEvents } from '../hooks/lessons'
 
 const HOME = '/h'
 const MIN = 60_000
@@ -335,7 +335,7 @@ describe('learn: lessons', () => {
     expect(io.runs[0]![0]).toBe(`${HOME}/.local/bin/memory-mcp`)
 
     io.result = undefined
-    await l.approve(KEY, NOW + 1)
+    await l.retry(KEY, NOW + 1)
     expect(l.lessons(NOW).find(y => y.key === KEY)!.memoryError).toBe('no id')
   })
 
@@ -426,6 +426,83 @@ describe('learn: lessons', () => {
     l.reject(KEY, NOW)
     expect(l.lessons(NOW).find(y => y.key === KEY)!.state).toBe('rejected')
     expect(l.inject(NOW)).toEqual([])
+  })
+
+  test('a second approve, during the first or after it, stores no second memory; reject leaves an approval alone', async () => {
+    const io = fakeIo(candidateFs())
+    const l = createLearn(io, opts())
+    await l.load(NOW)
+    await Promise.all([l.approve(KEY, NOW), l.approve(KEY, NOW)])
+    await l.approve(KEY, NOW + 1)
+    l.reject(KEY, NOW + 2)
+    await l.flush(NOW + 2)
+    expect(io.runs.length).toBe(1)
+    expect(decodeEvents(io.files.get(lessonsFile(HOME, 's1')) ?? '').map(e => e.kind)).toEqual(['approve', 'memory'])
+    expect(l.lessons(NOW + 2).find(y => y.key === KEY)!.state).toBe('approved')
+  })
+
+  test('an approval its session left unrequested: another session sees it is not requested there, and retry asks there', async () => {
+    const io = fakeIo(candidateFs())
+    const a = createLearn(io, opts('A'))
+    await a.load(NOW)
+    await a.approve(KEY, NOW)
+    await a.flush(NOW)
+    expect(a.lessons(NOW).find(y => y.key === KEY)!.requestedHere).toBe(true)
+    // A ends before its next prompt: the request it queued is gone with it
+    const b = createLearn(io, opts('B'))
+    await b.load(NOW + 1)
+    const x = b.lessons(NOW + 1).find(y => y.key === KEY)!
+    expect(x.state).toBe('approved')
+    expect(x.requestedHere).toBeFalsy()
+    await b.retry(KEY, NOW + 2)
+    // the memory is already stored: not stored again
+    expect(io.runs.length).toBe(1)
+    expect(b.lessons(NOW + 2).find(y => y.key === KEY)!.requestedHere).toBe(true)
+    const asks = b.inject(NOW + 2).filter(s => s.includes('mcp__jarvis__lesson'))
+    expect(asks.length).toBe(1)
+    expect(asks[0]).toContain('#1901')
+    expect(b.lessons(NOW + 2).find(y => y.key === KEY)!.requestedHere).toBe(true)
+    b.turnEnded()
+    expect(b.lessons(NOW + 2).find(y => y.key === KEY)!.waiting).toBe(true)
+  })
+
+  test('a revert request its session left unsent is not requested in another session until it asks again', async () => {
+    const files = candidateFs()
+    const ev = (kind: LessonEvent['kind'], at: number, extra: Partial<LessonEvent> = {}): LessonEvent => ({ key: KEY, kind, at, session: 'A', ...extra })
+    files.set(lessonsFile(HOME, 'A'), encodeEvents([ev('approve', NOW - 3), ev('memory', NOW - 3, { memoryId: 1901 }), ev('applied', NOW - 2, { file: '/f.md' }), ev('revert-request', NOW - 1)]))
+    const io = fakeIo(files)
+    const b = createLearn(io, opts('B'))
+    await b.load(NOW)
+    const x = b.lessons(NOW).find(y => y.key === KEY)!
+    expect(x.state).toBe('applied')
+    expect(x.revertRequested).toBe(true)
+    expect(x.requestedHere).toBeFalsy()
+    b.requestRevert(KEY, NOW + 1)
+    expect(b.lessons(NOW + 1).find(y => y.key === KEY)!.requestedHere).toBe(true)
+    expect(b.inject(NOW + 1).some(s => s.includes('"reverted"'))).toBe(true)
+    // asked in this turn: still requested here until the turn ends
+    expect(b.lessons(NOW + 1).find(y => y.key === KEY)!.requestedHere).toBe(true)
+    b.turnEnded()
+    expect(b.lessons(NOW + 1).find(y => y.key === KEY)!.requestedHere).toBeFalsy()
+  })
+
+  test('a failing list adopts nothing, so no flush writes over the old rows; a later load adopts them', async () => {
+    const files = new Map([[ledgerFile(HOME, TODAY, 's1'), encodeRows([row('old1', { session: 's1', at: NOW - 60 * MIN })])]])
+    const io = fakeIo(files)
+    let failing = true
+    const list: LearnIo['list'] = async dir => {
+      if (failing) throw new Error('io')
+      return io.list(dir)
+    }
+    const l = createLearn({ ...io, list }, opts())
+    await l.load(NOW, true)
+    l.spawn(spawnOf('a1'))
+    await l.flush(NOW)
+    expect(ownRows(io).map(r => r.id)).toEqual(['old1'])
+    failing = false
+    await l.load(NOW + 61_000)
+    await l.flush(NOW + 61_000)
+    expect(ownRows(io).map(r => r.id).sort()).toEqual(['a1', 'old1'])
   })
 
   test('no home records nothing and never throws', async () => {

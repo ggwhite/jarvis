@@ -45,6 +45,8 @@ export type Lesson = {
   revertRequested?: boolean
   /** This session injected the apply request and the turn ended without `applied`. */
   waiting?: boolean
+  /** This session holds the apply or revert request: queued for its next prompt, or injected in this turn. */
+  requestedHere?: boolean
   /** New strikes since a reject or revert that are not yet enough to reopen it; 0 otherwise. */
   muted: number
 }

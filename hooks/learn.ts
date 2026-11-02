@@ -58,7 +58,8 @@ export type Learn = {
   prompt(text: string, now: number): void
   flush(now: number): Promise<void>
   due(now: number): boolean
-  load(now: number, force?: boolean): Promise<void>
+  /** Reads the ledger and every session's lesson events again; true when it found something new. */
+  load(now: number, force?: boolean): Promise<boolean>
   backfill(now: number): Promise<number>
   lessons(now: number): Lesson[]
   health14(now: number): HealthRow[]
@@ -138,7 +139,10 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
   // lesson event files of other sessions, by file name
   let otherEvents = new Map<string, LessonEvent[]>()
   let backfillSeen = false
+  // this session's own files have been read whole: only then may a flush write over them
   let adopted = false
+  // what the last load read of other sessions' files, to tell whether the next one found anything new
+  let lastRead = ''
   let retained = false
   let backfilled = false
   let loadedAt: number | undefined
@@ -148,11 +152,19 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
   let shown = new Map<string, number>()
   // apply / revert requests waiting for this session's next prompt
   const queued = new Map<string, 'apply' | 'revert'>()
-  // apply requests injected in the current turn
-  const injected = new Set<string>()
+  // apply / revert requests injected in the current turn
+  const injected = new Map<string, 'apply' | 'revert'>()
   const waiting = new Set<string>()
 
   const list = (dir: string) => safe(() => io.list(dir), [])
+  // a directory's entries: none when it is not there, undefined when it is there and could not be read
+  const listing = async (dir: string): Promise<{ name: string; kind: string }[] | undefined> => {
+    try {
+      return await io.list(dir)
+    } catch {
+      return (await safe(() => io.stat(dir), undefined)) === undefined ? [] : undefined
+    }
+  }
   const read = (path: string) => safe(() => io.read(path), undefined)
   const write = (path: string, text: string) => safe(() => io.write(path, text), false)
   const run = (argv: string[]) => safe(() => io.run(argv), undefined)
@@ -177,7 +189,11 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
     if (!on) return []
     return guard(() => {
       const out = foldLessons(allRows(), allEvents(), now)
-      for (const l of out) if (l.state === 'approved' && waiting.has(l.key)) l.waiting = true
+      for (const l of out) {
+        if (l.state === 'approved' && waiting.has(l.key)) l.waiting = true
+        const kind = l.state === 'approved' ? 'apply' : l.state === 'applied' ? 'revert' : undefined
+        if (kind !== undefined && (queued.get(l.key) === kind || injected.get(l.key) === kind)) l.requestedHere = true
+      }
       return out
     })
   }
@@ -203,12 +219,18 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
     queued.set(key, 'apply')
   }
 
-  const load = async (now: number, force = false): Promise<void> => {
-    if (!on) return
-    if (!force && loadedAt !== undefined && now - loadedAt < LOAD_MS) return
+  const load = async (now: number, force = false): Promise<boolean> => {
+    if (!on) return false
+    if (!force && loadedAt !== undefined && now - loadedAt < LOAD_MS) return false
     loadedAt = now
+    // this session's own files were all read
+    let whole = true
+    // other sessions' files as read, to compare with the last load
+    const seen: string[] = []
     const root = ledgerDir(home)
-    const names = (await list(root)).filter(e => e.kind === 'dir' && DAY_NAME.test(e.name)).map(e => e.name)
+    const days = await listing(root)
+    if (days === undefined) whole = false
+    const names = (days ?? []).filter(e => e.kind === 'dir' && DAY_NAME.test(e.name)).map(e => e.name)
     const expired = expiredDays(names, now)
     if (!retained) {
       retained = true
@@ -218,14 +240,23 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
     const mine: DispatchRow[] = []
     let sawBackfill = false
     for (const day of names.filter(n => !expired.includes(n)).sort()) {
-      for (const f of await list(`${root}/${day}`)) {
+      const files = await listing(`${root}/${day}`)
+      if (files === undefined) whole = false
+      for (const f of files ?? []) {
         if (f.kind !== 'file' || !f.name.endsWith('.jsonl')) continue
         if (f.name === BACKFILL_FILE) sawBackfill = true
+        const own = f.name === `${session}.jsonl`
         const text = await read(`${root}/${day}/${f.name}`)
-        if (text === undefined) continue
+        if (text === undefined) {
+          if (own) whole = false
+          continue
+        }
         const decoded = decodeRows(text).map(normal)
-        if (f.name === `${session}.jsonl`) mine.push(...decoded)
-        else rows.push(...decoded)
+        if (own) mine.push(...decoded)
+        else {
+          rows.push(...decoded)
+          seen.push(`${day}/${f.name}\n${text}`)
+        }
       }
     }
     others = rows
@@ -234,22 +265,38 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
     const lessonDir = `${home}/.claude/jarvis/lessons`
     const byFile = new Map<string, LessonEvent[]>()
     let mineEvents: LessonEvent[] = []
-    for (const f of await list(lessonDir)) {
+    const lessonFiles = await listing(lessonDir)
+    if (lessonFiles === undefined) whole = false
+    for (const f of lessonFiles ?? []) {
       if (f.kind !== 'file' || !f.name.endsWith('.jsonl')) continue
+      const own = f.name === `${session}.jsonl`
       const text = await read(`${lessonDir}/${f.name}`)
-      if (text === undefined) continue
-      if (f.name === `${session}.jsonl`) mineEvents = decodeEvents(text)
-      else byFile.set(f.name, decodeEvents(text))
+      if (text === undefined) {
+        if (own) whole = false
+        continue
+      }
+      if (own) mineEvents = decodeEvents(text)
+      else {
+        byFile.set(f.name, decodeEvents(text))
+        seen.push(`lessons/${f.name}\n${text}`)
+      }
     }
     otherEvents = byFile
 
-    // a resumed session: keep what its own files already hold, so the next flush does not drop it
-    if (!adopted) {
+    let changed = false
+    // a resumed session: keep what its own files already hold, so the next flush does not drop it;
+    // a read that failed adopts nothing, and the next load tries again
+    if (!adopted && whole) {
       adopted = true
+      changed = mine.length > 0 || mineEvents.length > 0
       for (const r of mine) if (!own.has(r.id)) own.set(r.id, r)
       const have = new Set(events.map(e => JSON.stringify(e)))
       events = [...mineEvents.filter(e => !have.has(JSON.stringify(e))), ...events]
     }
+    const print = seen.join('\0')
+    if (print !== lastRead) changed = true
+    lastRead = print
+    return changed
   }
 
   const backfill = async (now: number): Promise<number> => {
@@ -288,8 +335,11 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
 
   const flush = async (now: number): Promise<void> => {
     if (!on || !dirty) return
-    dirty = false
     flushedAt = now
+    // this session's own files are read before anything is written over them
+    if (!adopted) await load(now, true)
+    if (!adopted) return
+    dirty = false
     let ok = true
     for (const [day, group] of rowsByDay([...own.values()])) {
       if (!(await write(ledgerFile(home, day, session), encodeRows(group)))) ok = false
@@ -307,9 +357,10 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
       const l = all.find(x => x.key === key)
       if (kind === 'apply' && l?.state === 'approved' && l.memoryId !== undefined) {
         out.push(applyRequest(l, suggestedFile(l.kind, l.type, home, opts.agentFiles ?? [])))
-        injected.add(key)
+        injected.set(key, 'apply')
       } else if (kind === 'revert' && l?.state === 'applied' && l.revertRequested) {
         out.push(revertRequest(l))
+        injected.set(key, 'revert')
       }
     }
     queued.clear()
@@ -441,7 +492,7 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
       return on && dirty && now - flushedAt >= FLUSH_MS
     },
 
-    load: (now, force) => safe(() => load(now, force), undefined),
+    load: (now, force) => safe(() => load(now, force), false),
 
     backfill: now => safe(() => backfill(now), 0),
 
@@ -465,7 +516,8 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
       if (!on) return
       try {
         const l = lessonOf(key, now)
-        if (!l) return
+        // a second press, while the first stores its memory or after it, is not a second approval
+        if (l?.state !== 'candidate') return
         event(key, 'approve', now)
         await store(key, l, now)
       } catch {
@@ -474,7 +526,7 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
     },
 
     reject(key, now) {
-      if (!on) return
+      if (!on || lessonOf(key, now)?.state !== 'candidate') return
       event(key, 'reject', now)
       forget(key)
     },
@@ -513,7 +565,7 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
     },
 
     turnEnded() {
-      for (const key of injected) waiting.add(key)
+      for (const [key, kind] of injected) if (kind === 'apply') waiting.add(key)
       injected.clear()
     },
   }
