@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="380" viewBox="0 0 1200 380" role="img" aria-label="The learning loop: record, flag, lesson, promote (you approve), measure">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#B07A2A"/>
+    </marker>
+    <marker id="arrowc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#5CE1FF"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="380" rx="16" fill="#101012"/>
+
+  <g font-family="'SF Mono','JetBrains Mono',Menlo,Consolas,monospace">
+    <text x="40" y="52" fill="#B07A2A" font-size="15" letter-spacing="4">「 THE LEARNING LOOP 」</text>
+
+    <!-- step boxes: x = 40, 270, 500, 730, 960 ; width 200 -->
+    <g>
+      <rect x="40" y="96" width="200" height="150" rx="10" fill="#17140F" stroke="#B07A2A" stroke-width="2"/>
+      <text x="60" y="130" fill="#B07A2A" font-size="14">01</text>
+      <text x="60" y="160" fill="#F2B84B" font-size="24" font-weight="700">RECORD</text>
+      <text x="60" y="190" fill="#FFF1D6" font-size="14">every subagent run</text>
+      <text x="60" y="210" fill="#FFF1D6" font-size="14">to a per-session</text>
+      <text x="60" y="230" fill="#FFF1D6" font-size="14">ledger file</text>
+    </g>
+    <g>
+      <rect x="270" y="96" width="200" height="150" rx="10" fill="#17140F" stroke="#B07A2A" stroke-width="2"/>
+      <text x="290" y="130" fill="#B07A2A" font-size="14">02</text>
+      <text x="290" y="160" fill="#F2B84B" font-size="24" font-weight="700">FLAG</text>
+      <text x="290" y="190" fill="#FFF1D6" font-size="14">fixed rules: tiny,</text>
+      <text x="290" y="210" fill="#FFF1D6" font-size="14">heavy, loop, stuck,</text>
+      <text x="290" y="230" fill="#FFF1D6" font-size="14">verify-fail …</text>
+    </g>
+    <g>
+      <rect x="500" y="96" width="200" height="150" rx="10" fill="#17140F" stroke="#B07A2A" stroke-width="2"/>
+      <text x="520" y="130" fill="#B07A2A" font-size="14">03</text>
+      <text x="520" y="160" fill="#F2B84B" font-size="24" font-weight="700">LESSON</text>
+      <text x="520" y="190" fill="#FFF1D6" font-size="14">2 strikes in 30 d</text>
+      <text x="520" y="210" fill="#FFF1D6" font-size="14">make a candidate,</text>
+      <text x="520" y="230" fill="#FFF1D6" font-size="14">1 strike is noise</text>
+    </g>
+    <g>
+      <rect x="730" y="96" width="200" height="150" rx="10" fill="#0E1C20" stroke="#5CE1FF" stroke-width="2"/>
+      <text x="750" y="130" fill="#5CE1FF" font-size="14">04</text>
+      <text x="750" y="160" fill="#5CE1FF" font-size="24" font-weight="700">PROMOTE</text>
+      <text x="750" y="190" fill="#E9FBFF" font-size="14">you press Approve:</text>
+      <text x="750" y="210" fill="#E9FBFF" font-size="14">memory + one rule</text>
+      <text x="750" y="230" fill="#E9FBFF" font-size="14">line in your files</text>
+    </g>
+    <g>
+      <rect x="960" y="96" width="200" height="150" rx="10" fill="#17140F" stroke="#B07A2A" stroke-width="2"/>
+      <text x="980" y="130" fill="#B07A2A" font-size="14">05</text>
+      <text x="980" y="160" fill="#F2B84B" font-size="24" font-weight="700">MEASURE</text>
+      <text x="980" y="190" fill="#FFF1D6" font-size="14">flag rate before</text>
+      <text x="980" y="210" fill="#FFF1D6" font-size="14">vs after; revert</text>
+      <text x="980" y="230" fill="#FFF1D6" font-size="14">if not helping</text>
+    </g>
+
+    <!-- forward arrows -->
+    <g stroke="#B07A2A" stroke-width="2" fill="none">
+      <line x1="242" y1="171" x2="266" y2="171" marker-end="url(#arrow)"/>
+      <line x1="472" y1="171" x2="496" y2="171" marker-end="url(#arrow)"/>
+      <line x1="702" y1="171" x2="726" y2="171" marker-end="url(#arrowc)" stroke="#5CE1FF"/>
+      <line x1="932" y1="171" x2="956" y2="171" marker-end="url(#arrow)"/>
+    </g>
+
+    <!-- return path -->
+    <path d="M1060 248V300H140V252" fill="none" stroke="#B07A2A" stroke-width="2" stroke-dasharray="6 6" marker-end="url(#arrow)"/>
+    <text x="600" y="326" text-anchor="middle" fill="#B07A2A" font-size="14">the next sessions keep recording — the metric tells whether the rule worked</text>
+
+    <!-- recall badge -->
+    <rect x="500" y="270" width="200" height="0" fill="none"/>
+    <text x="1160" y="52" text-anchor="end" fill="#B07A2A" font-size="13">open lessons are injected into the next prompt</text>
+  </g>
+</svg>
