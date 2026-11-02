@@ -553,9 +553,9 @@ export type HealthScope = {
   liveAgents?: ReadonlySet<string>
 }
 
-// One executor's own events, oldest first. The main loop is one executor; each subagent
-// is another, by agentId, so two workers never merge.
-function looping(events: readonly JarvisEvent[], live: ReadonlySet<string>): boolean {
+// Each executor's own events, oldest first, keyed `m:<actor>` for the main loop and
+// `s:<agentId>` for a subagent, so two workers never merge. Finished subagents are left out.
+function eventsByActor(events: readonly JarvisEvent[], live: ReadonlySet<string>): Map<string, JarvisEvent[]> {
   const byActor = new Map<string, JarvisEvent[]>()
   for (const ev of events) {
     if (!ev.isMain && !live.has(ev.actor)) continue
@@ -564,18 +564,49 @@ function looping(events: readonly JarvisEvent[], live: ReadonlySet<string>): boo
     if (list) list.push(ev)
     else byActor.set(key, [ev])
   }
-  for (const list of byActor.values()) {
-    const tail = list.slice(-LOOP_FAILS)
-    const first = tail[0]
-    if (
-      first !== undefined &&
-      tail.length === LOOP_FAILS &&
-      tail.every(ev => !ev.ok && ev.tool === first.tool)
-    ) {
-      return true
-    }
-  }
+  return byActor
+}
+
+// An executor's latest LOOP_FAILS events are the same tool failing.
+function loopsIn(list: readonly JarvisEvent[]): boolean {
+  const tail = list.slice(-LOOP_FAILS)
+  const first = tail[0]
+  return first !== undefined && tail.length === LOOP_FAILS && tail.every(ev => !ev.ok && ev.tool === first.tool)
+}
+
+function looping(events: readonly JarvisEvent[], live: ReadonlySet<string>): boolean {
+  for (const list of eventsByActor(events, live).values()) if (loopsIn(list)) return true
   return false
+}
+
+// The running subagents (never the main loop) caught in a loop, by agentId.
+export function loopActors(events: readonly JarvisEvent[], live: ReadonlySet<string>): string[] {
+  const out: string[] = []
+  for (const [key, list] of eventsByActor(events, live)) {
+    if (key.startsWith('s:') && loopsIn(list)) out.push(key.slice(2))
+  }
+  return out
+}
+
+// The running subagents with no call of their own in flight whose own latest activity
+// (their run start, or their last call's end) is more than STUCK_MS ago. The main loop's
+// activity never counts, and a stalled main loop flags nothing.
+export function stuckAgents(
+  agents: readonly JarvisAgent[],
+  events: readonly JarvisEvent[],
+  inflight: readonly JarvisInflight[],
+  now: number,
+): string[] {
+  return runningOf(agents)
+    .filter(a => !inflight.some(f => f.actor === a.id))
+    .filter(a => {
+      const last = events.reduce(
+        (m, ev) => (!ev.isMain && ev.actor === a.id ? Math.max(m, ev.ts + ev.ms) : m),
+        a.runStartedAt,
+      )
+      return now - last > STUCK_MS
+    })
+    .map(a => a.id)
 }
 
 // loop: one executor's own latest LOOP_FAILS events are the same tool failing; only the

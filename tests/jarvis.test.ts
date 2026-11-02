@@ -18,6 +18,8 @@ import {
   dispatchStats,
   healthOf,
   healthOfState,
+  loopActors,
+  stuckAgents,
   modelShares,
   needsReconcile,
   reconcileAgents,
@@ -6188,5 +6190,54 @@ describe('role detail page', () => {
     expect(all.some(b => b.key === 'role-worker')).toBe(true)
     expect(all.some(b => b.key === 'role-run-1')).toBe(true)
     expect(all.filter(b => b.props['hotkey'] !== undefined)).toEqual([])
+  })
+})
+
+describe('per-agent health', () => {
+  const fail = (actor: string, tool = 'Bash', ts = 0) =>
+    ev({ actor, isMain: actor === 'main', source: actor === 'main' ? '主線' : 'worker', tool, ok: false, ts })
+  const flight = (actor: string): JarvisInflight => ({ key: 'c1', actor, source: 'worker', tool: 'Bash', startedAt: 0 })
+
+  test('loopActors names the subagent whose last three calls are the same failing tool', () => {
+    const live = new Set(['a1', 'a2'])
+    const list = [
+      fail('a1'),
+      fail('a2'),
+      fail('a1'),
+      ev({ actor: 'a2', isMain: false, source: 'worker' }),
+      fail('a1'),
+    ]
+    expect(loopActors(list, live)).toEqual(['a1'])
+    // a finished subagent leaves no loop behind
+    expect(loopActors(list, new Set(['a2']))).toEqual([])
+  })
+
+  test('a main-loop loop is not a subagent loop, but the health is still loop', () => {
+    const list = [fail('main'), fail('main'), fail('main')]
+    expect(loopActors(list, new Set())).toEqual([])
+    expect(healthOf(list, 0, undefined)).toBe('loop')
+  })
+
+  test('stuckAgents flags a running subagent quiet over 5 minutes, its own activity only', () => {
+    const agents = [
+      agent({ id: 'w1', status: 'running', runStartedAt: 0 }),
+      agent({ id: 'w2', status: 'running', runStartedAt: 0 }),
+      agent({ id: 'w3', status: 'done', runStartedAt: 0, endedAt: 10 }),
+      agent({ id: 'w4', status: 'running', runStartedAt: 0 }),
+    ]
+    const events = [
+      ev({ actor: 'w4', isMain: false, source: 'worker', ts: 900, ms: 100 }),
+      // the main loop's activity never keeps a subagent from being stuck
+      ev({ actor: 'main', ts: 10 * MIN }),
+    ]
+    const inflight = [flight('w2')]
+    expect(stuckAgents(agents, events, inflight, STUCK_MS)).toEqual([])
+    expect(stuckAgents(agents, events, inflight, STUCK_MS + 1)).toEqual(['w1'])
+    expect(stuckAgents(agents, events, inflight, 1000 + STUCK_MS + 1)).toEqual(['w1', 'w4'])
+  })
+
+  test('a stalled main loop flags no subagent', () => {
+    const events = [ev({ actor: 'main', ts: 0 })]
+    expect(stuckAgents([], events, [], 10 * MIN)).toEqual([])
   })
 })
