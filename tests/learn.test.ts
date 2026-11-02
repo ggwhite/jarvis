@@ -199,6 +199,23 @@ describe('learn: reading', () => {
     expect(l.lessons(NOW).length).toBe(1)
   })
 
+  test('a row with bad health, reason or numbers does not throw; only a valid health entry flags', async () => {
+    const base = { v: 1, at: NOW - DAY, session: 'o', project: 'p', type: 'Explore', family: 'haiku', desc: 'd', doneAt: NOW - DAY + 1, tools: 5, toolErrors: 0, tokens: { in: 1, out: 1, cr: 0, cw: 0 } }
+    const text = [
+      { ...base, id: 'h1', health: 5 },
+      { ...base, id: 'h2', health: 'loop' },
+      { ...base, id: 'h3', health: ['nope', 'loop'], reason: 'weird', durationMs: 'x', toolErrors: 'y' },
+    ]
+      .map(x => JSON.stringify(x))
+      .join('\n')
+    const io = fakeIo(new Map([[ledgerFile(HOME, '2026-10-14', 'other'), text]]))
+    const l = createLearn(io, opts())
+    await l.load(NOW)
+    expect(l.lessons(NOW).map(x => x.key)).toEqual(['loop:Explore:haiku'])
+    expect(l.health14(NOW)[0]!.runs).toBe(3)
+    expect(l.inject(NOW)).toEqual([])
+  })
+
   test('load skips within 60 s unless forced', async () => {
     const io = fakeIo()
     const l = createLearn(io, opts())
@@ -322,6 +339,32 @@ describe('learn: lessons', () => {
     expect(l.lessons(NOW).find(y => y.key === KEY)!.memoryError).toBe('no id')
   })
 
+  test('inject after a failed approve has no apply request', async () => {
+    const io = fakeIo(candidateFs())
+    io.result = { exitCode: 1, stdout: '', stderr: 'boom' }
+    const l = createLearn(io, opts())
+    await l.load(NOW)
+    await l.approve(KEY, NOW)
+    expect(l.inject(NOW).some(s => s.includes('mcp__jarvis__lesson'))).toBe(false)
+  })
+
+  test('retry after a failed store re-runs it and queues the request with the id', async () => {
+    const io = fakeIo(candidateFs())
+    io.result = { exitCode: 1, stdout: '', stderr: 'boom' }
+    const l = createLearn(io, opts())
+    await l.load(NOW)
+    await l.approve(KEY, NOW)
+    io.result = { exitCode: 0, stdout: '{"id":1902}', stderr: '' }
+    await l.retry(KEY, NOW + 1)
+    expect(io.runs.length).toBe(2)
+    const x = l.lessons(NOW + 1).find(y => y.key === KEY)!
+    expect(x.state).toBe('approved')
+    expect(x.memoryId).toBe(1902)
+    const asks = l.inject(NOW + 1).filter(s => s.includes('mcp__jarvis__lesson'))
+    expect(asks.length).toBe(1)
+    expect(asks[0]).toContain('#1902')
+  })
+
   test('memoryId set on success', async () => {
     const io = fakeIo(candidateFs())
     const l = createLearn(io, opts())
@@ -345,7 +388,7 @@ describe('learn: lessons', () => {
     const x = l.lessons(NOW).find(y => y.key === KEY)!
     expect(x.state).toBe('approved')
     expect(x.waiting).toBe(true)
-    l.retry(KEY)
+    await l.retry(KEY, NOW)
     expect(l.lessons(NOW).find(y => y.key === KEY)!.waiting).toBeFalsy()
     expect(asks(l.inject(NOW))).toBe(1)
     l.cancel(KEY, NOW + 1)

@@ -66,7 +66,8 @@ export type Learn = {
   approve(key: string, now: number): Promise<void>
   reject(key: string, now: number): void
   cancel(key: string, now: number): void
-  retry(key: string): void
+  /** Waiting: queue the apply request again. After a failed memory store: run the store again first. */
+  retry(key: string, now: number): Promise<void>
   requestRevert(key: string, now: number): void
   toolCall(input: Record<string, unknown>, now: number): string
   turnEnded(): void
@@ -83,6 +84,7 @@ const REASONS: readonly string[] = ['answer', 'aborted', 'refusal', 'error']
 
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+const finite = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
 
 /** A decoded row with every field the flag and lesson logic reads; a hand-edited row may lack them. */
 function normal(r: DispatchRow): DispatchRow {
@@ -99,6 +101,10 @@ function normal(r: DispatchRow): DispatchRow {
     tokens: { in: num(tk.in), out: num(tk.out), cr: num(tk.cr), cw: num(tk.cw) },
     tools: num(r.tools),
     toolErrors: num(r.toolErrors),
+    doneAt: finite(r.doneAt),
+    durationMs: finite(r.durationMs),
+    reason: REASONS.includes(r.reason as string) ? r.reason : undefined,
+    health: Array.isArray(r.health) ? r.health.filter(h => h === 'loop' || h === 'stuck') : undefined,
   }
 }
 
@@ -107,6 +113,15 @@ async function safe<T>(f: () => Promise<T>, fallback: T): Promise<T> {
     return await f()
   } catch {
     return fallback
+  }
+}
+
+// A read the pane draws from: a bad row it did not foresee reads as nothing, never a throw.
+function guard<T>(f: () => T[]): T[] {
+  try {
+    return f()
+  } catch {
+    return []
   }
 }
 
@@ -160,9 +175,11 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
 
   const lessons = (now: number): Lesson[] => {
     if (!on) return []
-    const out = foldLessons(allRows(), allEvents(), now)
-    for (const l of out) if (l.state === 'approved' && waiting.has(l.key)) l.waiting = true
-    return out
+    return guard(() => {
+      const out = foldLessons(allRows(), allEvents(), now)
+      for (const l of out) if (l.state === 'approved' && waiting.has(l.key)) l.waiting = true
+      return out
+    })
   }
   const lessonOf = (key: string, now: number): Lesson | undefined => lessons(now).find(l => l.key === key)
 
@@ -170,6 +187,20 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
     queued.delete(key)
     injected.delete(key)
     waiting.delete(key)
+  }
+
+  // Stores the lesson's memory; only a stored id queues the apply request (spec §4).
+  const store = async (key: string, l: Lesson, now: number): Promise<void> => {
+    const r = await run(memoryArgv(home, l))
+    const id = r && r.exitCode === 0 ? memoryIdOf(r.stdout) : undefined
+    waiting.delete(key)
+    if (id === undefined) {
+      event(key, 'memory-error', now, { error: r?.stderr.trim() || 'no id' })
+      queued.delete(key)
+      return
+    }
+    event(key, 'memory', now, { memoryId: id })
+    queued.set(key, 'apply')
   }
 
   const load = async (now: number, force = false): Promise<void> => {
@@ -265,6 +296,24 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
     }
     if (events.length && !(await write(lessonsFile(home, session), encodeEvents(events)))) ok = false
     if (!ok) dirty = true
+  }
+
+  const inject = (now: number): string[] => {
+    const all = lessons(now)
+    const picked = injectLines(all, shown)
+    shown = picked.shown
+    const out = [...picked.lines]
+    for (const [key, kind] of queued) {
+      const l = all.find(x => x.key === key)
+      if (kind === 'apply' && l?.state === 'approved' && l.memoryId !== undefined) {
+        out.push(applyRequest(l, suggestedFile(l.kind, l.type, home, opts.agentFiles ?? [])))
+        injected.add(key)
+      } else if (kind === 'revert' && l?.state === 'applied' && l.revertRequested) {
+        out.push(revertRequest(l))
+      }
+    }
+    queued.clear()
+    return out
   }
 
   const toolCall = (input: Record<string, unknown>, now: number): string => {
@@ -400,28 +449,16 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
 
     health14(now) {
       if (!on) return []
-      const rows = allRows()
-      const flags = sessionFlags(rows)
-      return dispatchHealth(rows, r => flags.get(r.id) ?? [], now)
+      return guard(() => {
+        const rows = allRows()
+        const flags = sessionFlags(rows)
+        return dispatchHealth(rows, r => flags.get(r.id) ?? [], now)
+      })
     },
 
     inject(now) {
       if (!on) return []
-      const all = lessons(now)
-      const picked = injectLines(all, shown)
-      shown = picked.shown
-      const out = [...picked.lines]
-      for (const [key, kind] of queued) {
-        const l = all.find(x => x.key === key)
-        if (kind === 'apply' && l?.state === 'approved') {
-          out.push(applyRequest(l, suggestedFile(l.kind, l.type, home, opts.agentFiles ?? [])))
-          injected.add(key)
-        } else if (kind === 'revert' && l?.state === 'applied' && l.revertRequested) {
-          out.push(revertRequest(l))
-        }
-      }
-      queued.clear()
-      return out
+      return guard(() => inject(now))
     },
 
     async approve(key, now) {
@@ -430,12 +467,7 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
         const l = lessonOf(key, now)
         if (!l) return
         event(key, 'approve', now)
-        const r = await run(memoryArgv(home, l))
-        const id = r && r.exitCode === 0 ? memoryIdOf(r.stdout) : undefined
-        if (id !== undefined) event(key, 'memory', now, { memoryId: id })
-        else event(key, 'memory-error', now, { error: r?.stderr.trim() || 'no id' })
-        waiting.delete(key)
-        queued.set(key, 'apply')
+        await store(key, l, now)
       } catch {
         // recording only
       }
@@ -453,10 +485,17 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
       forget(key)
     },
 
-    retry(key) {
+    async retry(key, now) {
       if (!on) return
-      waiting.delete(key)
-      queued.set(key, 'apply')
+      try {
+        const l = lessonOf(key, now)
+        if (l?.state !== 'approved') return
+        if (l.memoryId === undefined) return await store(key, l, now)
+        waiting.delete(key)
+        queued.set(key, 'apply')
+      } catch {
+        // recording only
+      }
     },
 
     requestRevert(key, now) {
