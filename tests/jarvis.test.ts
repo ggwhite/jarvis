@@ -6236,6 +6236,11 @@ describe('per-agent health', () => {
     expect(stuckAgents(agents, events, inflight, 1000 + STUCK_MS + 1)).toEqual(['w1', 'w4'])
   })
 
+  test('a waiting agent idle 5 min + 1 ms is not stuck', () => {
+    const agents = [agent({ id: 'w1', status: 'running', runStartedAt: 0, waiting: true })]
+    expect(stuckAgents(agents, [], [], STUCK_MS + 1)).toEqual([])
+  })
+
   test('a stalled main loop flags no subagent', () => {
     const events = [ev({ actor: 'main', ts: 0 })]
     expect(stuckAgents([], events, [], 10 * MIN)).toEqual([])

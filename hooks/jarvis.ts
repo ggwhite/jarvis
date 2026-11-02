@@ -590,7 +590,8 @@ export function loopActors(events: readonly JarvisEvent[], live: ReadonlySet<str
 
 // The running subagents with no call of their own in flight whose own latest activity
 // (their run start, or their last call's end) is more than STUCK_MS ago. The main loop's
-// activity never counts, and a stalled main loop flags nothing.
+// activity never counts, and a stalled main loop flags nothing. An agent the engine says
+// is waiting on background work is not stuck.
 export function stuckAgents(
   agents: readonly JarvisAgent[],
   events: readonly JarvisEvent[],
@@ -598,7 +599,7 @@ export function stuckAgents(
   now: number,
 ): string[] {
   return runningOf(agents)
-    .filter(a => !inflight.some(f => f.actor === a.id))
+    .filter(a => a.waiting !== true && !inflight.some(f => f.actor === a.id))
     .filter(a => {
       const last = events.reduce(
         (m, ev) => (!ev.isMain && ev.actor === a.id ? Math.max(m, ev.ts + ev.ms) : m),
