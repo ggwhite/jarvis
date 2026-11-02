@@ -1,11 +1,15 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect, mock, test } from 'claude-code/testing'
+import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
 import { DT } from '../hooks/desktopTheme'
+import { t as tr } from '../hooks/i18n'
+import { BOOT_MS } from '../hooks/jarvis'
+import { type DispatchRow, dayKey, encodeRows, ledgerFile } from '../hooks/ledger'
 import { cellPx } from '../hooks/svgArt'
 import { TASK_TOOL } from '../hooks/tasks'
 import { EMPTY_TEXT } from '../hooks/tasksView'
-import { all, complete, drawOn, engine, pressOn, spawnInput, textOf, wellFormed } from './helpers'
+import { HAIKU, all, complete, drawOn, engine, pressOn, spawnInput, textOf, wellFormed } from './helpers'
 import type { Node } from './helpers'
 import { badProps } from './allowedProps'
 
@@ -327,5 +331,96 @@ describe('desktop native: narrow panes', () => {
     await task($, { op: 'update', id: '1.1', status: 'in_progress', agent: 'agent-1' })
     await pressOn($, 'desktop', 'tab-tasks')
     await fitsAt($, 2, cols => narrowInner(cols) - 4)
+  })
+})
+
+describe('desktop native: lessons', () => {
+  const HOME = '/h'
+  const DAY = 86_400_000
+  // local noon, so the day key never depends on the time zone
+  const NOW = new Date(2026, 9, 15, 12).getTime()
+  const KEY = 'tiny:Explore:haiku'
+
+  // a finished Explore row of another session that trips `tiny`
+  const tinyRow = (id: string, at: number): DispatchRow => ({
+    v: 1,
+    id,
+    session: 'old',
+    project: 'p',
+    at,
+    type: 'Explore',
+    model: HAIKU,
+    family: 'haiku',
+    background: false,
+    desc: `find ${id}`,
+    promptLen: 10,
+    doneAt: at + 1_000,
+    durationMs: 1_000,
+    reason: 'answer',
+    tokens: { in: 1, out: 2, cr: 3, cw: 4 },
+    tools: 1,
+    toolErrors: 0,
+  })
+
+  // the native engine with HOME and a file system holding two tiny strikes from yesterday
+  const withLedger = (on: On) => {
+    const files = new Map([[ledgerFile(HOME, dayKey(NOW - DAY), 'old'), encodeRows([tinyRow('a', NOW - DAY), tinyRow('b', NOW - DAY + 60_000)])]])
+    const clock = mock.clock(on, { now: NOW })
+    mock.env(on, { HOME })
+    on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+    on('session.id', async () => ({ value: 'sess-1' }))
+    on('classic.SessionStart', async () => ({}))
+    on('fs.read', async (_$, e) => {
+      const t = files.get(e.path)
+      if (t === undefined) throw new Error('ENOENT')
+      return { value: t }
+    })
+    on('fs.write', async (_$, e) => {
+      files.set(e.path, e.text)
+      return { value: undefined as void }
+    })
+    on('fs.stat', async (_$, e) => {
+      const t = files.get(e.path)
+      if (t === undefined) throw new Error('ENOENT')
+      return { value: { kind: 'file' as const, size: t.length, mtimeMs: NOW, isLink: false } }
+    })
+    on('fs.list', async (_$, e) => {
+      const out = new Map<string, 'file' | 'dir'>()
+      for (const k of files.keys()) {
+        if (!k.startsWith(`${e.path}/`)) continue
+        const rest = k.slice(e.path.length + 1)
+        const i = rest.indexOf('/')
+        out.set(i < 0 ? rest : rest.slice(0, i), i < 0 ? 'file' : 'dir')
+      }
+      if (out.size === 0) throw new Error('ENOENT')
+      return { value: [...out].map(([name, kind]) => ({ name, kind, size: 0, mtimeMs: NOW, isLink: false })) }
+    })
+    return clock
+  }
+
+  test('the lessons tab draws natively: both section headings and a candidate’s Approve Button', async ($, on) => {
+    const clock = withLedger(on)
+    await $.session.start({ cwd: '/w/proj', surface: 'desktop', isInteractive: true } as never)
+    await clock.advance(BOOT_MS)
+    await pressOn($, 'desktop', 'tab-lessons')
+    const tree = await drawOn($, 'desktop', 50, 100)
+    expect(isNative(tree)).toBe(true)
+    const text = textOf(tree)
+    expect(text).toContain(tr('lessons.health'))
+    expect(text).toContain(tr('lessons.list'))
+    expect(text).toContain(KEY)
+    const keys = all(tree, x => x.type === 'Button').map(b => String(b.props?.['key'] ?? ''))
+    expect(keys).toContain(`lesson-approve-${KEY}`)
+    expect(keys).toContain(`lesson-reject-${KEY}`)
+    expect(badProps(tree)).toEqual([])
+  })
+
+  test('with no ledger the page draws the empty state natively', async ($, on) => {
+    native(on)
+    await pressOn($, 'desktop', 'tab-lessons')
+    const tree = await drawOn($, 'desktop')
+    expect(isNative(tree)).toBe(true)
+    expect(textOf(tree)).toContain(tr('lessons.empty'))
+    expect(badProps(tree)).toEqual([])
   })
 })

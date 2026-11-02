@@ -1,17 +1,18 @@
 import type { RenderElement } from 'claude-code'
 
 import { MIN_EVENT_ROWS } from './cockpit'
-import type { Ctx } from './cockpit'
+import type { Ctx, Seg } from './cockpit'
 import { DT, GLASS } from './desktopTheme'
 import type { DesktopUi } from './desktopView'
 import { t as tr } from './i18n'
 import type { MsgKey } from './i18n'
-import { ROLE_ICON } from './icons'
+import { ROLE_ICON, TAB_ICON, forDesktop } from './icons'
 import {
   FAMILY_NAME,
   MAX_EVENTS,
   ROLES,
   ROLE_LABEL,
+  THEME,
   WORKFLOW_TYPE,
   dispatchRoleOf,
   elapsedMs,
@@ -32,6 +33,7 @@ import {
   tokensOf,
 } from './jarvis'
 import type { Cockpit, EventRow, Phase, RoleModelStat } from './jarvis'
+import { actSeg, lessonRows } from './lessonsView'
 import { rampBarSvg } from './svgArt'
 import { EMPTY_BOARD, boardCounts, boardGroups, countsText, groupStatus, isFresh, itemFresh, itemRunning, itemStartedAt, itemStatus } from './tasks'
 import type { TaskGroup } from './tasks'
@@ -54,8 +56,8 @@ export type KitA = {
   actorName: (actor: string) => string
 }
 
-// The pages drawn here: the event log, the task board, a subagent's and a role's page.
-export const A_PAGES: readonly JarvisPage[] = ['log', 'tasks', 'detail', 'roleDetail']
+// The pages drawn here: the event log, the task board, the lessons, a subagent's and a role's page.
+export const A_PAGES: readonly JarvisPage[] = ['log', 'tasks', 'lessons', 'detail', 'roleDetail']
 
 export const isPageA = (page: JarvisPage): boolean => A_PAGES.includes(page)
 
@@ -619,7 +621,60 @@ function tasksPage(kit: KitA): RenderElement {
   return kit.card(kit.head('✅', tr('tab.tasks'), countsText(boardCounts(board))), body, parts.running.length > 0 ? DT.orangeEdge : undefined)
 }
 
+// ---- 教訓 ----
+
+// lessonRows' card padding (border and padding), added back so its lines fit this card's inside
+const LESSON_CARD_PAD = 4
+
+// the terminal theme's tones as the glass palette's
+const LESSON_TONE: Record<string, string> = {
+  [THEME.primary]: DT.text,
+  [THEME.frame]: DT.textSub,
+  [THEME.muted]: DT.textFaint,
+  [THEME.accent]: DT.orange,
+  [THEME.error]: DT.fail,
+  [THEME.success]: DT.ok,
+}
+
+// The lessons: lessonRows' lines, as the terminal draws them, each press a Button after its line.
+function lessonsPage(kit: KitA): RenderElement {
+  const { Box, Text, Button } = kit.ui
+  const { ctx } = kit
+  const v = ctx.lessons ?? { health: [], lessons: [], ledgerPath: '', session: ctx.sessionId }
+  const act = ctx.lessonAct
+  const segText = (s: Seg): RenderElement => (
+    <Text color={s.color === undefined ? DT.text : (LESSON_TONE[s.color] ?? s.color)} bold={s.bold === true} wrap="truncate">
+      {s.t}
+    </Text>
+  )
+  const body = lessonRows(v, kit.cardInner + LESSON_CARD_PAD).map(r => (
+    <Box flexDirection="row" gap={1}>
+      <Box flexDirection="row" flexShrink={1} overflow="hidden">
+        {r.segs.map(s => segText(s))}
+      </Box>
+      {r.acts.map(a =>
+        act === undefined ? (
+          segText(actSeg(a))
+        ) : (
+          <Button key={`lesson-${a.op}-${a.key}`} plain onPress={() => act(a.op, a.key)}>
+            {segText(actSeg(a))}
+          </Button>
+        ),
+      )}
+    </Box>
+  ))
+  return kit.card(kit.head(forDesktop(TAB_ICON.lessons), tr('tab.lessons')), body)
+}
+
 // One of A_PAGES as `page` (from shownPageA).
 export function drawPageA(kit: KitA, page: JarvisPage): RenderElement {
-  return page === 'tasks' ? tasksPage(kit) : page === 'detail' ? detailPage(kit) : page === 'roleDetail' ? rolePage(kit) : logPage(kit)
+  return page === 'tasks'
+    ? tasksPage(kit)
+    : page === 'lessons'
+      ? lessonsPage(kit)
+      : page === 'detail'
+        ? detailPage(kit)
+        : page === 'roleDetail'
+          ? rolePage(kit)
+          : logPage(kit)
 }
