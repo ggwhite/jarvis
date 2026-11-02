@@ -6,7 +6,7 @@ A [Claude Code](https://claude.com/claude-code) mod that opens a live HUD pane b
 
 ## Features
 
-The pane has six tabs:
+The pane has seven tabs:
 
 | Tab | What it shows |
 | --- | --- |
@@ -16,6 +16,7 @@ The pane has six tabs:
 | **Fleet** | Every Claude Code session in [herdr](#herdr): status (working / blocked / idle), last prompt and reply, today's tokens, and the 5-hour and 7-day quota. Click a session to jump to its pane. |
 | **Changes** | Files this session edited, grouped by git repo, with diffs. Unpushed changes, ahead/behind counts and a commit graph per repo. |
 | **Tasks** | A task board the model fills through the `mcp__jarvis__task` tool, so you can see its plan and progress. |
+| **Lessons** | Dispatch health per agent type × model, and lessons drawn from repeated bad outcomes. Approve, Reject or Revert each one. |
 
 ![The Tasks, Changes, Commits, Fleet, Stats and Events tabs](docs/screenshots/tabs.png)
 
@@ -25,6 +26,7 @@ Other details:
 - Reports a one-line squad summary to the herdr sidebar.
 - Draws a native layout in Claude Desktop and a cell grid in the terminal.
 - English and Traditional Chinese UI.
+- Keeps its learning ledger in `~/.claude/jarvis/ledger/`. No rule file is edited unless you press Approve.
 
 ## Requirements
 
