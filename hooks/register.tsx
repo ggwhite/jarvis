@@ -1701,12 +1701,21 @@ export const register: Register = on => {
     // the item's id beside the prompt. A prompt another hook drops takes its item with it.
     const box: { id?: string; rid?: string } = {}
     const now = await stampNow($)
+    // the person's own prompt: it opens a request and is the one a correction is read from
+    let typed = false
+    try {
+      // a slash command absorbed into a running turn comes as its bare line with no command
+      const commands = slashName(e.text) === undefined ? new Set<string>() : await commandNames($)
+      typed = recordsRequest(e, commands)
+    } catch {
+      // not the person's
+    }
     // candidate lessons and waiting rule requests, as one context string
     let lessonContext: string[] = []
     try {
       const l = learn
       if (l && now !== undefined) {
-        l.prompt(e.text, now)
+        if (typed) l.prompt(e.text, now)
         const extra = l.inject(now)
         if (extra.length > 0) lessonContext = [extra.join('\n')]
       }
@@ -1714,9 +1723,7 @@ export const register: Register = on => {
       // bookkeeping only
     }
     try {
-      // a slash command absorbed into a running turn comes as its bare line with no command
-      const commands = slashName(e.text) === undefined ? new Set<string>() : await commandNames($)
-      if (recordsRequest(e, commands)) {
+      if (typed) {
         const rid = crypto.randomUUID()
         await updateBoard($, b => {
           const made = openRequest(b, e.text, e.turnId, now, rid)

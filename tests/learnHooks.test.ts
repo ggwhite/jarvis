@@ -45,7 +45,7 @@ const tinyRow = (at: number): DispatchRow => {
 // the engine beneath the mod, with a file system kept in `files`
 const world = (on: On, files = new Map<string, string>()) => {
   const registered: string[] = []
-  mock.clock(on, { now: NOW })
+  const clock = mock.clock(on, { now: NOW })
   mock.env(on, { HOME, JARVIS_LANG: 'en' })
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
   on('session.end', async (_$, e) => ({ sessionId: e.sessionId }))
@@ -93,7 +93,7 @@ const world = (on: On, files = new Map<string, string>()) => {
   on('process.run', async () => ({
     value: { exitCode: 0, stdout: '{"id":1901}', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
-  return { files, registered }
+  return { files, registered, clock }
 }
 
 // the locale is the module's: put it back for the files that run after this one
@@ -158,6 +158,43 @@ describe('learning loop wired', () => {
       await $.tool.call({ tool: TASK_TOOL, op: 'update', id: '1.1', status: 'in_progress', agent: 'agent-1' } as never)
       await end($)
       expect(ownRows(w.files)[0]?.subtask).toBe('1.1')
+    }),
+  )
+
+  // a background Explore run that has finished
+  const finishedRun = async ($: Engine) => {
+    await $.agent.spawn(spawnInput('find x', 'Explore'))
+    await $.tool.call({ tool: 'Read', file_path: '/a', agentId: 'agent-1' } as never)
+    await $.turn.complete(complete('agent-1') as never)
+  }
+
+  test(
+    'a correction after a task notification flags the finished row',
+    en(async ($, on) => {
+      const w = world(on)
+      await start($)
+      await finishedRun($)
+      await w.clock.advance(60_000)
+      await send($, 'background task done', { origin: { kind: 'task-notification' } })
+      await w.clock.advance(60_000)
+      await send($, "that's wrong, look again")
+      await end($)
+      expect(ownRows(w.files)[0]?.corrected).toBe(true)
+    }),
+  )
+
+  test(
+    'a notification, a hidden prompt or a slash command that reads like a correction flags nothing',
+    en(async ($, on) => {
+      const w = world(on)
+      await start($)
+      await finishedRun($)
+      await w.clock.advance(60_000)
+      await send($, "that's wrong: the build failed", { origin: { kind: 'task-notification' } })
+      await send($, "that's wrong", { isMeta: true })
+      await send($, "/review that's wrong", { command: { name: 'review', args: "that's wrong" } })
+      await end($)
+      expect(ownRows(w.files)[0]?.corrected).toBeUndefined()
     }),
   )
 
