@@ -58,7 +58,7 @@ The Lessons tab also answers the user's direct question about Events: which agen
 - Location: `~/.claude/jarvis/ledger/<YYYY-MM-DD>/<sessionId>.jsonl` via `$.fs`. **Each session writes only its own file**, so concurrent sessions never race. A session rewrites its own file (small) after each change, debounced to at most once per 2 s and flushed on session end.
 - Retention: on session start, delete day folders older than 60 days.
 - Reading: rows are de-duplicated by `id`; a live row wins over a backfilled row.
-- Reading: the Lessons tab and the flag/lesson logic read the last 60 days of all sessions. Read once on session start and when the Lessons tab opens; then refresh at most every 60 s. Rows from the current session come from memory, not disk.
+- Reading: the Lessons tab and the flag/lesson logic read the last 60 days of all sessions. Read once on session start; then the slow tick refreshes at most every 60 s, whether the Lessons tab is open or not (drawing the tab never reads files). Rows from the current session come from memory, not disk.
 - One row per dispatch (schema `v: 1`):
 
 | field | source |
@@ -109,9 +109,11 @@ Thresholds live in one exported `FLAG_RULES` constant so tests and the view use 
 - **Approve**:
   1. Jarvis runs `~/.local/bin/memory-mcp store --json -t feedback --tags jarvis-lesson,<kind> "<lesson text>"` (no `--project`: the lesson is global) and keeps the returned id. If it fails, the lesson stays `approved` with an error note and the button shows Retry.
   2. Only the session where Approve was pressed asks for the edit. On its next `prompt.submit`, Jarvis adds context: the lesson, its evidence, the memory id, and a suggested rule file (table below). It asks the main agent to add **one** imperative rule (`一律` / `NEVER`) with `<!-- ev: #<memoryId> -->`, show the diff, and then call `mcp__jarvis__lesson` with `op: "applied"`.
-- If that turn ends without the `applied` call (the user declined the diff, or the agent did not act), the lesson shows **Waiting** with two buttons: Retry (inject the request again on the next prompt) and Cancel (back to `candidate`; the memory stays). Other sessions show the lesson as `approved`, read-only.
+- If that turn ends without the `applied` call (the user declined the diff, or the agent did not act), the lesson shows **Waiting** (with its memory id) and two buttons: Retry (inject the request again on the next prompt) and Cancel (back to `candidate`; the memory stays).
+- A queued or injected request lives only in the memory of the session that holds it. An `approved` lesson that is **not** queued or injected in this session (the approving session ended before its next prompt, or another session approved it) shows, in any session, **Retry here** (if the memory id is missing, run the memory store again; then queue the apply request in this session) and **Cancel** (an `apply-cancel` event).
+- Approve and Reject act only on a `candidate`; a second press (while the first is still storing the memory, or after it) does nothing.
 - **Reject**: state `rejected`. Nothing is written.
-- **Revert** (only shown for `not-helping`): on the next `prompt.submit`, Jarvis asks the main agent to remove that rule line (found by its `ev` tag) and call `mcp__jarvis__lesson` with `op: "reverted"`.
+- **Revert** (only shown for `not-helping`): on the next `prompt.submit`, Jarvis asks the main agent to remove that rule line (found by its `ev` tag) and call `mcp__jarvis__lesson` with `op: "reverted"`. A lesson whose revert was requested but is not queued or injected in this session shows Revert again, which queues the revert request here.
 
 Suggested rule file per kind (the main agent may choose another and must say why):
 
@@ -147,7 +149,7 @@ Suggested rule file per kind (the main agent may choose another and must say why
 New tab `lessons` (icon, i18n `tab.lessons`), after Tasks. Two sections:
 
 1. **Dispatch health** (last 14 days, all sessions): one row per `type × family` with runs, median and p90 duration, mean tokens, flag rate, top flag kind. Sorted by runs. Rows with a flag rate ≥ 20% are highlighted. This is "which runs most / longest / fails most".
-2. **Lessons**: candidates first (strikes, evidence lines, Approve / Reject), then approved (waiting for the main agent), then applied (before → after rate, n, verdict; Revert when not-helping), then watching (one dim line each). Rejected and reverted are hidden behind a count.
+2. **Lessons**: candidates first (strikes, evidence lines, Approve / Reject), then approved (requested or waiting for the main agent, with the memory id `#<id>`; Retry here / Cancel when no request is held in this session, see §4), then applied (before → after rate, n, verdict; Revert when not-helping, or when a requested revert is not held in this session), then watching (one dim line each). Rejected and reverted are hidden behind a count.
 
 Terminal: rendered in `hooks/lessonsView.ts` in the cockpit style (amber theme), with RWD like other tabs. Desktop: a page in `desktopPages*.tsx` using only allowed props. Buttons use `<Button plain onPress>`; state writes happen in `onPress`, never during render.
 
