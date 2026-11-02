@@ -165,6 +165,16 @@ describe('task board ops', () => {
     expect(b3.items[0]?.subtasks[0]).toMatchObject({ agentId: 'agent-7', prevAgents: ['agent-7', 'agent-9'] })
   })
 
+  test('prevAgents keeps the newest 5, oldest first, and a re-handed-over id moves to the newest slot', () => {
+    let b = build({ op: 'add', item: 'A', subtasks: ['a1'] })
+    for (const a of ['agent-1', 'agent-2', 'agent-3', 'agent-4', 'agent-5', 'agent-6', 'agent-7', 'agent-3', 'agent-4'])
+      b = ok(applyTask(b, { op: 'update', id: '1.1', agent: a }))
+    expect(b.items[0]?.subtasks[0]).toMatchObject({
+      agentId: 'agent-4',
+      prevAgents: ['agent-4', 'agent-5', 'agent-6', 'agent-7', 'agent-3'],
+    })
+  })
+
   test('the same agent again changes nothing', () => {
     const b0 = build({ op: 'add', item: 'A', subtasks: ['a1'] })
     const b1 = ok(applyTask(b0, { op: 'update', id: '1.1', status: 'in_progress' }, 'agent-7'))

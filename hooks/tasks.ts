@@ -187,11 +187,11 @@ function update(board: JarvisTaskBoard, input: Readonly<Record<string, unknown>>
   const { item, sub } = found
   if (status === undefined && title === undefined && agent === '') return t('board.subUpdateNeeds')
   const owner = agent !== '' ? agent : (actor ?? sub.agentId)
-  // a different agent taking over keeps the old id (no duplicates, newest 5)
+  // a different agent taking over keeps the old id (no duplicates, a repeat moves to the newest slot, newest 5)
   const old = sub.agentId
   const prevAgents =
     old !== undefined && owner !== undefined && owner !== old
-      ? [...new Set([...(sub.prevAgents ?? []), old])].slice(-MAX_PREV_AGENTS)
+      ? [...(sub.prevAgents ?? []).filter(a => a !== old), old].slice(-MAX_PREV_AGENTS)
       : sub.prevAgents
   const next: JarvisSubtask = {
     ...(status === undefined ? sub : stamped(sub, status, now)),
