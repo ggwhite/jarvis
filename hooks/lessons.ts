@@ -43,6 +43,8 @@ export type Lesson = {
   appliedAt?: number
   measure?: Measure
   revertRequested?: boolean
+  /** This session injected the apply request and the turn ended without `applied`. */
+  waiting?: boolean
   /** New strikes since a reject or revert that are not yet enough to reopen it; 0 otherwise. */
   muted: number
 }

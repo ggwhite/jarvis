@@ -302,6 +302,17 @@ const zhTW = {
   'lesson.text.corrected': '使用者糾正了 {type} 派工的結果；重述目標，回報前先自己檢查。',
   'lesson.apply':
     'Jarvis：使用者核准了教訓 {key}（{n} 次）：{text} 證據：{evidence}。記憶 #{id}。為它在 {file} 加一條命令式規則（{must} / NEVER），行尾加上 <!-- ev: #{id} -->，顯示 diff，然後呼叫 mcp__jarvis__lesson，op 為 "applied"、key 為 "{key}"、file 為 "<你編輯的檔案>"。如果別的檔案更合適，就改用它並說明原因。',
+  'lesson.tool.none': '沒有候選或已套用的教訓。',
+  'lesson.tool.row': '{key} — {state}，30 天內 {n} 次{measure}',
+  'lesson.tool.measure': '，{verdict}（之前 {before}，之後 {after}）',
+  'lesson.tool.applied': '已記錄：{key} 已套用到 {file}。',
+  'lesson.tool.reverted': '已記錄：{key} 已撤銷。',
+  'lesson.tool.badOp': 'error: 未知的 op「{op}」，可用 list、applied、reverted。',
+  'lesson.tool.needKey': 'error: reverted 需要 key。',
+  'lesson.tool.needFile': 'error: applied 需要 key 與 file。',
+  'lesson.tool.unknown': 'error: 沒有教訓 {key}。',
+  'lesson.tool.notApproved': 'error: {key} 的狀態是 {state}，不是 approved。',
+  'lesson.tool.notRevert': 'error: {key} 沒有待處理的撤銷請求。',
   'lesson.revert':
     'Jarvis：教訓 {key} 沒有幫助（之前 {before}，之後 {after}）。從 {file} 移除它的規則行（帶有 <!-- ev: #{id} --> 的那一行），顯示 diff，然後呼叫 mcp__jarvis__lesson，op 為 "reverted"、key 為 "{key}"。',
 } as const satisfies Record<string, string>
@@ -596,6 +607,17 @@ const en: Record<MsgKey, string> = {
   // {must} is the Chinese imperative word, filled in by lessons.ts so this text stays free of CJK
   'lesson.apply':
     'Jarvis: the user approved lesson {key} ({n}×): {text} Evidence: {evidence}. Memory #{id}. Add ONE imperative rule ({must} / NEVER) for it to {file}, ending with <!-- ev: #{id} -->, show the diff, then call mcp__jarvis__lesson with op "applied", key "{key}", file "<the file you edited>". If another file fits better, use it and say why.',
+  'lesson.tool.none': 'No candidate or applied lessons.',
+  'lesson.tool.row': '{key} — {state}, {n}× in 30d{measure}',
+  'lesson.tool.measure': ', {verdict} (before {before}, after {after})',
+  'lesson.tool.applied': 'Recorded: {key} applied to {file}.',
+  'lesson.tool.reverted': 'Recorded: {key} reverted.',
+  'lesson.tool.badOp': 'error: unknown op "{op}"; use list, applied or reverted.',
+  'lesson.tool.needKey': 'error: reverted needs key.',
+  'lesson.tool.needFile': 'error: applied needs key and file.',
+  'lesson.tool.unknown': 'error: no lesson {key}.',
+  'lesson.tool.notApproved': 'error: {key} is {state}, not approved.',
+  'lesson.tool.notRevert': 'error: {key} has no pending revert request.',
   'lesson.revert':
     'Jarvis: lesson {key} is not helping (before {before}, after {after}). Remove its rule line (the one with <!-- ev: #{id} -->) from {file}, show the diff, then call mcp__jarvis__lesson with op "reverted", key "{key}".',
 }
