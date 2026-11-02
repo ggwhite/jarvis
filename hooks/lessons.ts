@@ -303,7 +303,7 @@ export function suggestedFile(kind: FlagKind, type: string, home: string, agentF
 
 export function memoryArgv(home: string, l: Lesson): string[] {
   const text = `${lessonText(l.kind, l.type, l.family)} Evidence: ${l.evidence[0]?.desc ?? ''}`
-  return [`${home}/.local/bin/memory-mcp`, 'store', '--json', '-t', 'feedback', '--tags', `jarvis-lesson,${l.kind}`, text]
+  return [`${home}/.local/bin/memory-mcp`, 'store', '--json', '-t', 'feedback', '--tags', `jarvis-lesson,${l.kind}`, '--project', 'global', text]
 }
 
 /** The stored memory's id: the JSON `id` field, else the first number in the output. */

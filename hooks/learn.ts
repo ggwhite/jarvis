@@ -130,6 +130,9 @@ const percent = (rate: number, n: number): string => `${Math.round(rate * 100)}%
 
 const basename = (path: string): string => path.split('/').filter(Boolean).pop() ?? ''
 
+/** The last non-empty line of a command's output, trimmed to 120 chars (the real reason follows any usage text). */
+const lastLine = (out: string): string => out.split('\n').map(x => x.trim()).filter(x => x !== '').pop()?.slice(0, 120) ?? ''
+
 export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
   const { home, session, project } = opts
   const on = home !== ''
@@ -211,7 +214,7 @@ export function createLearn(io: LearnIo, opts: LearnOptions): Learn {
     const id = r && r.exitCode === 0 ? memoryIdOf(r.stdout) : undefined
     waiting.delete(key)
     if (id === undefined) {
-      event(key, 'memory-error', now, { error: r?.stderr.trim() || 'no id' })
+      event(key, 'memory-error', now, { error: (r ? lastLine(r.stderr) || lastLine(r.stdout) : '') || 'no id' })
       queued.delete(key)
       return
     }

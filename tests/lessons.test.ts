@@ -319,14 +319,13 @@ describe('suggestedFile', () => {
 })
 
 describe('memory-mcp', () => {
-  test('memoryArgv has no --project and uses the absolute binary', () => {
+  test('memoryArgv stores a global memory and uses the absolute binary', () => {
     const l = only(foldLessons(tinies(2, NOW - DAY), [], NOW))!
     const argv = memoryArgv('/h', l)
-    expect(argv.slice(0, 7)).toEqual(['/h/.local/bin/memory-mcp', 'store', '--json', '-t', 'feedback', '--tags', 'jarvis-lesson,tiny'])
-    expect(argv.length).toBe(8)
-    expect(argv).not.toContain('--project')
-    expect(argv[7]).toContain('Evidence: ')
-    expect(argv[7]!.endsWith(l.evidence[0]!.desc)).toBe(true)
+    expect(argv.slice(0, 9)).toEqual(['/h/.local/bin/memory-mcp', 'store', '--json', '-t', 'feedback', '--tags', 'jarvis-lesson,tiny', '--project', 'global'])
+    expect(argv.length).toBe(10)
+    expect(argv[9]).toContain('Evidence: ')
+    expect(argv[9]!.endsWith(l.evidence[0]!.desc)).toBe(true)
   })
 
   test('memoryIdOf reads JSON id and falls back to #123', () => {

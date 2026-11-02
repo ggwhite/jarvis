@@ -339,6 +339,17 @@ describe('learn: lessons', () => {
     expect(l.lessons(NOW).find(y => y.key === KEY)!.memoryError).toBe('no id')
   })
 
+  test('memory error keeps only the last non-empty stderr line, trimmed', async () => {
+    const io = fakeIo(candidateFs())
+    io.result = { exitCode: 1, stdout: '', stderr: `Usage: memory-mcp store [flags]\n  -t type\n\nError: ${'x'.repeat(200)}\n\n` }
+    const l = createLearn(io, opts())
+    await l.load(NOW)
+    await l.approve(KEY, NOW)
+    const e = l.lessons(NOW).find(y => y.key === KEY)!.memoryError!
+    expect(e.startsWith('Error: xxx')).toBe(true)
+    expect(e.length).toBe(120)
+  })
+
   test('inject after a failed approve has no apply request', async () => {
     const io = fakeIo(candidateFs())
     io.result = { exitCode: 1, stdout: '', stderr: 'boom' }
