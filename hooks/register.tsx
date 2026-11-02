@@ -1655,6 +1655,8 @@ export const register: Register = on => {
         const now = await $.clock.now()
         const id = e.agentId
         if (id === undefined) {
+          // a request the turn left unapplied now waits: the page shows Retry and Cancel
+          lessonsCache = undefined
           l.turnEnded()
         } else {
           const u = e.usage
@@ -1726,6 +1728,8 @@ export const register: Register = on => {
       const l = learn
       if (l && now !== undefined) {
         if (typed) l.prompt(e.text, now)
+        // what inject queues and marks injected changes what the page shows
+        lessonsCache = undefined
         const extra = l.inject(now)
         if (extra.length > 0) lessonContext = [extra.join('\n')]
       }

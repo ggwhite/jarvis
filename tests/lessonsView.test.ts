@@ -214,6 +214,8 @@ const world = (on: On, files = new Map<string, string>()) => {
   on('tool.call', async () => ({ result: {} as never }))
   on('tool.register', async (_$, e) => ({ value: { tool: `mcp__jarvis__${e.name}` } }))
   on('prompt.compose', async () => ({ sections: [] }))
+  on('prompt.submit', async (_$, e) => ({ text: e.text, ...(e.context === undefined ? {} : { context: e.context }) }))
+  on('turn.complete', async (_$, e) => ({ text: e.answer }))
   on('fs.read', async (_$, e) => {
     const t = files.get(e.path)
     if (t === undefined) throw new Error('ENOENT')
@@ -297,6 +299,26 @@ describe('lessons tab wired', () => {
       const events = w.files.get(lessonsFile(HOME, SESSION)) ?? ''
       expect(events).toContain('"kind":"approve"')
       expect(events).toContain('"kind":"memory"')
+    } finally {
+      setLocale('zh-TW')
+    }
+  })
+
+  test('a main turn that ends without applied shows Retry and Cancel at once', async ($, on) => {
+    const w = world(on, twoStrikes())
+    try {
+      await onLessons($, w)
+      const ui = await mount($)
+      await ui.press({ key: `lesson-approve-${KEY}` })
+      await ui.unmount()
+      await settle()
+      // drawn once while the request waits for the next prompt, so the page is cached
+      expect(buttonKeys(await drawOn($, 'terminal'))).not.toContain(`lesson-retry-${KEY}`)
+      await $.prompt.submit({ text: 'go on', wait: false, origin: { kind: 'composer' } } as never)
+      await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' } as never)
+      const keys = buttonKeys(await drawOn($, 'terminal'))
+      expect(keys).toContain(`lesson-retry-${KEY}`)
+      expect(keys).toContain(`lesson-cancel-${KEY}`)
     } finally {
       setLocale('zh-TW')
     }
