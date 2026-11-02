@@ -127,6 +127,14 @@ describe('foldLessons', () => {
     expect(again.memoryError).toBeUndefined()
   })
 
+  test('a stored memory after a failed one clears the error', () => {
+    const rows = tinies(2, NOW - 2 * DAY)
+    const events = [ev('approve', NOW - DAY), ev('memory-error', NOW - DAY + 1, { error: 'boom' }), ev('memory', NOW - DAY + 2, { memoryId: 7 })]
+    const l = only(foldLessons(rows, events, NOW))!
+    expect(l.memoryId).toBe(7)
+    expect(l.memoryError).toBeUndefined()
+  })
+
   test('events with the same time keep file order', () => {
     const rows = tinies(2, NOW - 2 * DAY)
     const l = only(foldLessons(rows, [ev('approve', NOW - DAY), ev('apply-cancel', NOW - DAY)], NOW))!

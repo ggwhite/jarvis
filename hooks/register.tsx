@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement, Timer } from 'claude-code'
 
-import type { FleetJumpError, FleetQuota, JarvisAgent, JarvisPage, JarvisTaskBoard, JarvisUi } from '../types'
+import type { FleetJumpError, FleetQuota, JarvisAgent, JarvisEvent, JarvisInflight, JarvisPage, JarvisTaskBoard, JarvisUi } from '../types'
 
 import {
   ANIM_MS,
@@ -15,6 +15,10 @@ import {
   bootStage,
   addEvent,
   buildCockpit,
+  costAt,
+  familyOf,
+  loopActors,
+  stuckAgents,
   describeCall,
   healthOfState,
   finishTurn,
@@ -29,6 +33,9 @@ import {
   MAIN_SOURCE,
 } from './jarvis'
 import type { Completion, EngineAgent } from './jarvis'
+import { createLearn } from './learn'
+import type { Learn } from './learn'
+import { LESSON_TOOL, LESSON_TOOL_SPEC } from './lessons'
 import { drawCockpit } from './cockpit'
 import type { Ctx } from './cockpit'
 import { desktopPage, drawDesktop } from './desktopView'
@@ -856,6 +863,7 @@ async function tickOnce(
   animating: (now: number) => Promise<boolean>,
   listing: { fails: number },
   seen: (now: number) => boolean,
+  slowBeat?: (list: readonly JarvisAgent[], evs: readonly JarvisEvent[], fl: readonly JarvisInflight[], now: number) => void,
 ): Promise<void> {
   try {
     const now = await $.clock.now()
@@ -876,15 +884,10 @@ async function tickOnce(
     pace(list, now, live)
     if (!due) return
     slow.at = now
-    const health = healthOfState(
-      {
-        agents: list,
-        main: await read($, main),
-        events: await read($, events),
-        inflight: await read($, inflight),
-      },
-      now,
-    )
+    const evs = await read($, events)
+    const fl = await read($, inflight)
+    const health = healthOfState({ agents: list, main: await read($, main), events: evs, inflight: fl }, now)
+    slowBeat?.(list, evs, fl, now)
     await reporter?.step(jarvisText(list, health), now)
   } catch {
     // a broken tick must never reach Claude's work
@@ -906,6 +909,8 @@ export const register: Register = on => {
   let cwd = ''
   let changesHome = ''
   let cacheDir = ''
+  // the learning loop's recorder, set once session.start has loaded what the ledger holds
+  let learn: Learn | undefined
   const repoCache = new Map<string, string | null>()
   // each file's original as its first edit settles it
   const origs = new Map<string, Promise<string>>()
@@ -1023,6 +1028,11 @@ export const register: Register = on => {
     } catch {
       // no board tool: the tasks page shows what the built-in task tools did
     }
+    try {
+      await $.tool.register(LESSON_TOOL_SPEC)
+    } catch {
+      // no lesson tool: lessons are still recorded and offered
+    }
 
     try {
       sessionStartedAt = await $.clock.now()
@@ -1055,6 +1065,26 @@ export const register: Register = on => {
     cwd = e.cwd
     changesHome = home
     try {
+      const now = await $.clock.now()
+      // a second start (a hot reload) writes down what the last recorder still holds
+      await learn?.flush(now)
+      learn = undefined
+      const session = await $.session.id()
+      const made = createLearn(
+        {
+          ...ioOf($),
+          list: async dir => (await $.fs.list(dir)).map(x => ({ name: x.name, kind: x.kind })),
+        },
+        { home, session, project: e.cwd.split('/').filter(Boolean).pop() ?? '' },
+      )
+      // a resumed session reads its own rows first, so no flush can write over them
+      await made.load(now, true)
+      learn = made
+      void made.backfill(now)
+    } catch {
+      // no recorder: the session runs as before
+    }
+    try {
       const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/+$/, '') || '/tmp'
       cacheDir = `${tmp}/claude-jarvis-changes/${crypto.randomUUID()}`
     } catch {
@@ -1076,6 +1106,16 @@ export const register: Register = on => {
             async now => booting(now) || (await tasksMoving($, now, drawnAt)),
             listing,
             now => now - drawnAt <= SEEN_MS,
+            (list, evs, fl, now) => {
+              const l = learn
+              if (!l) return
+              try {
+                l.health(loopActors(evs, new Set(runningOf(list).map(a => a.id))), stuckAgents(list, evs, fl, now))
+                if (l.due(now)) void l.flush(now)
+              } catch {
+                // bookkeeping only
+              }
+            },
           ),
         )
       } catch {
@@ -1314,6 +1354,19 @@ export const register: Register = on => {
           for (const c of parked) rows = finishTurn(rows, id, c, now)
           return rows
         })
+        try {
+          learn?.spawn({
+            id,
+            type: e.fork ? 'fork' : e.subagentType,
+            model,
+            background: e.background === true,
+            desc: e.description,
+            promptLen: e.prompt?.length ?? 0,
+            at: now,
+          })
+        } catch {
+          // bookkeeping only
+        }
         await update($, tick, t => ({ n: t.n + 1, now }))
         // a suit held still plays no deployment
         if ((await read($, suit)).paused !== true) await update($, suit, s => ({ ...s, deployedAt: now }))
@@ -1353,10 +1406,12 @@ export const register: Register = on => {
   // subagents each land on the board the last one left.
   on('tool.call', { tool: 'mcp__jarvis__task' }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
-    const box: { reply: TaskReply } = { reply: { error: tr('err.boardWrite') } }
+    const box: { reply: TaskReply; prev?: string } = { reply: { error: tr('err.boardWrite') } }
     const now = await stampNow($)
     try {
       await updateBoard($, b => {
+        // the subtask's agent before this call, for the learning loop's redispatch
+        box.prev = b.items.flatMap(i => i.subtasks).find(s => s.id === input['id'])?.agentId
         box.reply = applyTask(b, input, e.agentId, now)
         return 'error' in box.reply ? b : box.reply.board
       })
@@ -1364,7 +1419,25 @@ export const register: Register = on => {
       box.reply = { error: tr('err.boardWrite') }
     }
     const reply = box.reply
+    try {
+      const agent = input['agent']
+      const sub = input['id']
+      if (!('error' in reply) && typeof agent === 'string' && agent !== '' && typeof sub === 'string' && agent !== box.prev) {
+        learn?.subtask(agent, sub, box.prev)
+      }
+    } catch {
+      // bookkeeping only
+    }
     return 'error' in reply ? { deny: reply.error } : { result: reply.text }
+  })
+
+  // The learning loop's tool: list lessons, or record a rule applied or reverted.
+  on('tool.call', { tool: LESSON_TOOL }, async ($, e) => {
+    const input = e as unknown as Record<string, unknown>
+    const now = await stampNow($)
+    const l = learn
+    const text = l && now !== undefined ? l.toolCall(input, now) : tr('lesson.tool.none')
+    return text.startsWith('error:') ? { deny: text } : { result: text }
   })
 
   on('tool.call', async ($, e, next) => {
@@ -1493,6 +1566,11 @@ export const register: Register = on => {
       } catch {
         // the call itself already ran
       }
+      try {
+        if (id !== undefined) learn?.tool(id, ok)
+      } catch {
+        // bookkeeping only
+      }
     }
   })
 
@@ -1563,6 +1641,52 @@ export const register: Register = on => {
       }
     }
 
+    // the learning loop: a subagent's turn closes its row, a main-loop turn ends the wait for applied
+    try {
+      const l = learn
+      if (l) {
+        const now = await $.clock.now()
+        const id = e.agentId
+        if (id === undefined) {
+          l.turnEnded()
+        } else {
+          const u = e.usage
+          const model = u?.model || ((await read($, agents)).find(a => a.id === id)?.model ?? '')
+          const family = familyOf(model)
+          const cost =
+            u && family
+              ? costAt(
+                  {
+                    input: u.input_tokens ?? 0,
+                    output: u.output_tokens ?? 0,
+                    cacheRead: u.cache_read_input_tokens ?? 0,
+                    cacheWrite: u.cache_creation_input_tokens ?? 0,
+                  },
+                  family,
+                )
+              : undefined
+          l.finish(
+            id,
+            { reason: e.reason, durationMs: e.durationMs, ...(u ? { usage: u } : {}), answer: e.answer, ...(cost === undefined ? {} : { cost }) },
+            now,
+          )
+        }
+        if (l.due(now)) void l.flush(now)
+      }
+    } catch {
+      // bookkeeping only
+    }
+
+    return next(e)
+  })
+
+  // the session's end writes down what the recorder still holds
+  on('session.end', async ($, e, next) => {
+    try {
+      await learn?.flush(await $.clock.now())
+    } catch {
+      // bookkeeping only
+    }
     return next(e)
   })
 
@@ -1577,6 +1701,18 @@ export const register: Register = on => {
     // the item's id beside the prompt. A prompt another hook drops takes its item with it.
     const box: { id?: string; rid?: string } = {}
     const now = await stampNow($)
+    // candidate lessons and waiting rule requests, as one context string
+    let lessonContext: string[] = []
+    try {
+      const l = learn
+      if (l && now !== undefined) {
+        l.prompt(e.text, now)
+        const extra = l.inject(now)
+        if (extra.length > 0) lessonContext = [extra.join('\n')]
+      }
+    } catch {
+      // bookkeeping only
+    }
     try {
       // a slash command absorbed into a running turn comes as its bare line with no command
       const commands = slashName(e.text) === undefined ? new Set<string>() : await commandNames($)
@@ -1593,9 +1729,9 @@ export const register: Register = on => {
       // bookkeeping only
     }
     const id = box.id
-    if (id === undefined) return next(e)
+    if (id === undefined) return next(lessonContext.length > 0 ? { ...e, context: [...(e.context ?? []), ...lessonContext] } : e)
     const rid = box.rid
-    const out = await next({ ...e, context: [...(e.context ?? []), requestContext(id)] })
+    const out = await next({ ...e, context: [...(e.context ?? []), requestContext(id), ...lessonContext] })
     if (out.drop === undefined) {
       if (rid !== undefined) {
         // what entered, as another hook may have rewritten it, is all the small model sees

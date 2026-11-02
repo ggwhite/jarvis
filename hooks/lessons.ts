@@ -1,5 +1,5 @@
 import { type FlagKind, sessionFlags } from './flags'
-import { type MsgKey, t } from './i18n'
+import { type MsgKey, localized, t } from './i18n'
 import { type DispatchRow, dayKey } from './ledger'
 
 // Lessons: flag keys folded with the lesson event log into states, metrics and the texts Jarvis injects.
@@ -157,6 +157,7 @@ export function foldLessons(rows: readonly DispatchRow[], events: readonly Lesso
           break
         case 'memory':
           if (e.memoryId !== undefined) l.memoryId = e.memoryId
+          delete l.memoryError
           break
         case 'memory-error':
           if (e.error !== undefined) l.memoryError = e.error
@@ -317,3 +318,30 @@ export function memoryIdOf(stdout: string): number | undefined {
   const m = /#?(\d+)/.exec(stdout)
   return m ? Number(m[1]) : undefined
 }
+
+export const LESSON_TOOL_NAME = 'lesson'
+export const LESSON_TOOL = 'mcp__jarvis__lesson'
+
+const LESSON_OPS = ['list', 'applied', 'reverted'] as const
+
+const lessonToolSpec = () =>
+  ({
+    name: LESSON_TOOL_NAME,
+    description: t('lesson.tool.intro'),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: [...LESSON_OPS] },
+        key: { type: 'string', description: t('lesson.tool.key') },
+        file: { type: 'string', description: t('lesson.tool.file') },
+      },
+      required: ['op'],
+    },
+    isDeferred: false,
+  }) as const
+
+// the lesson tool, in the current locale
+export let LESSON_TOOL_SPEC: ReturnType<typeof lessonToolSpec>
+localized(() => {
+  LESSON_TOOL_SPEC = lessonToolSpec()
+})

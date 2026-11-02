@@ -308,8 +308,9 @@ declare module 'claude-code' {
     }
   }
 
-  // the board's own tool, registered at session.start
+  // the board's own tool and the lesson tool, registered at session.start
   interface McpToolInputs {
     mcp__jarvis__task: Record<string, unknown>
+    mcp__jarvis__lesson: Record<string, unknown>
   }
 }

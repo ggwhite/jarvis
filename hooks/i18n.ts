@@ -313,6 +313,9 @@ const zhTW = {
   'lesson.tool.unknown': 'error: 沒有教訓 {key}。',
   'lesson.tool.notApproved': 'error: {key} 的狀態是 {state}，不是 approved。',
   'lesson.tool.notRevert': 'error: {key} 沒有待處理的撤銷請求。',
+  'lesson.tool.intro': 'Jarvis 的派工教訓。op "list" 列出候選與已套用的教訓；套用使用者核准的教訓規則後，呼叫 op "applied" 並帶 key 與 file；移除沒幫助的規則後，呼叫 op "reverted" 並帶 key。',
+  'lesson.tool.key': '教訓的 key，例如 tiny:Explore:haiku。',
+  'lesson.tool.file': '你加入規則的檔案（applied 時必填）。',
   'lesson.revert':
     'Jarvis：教訓 {key} 沒有幫助（之前 {before}，之後 {after}）。從 {file} 移除它的規則行（帶有 <!-- ev: #{id} --> 的那一行），顯示 diff，然後呼叫 mcp__jarvis__lesson，op 為 "reverted"、key 為 "{key}"。',
 } as const satisfies Record<string, string>
@@ -618,6 +621,10 @@ const en: Record<MsgKey, string> = {
   'lesson.tool.unknown': 'error: no lesson {key}.',
   'lesson.tool.notApproved': 'error: {key} is {state}, not approved.',
   'lesson.tool.notRevert': 'error: {key} has no pending revert request.',
+  'lesson.tool.intro':
+    'Jarvis dispatch lessons. op "list" lists candidate and applied lessons; after adding the rule for a lesson the user approved, call op "applied" with key and file; after removing a rule that is not helping, call op "reverted" with key.',
+  'lesson.tool.key': 'The lesson key, e.g. tiny:Explore:haiku.',
+  'lesson.tool.file': 'The file you added the rule to (required for applied).',
   'lesson.revert':
     'Jarvis: lesson {key} is not helping (before {before}, after {after}). Remove its rule line (the one with <!-- ev: #{id} -->) from {file}, show the diff, then call mcp__jarvis__lesson with op "reverted", key "{key}".',
 }
