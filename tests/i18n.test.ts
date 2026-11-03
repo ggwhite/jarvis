@@ -357,7 +357,7 @@ describe('en wired', () => {
     await $.tool.call({ tool: 'Read', file_path: '/tmp/a.md' } as never)
     await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as never)
     await clock.settle()
-    const board = String((await $.tool.call({ tool: TASK_TOOL, op: 'list' } as never)).result)
+    const board = String((await $.tool.call({ tool: TASK_TOOL, op: 'list', all: true } as never)).result)
     expect(board).toContain('[x] 1 Add English locale support to the… →')
     expect(board).toContain('→ Shipped the English locale with plurals, word-boundary cuts and wider summary…')
     await pressOn($, 'terminal', 'tab-tasks')

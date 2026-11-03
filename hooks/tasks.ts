@@ -52,6 +52,7 @@ const taskToolSpec = () =>
         status: { type: 'string', enum: [...TASK_STATUSES] },
         title: { type: 'string', description: t('tool.title') },
         agent: { type: 'string', description: t('tool.agent') },
+        all: { type: 'boolean', description: t('tool.all') },
       },
       required: ['op'],
     },
@@ -229,7 +230,9 @@ export function applyTask(board: JarvisTaskBoard, input: Readonly<Record<string,
             : t('board.badOp', { ops: OPS.join(t('common.listSep')) })
   if (typeof next === 'string') return { error: next }
   const settled = planResults(board, next)
-  return { board: settled, text: boardText(settled) }
+  const text =
+    op === 'list' ? (input['all'] === true ? boardText(settled) : openText(settled)) : changeText(board, settled, op === 'remove')
+  return { board: settled, text }
 }
 
 // A request item's plan that completes drops any older result and owes a new one; one that
@@ -288,20 +291,44 @@ export const countsText = (c: BoardCounts): string => t('tasks.counts', c)
 
 const MARK: Record<JarvisTaskStatus, string> = { pending: '[ ]', in_progress: '[>]', completed: '[x]' }
 
-// The board as the model reads it, in the order added so the ids read in order; the request
-// being worked on is marked.
+const headLine = (board: JarvisTaskBoard): string => t('board.head', { counts: countsText(boardCounts(board)) })
+
+// An item's line and its subtasks' lines; `current` is the request being worked on, marked.
+function itemLines(item: JarvisTaskItem, current: JarvisTaskItem | undefined): string[] {
+  const result = item.result === undefined ? '' : ` → ${item.result}`
+  return [
+    `${MARK[itemStatus(item)]} ${item.id} ${item.title}${result}${item === current ? t('board.current') : ''}`,
+    ...item.subtasks.map(s => `  ${MARK[s.status]} ${s.id} ${s.title}${s.agentId === undefined ? '' : ` (agent ${s.agentId})`}`),
+  ]
+}
+
+// The whole board as the model reads it, in the order added so the ids read in order; the
+// request being worked on is marked. A list with all: true answers this.
 export function boardText(board: JarvisTaskBoard): string {
   if (board.items.length === 0) return t('board.empty')
   const current = currentRequest(board)
-  const lines = [t('board.head', { counts: countsText(boardCounts(board)) })]
-  for (const item of board.items) {
-    const result = item.result === undefined ? '' : ` → ${item.result}`
-    lines.push(`${MARK[itemStatus(item)]} ${item.id} ${item.title}${result}${item === current ? t('board.current') : ''}`)
-    for (const s of item.subtasks) {
-      lines.push(`  ${MARK[s.status]} ${s.id} ${s.title}${s.agentId === undefined ? '' : ` (agent ${s.agentId})`}`)
-    }
-  }
-  return lines.join('\n')
+  return [headLine(board), ...board.items.flatMap(i => itemLines(i, current))].join('\n')
+}
+
+// A plain list's answer: the unfinished items with their subtasks, and how many done items it
+// left out. The board itself keeps every item; the Tasks page draws them all.
+export function openText(board: JarvisTaskBoard): string {
+  const done = board.items.filter(i => itemStatus(i) === 'completed').length
+  if (done === 0) return boardText(board)
+  const current = currentRequest(board)
+  const open = board.items.filter(i => itemStatus(i) !== 'completed')
+  return [headLine(board), ...open.flatMap(i => itemLines(i, current)), t('board.doneHidden', { n: done })].join('\n')
+}
+
+// A change's answer: the counts, each item the change made or changed with its subtasks, and,
+// for a remove, each item it took off. An item an add dropped to make room is not named.
+export function changeText(before: JarvisTaskBoard, after: JarvisTaskBoard, removal: boolean): string {
+  const current = currentRequest(after)
+  const was = new Map(before.items.map(i => [i.id, i]))
+  const kept = new Set(after.items.map(i => i.id))
+  const touched = after.items.filter(i => was.get(i.id) !== i)
+  const gone = removal ? before.items.filter(i => !kept.has(i.id)).map(i => t('board.removed', { id: i.id })) : []
+  return [headLine(after), ...touched.flatMap(i => itemLines(i, current)), ...gone].join('\n')
 }
 
 // ---- the person's requests, recorded as they are sent ----

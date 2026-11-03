@@ -289,6 +289,74 @@ describe('task board status and order', () => {
   })
 })
 
+describe('task board replies: only what a call touched', () => {
+  const textOf = (r: TaskReply): string => {
+    if ('error' in r) throw new Error(r.error)
+    return r.text
+  }
+  // A and B done, C open
+  const three = () =>
+    build(
+      { op: 'add', item: 'A', subtasks: ['a1', 'a2'] },
+      { op: 'add', item: 'B' },
+      { op: 'add', item: 'C', subtasks: ['c1', 'c2'] },
+      { op: 'update', id: '1', status: 'completed' },
+      { op: 'update', id: '2', status: 'completed' },
+    )
+
+  test('update of a subtask answers its item and the counts line, nothing else', () => {
+    const r = applyTask(three(), { op: 'update', id: '3.1', status: 'in_progress', agent: 'agent-7' })
+    expect(textOf(r)).toBe(['任務看板（2/3 項目 · 細項 2/4）', '[>] 3 C', '  [>] 3.1 c1 (agent agent-7)', '  [ ] 3.2 c2'].join('\n'))
+  })
+
+  test('add answers the new or grown item; remove answers what is left, or that the item went', () => {
+    const b = three()
+    expect(textOf(applyTask(b, { op: 'add', item: 'D' }))).toBe(['任務看板（2/4 項目 · 細項 2/4）', '[ ] 4 D'].join('\n'))
+    expect(textOf(applyTask(b, { op: 'add', to: '3', subtasks: ['c3'] }))).toBe(
+      ['任務看板（2/3 項目 · 細項 2/5）', '[ ] 3 C', '  [ ] 3.1 c1', '  [ ] 3.2 c2', '  [ ] 3.3 c3'].join('\n'),
+    )
+    expect(textOf(applyTask(b, { op: 'remove', id: '3.2' }))).toBe(['任務看板（2/3 項目 · 細項 2/3）', '[ ] 3 C', '  [ ] 3.1 c1'].join('\n'))
+    expect(textOf(applyTask(b, { op: 'remove', id: '2' }))).toBe(['任務看板（1/2 項目 · 細項 2/4）', '已刪除 2'].join('\n'))
+  })
+
+  test('list answers the unfinished items and how many done ones it left out; all: true answers the whole board', () => {
+    const b = three()
+    const list = textOf(applyTask(b, { op: 'list' }))
+    expect(list).toBe(['任務看板（2/3 項目 · 細項 2/4）', '[ ] 3 C', '  [ ] 3.1 c1', '  [ ] 3.2 c2', '另有 2 個已完成項目未列出；list 帶 all: true 看全部'].join('\n'))
+    expect(list).not.toContain(' A')
+    expect(list).not.toContain(' B')
+    expect(textOf(applyTask(b, { op: 'list', all: true }))).toBe(boardText(b))
+    const open = build({ op: 'add', item: 'X' })
+    expect(textOf(applyTask(open, { op: 'list' }))).toBe(boardText(open))
+    expect(textOf(applyTask(EMPTY_BOARD, { op: 'list' }))).toBe('任務看板是空的。')
+  })
+
+  test('the board the Tasks page draws keeps every item; only the reply is cut', () => {
+    const b = three()
+    const r = applyTask(b, { op: 'update', id: '3.1', status: 'completed' })
+    const after = ok(r)
+    expect(after.items.length).toBe(3)
+    expect(after.items[0]).toBe(b.items[0])
+    expect(after.items[1]).toBe(b.items[1])
+    expect(boardSections(after).done.map(i => i.title)).toEqual(['B', 'A'])
+    expect(ok(applyTask(b, { op: 'list' }))).toBe(b)
+  })
+
+  test('on a big board (46 items, 311 subtasks, most done) an update answers in a few lines', () => {
+    let b = EMPTY_BOARD
+    for (let i = 1; i <= 46; i += 1) {
+      const n = i <= 35 ? 7 : 6
+      b = ok(applyTask(b, { op: 'add', item: `feature ${i}`, subtasks: Array.from({ length: n }, (_, k) => `step ${k + 1} of feature ${i}`) }))
+      if (i <= 41) b = ok(applyTask(b, { op: 'update', id: String(i), status: 'completed' }))
+    }
+    expect(boardCounts(b)).toEqual({ items: 46, itemsDone: 41, subtasks: 311, subtasksDone: 281 })
+    const text = textOf(applyTask(b, { op: 'update', id: '44.1', status: 'in_progress' }))
+    expect(text.split('\n').length).toBe(8)
+    expect(text.length).toBeLessThan(400)
+    expect(ok(applyTask(b, { op: 'update', id: '44.1', status: 'in_progress' })).items.length).toBe(46)
+  })
+})
+
 describe('task board requests', () => {
   const statusOf = (item: JarvisTaskItem | undefined) => itemStatus(item as JarvisTaskItem)
 
@@ -1026,7 +1094,7 @@ const startSession = ($: Engine) => $.session.start({ cwd: '/tmp', surface: 'ter
 const task = ($: Engine, input: Record<string, unknown>, agentId?: string) =>
   $.tool.call({ tool: TASK_TOOL, ...input, ...(agentId === undefined ? {} : { agentId }) } as never)
 
-const boardOf = async ($: Engine): Promise<string> => String((await task($, { op: 'list' })).result)
+const boardOf = async ($: Engine): Promise<string> => String((await task($, { op: 'list', all: true })).result)
 
 // a full prompt.compose input offering `tools`
 const composeFor = (tools: string[]) => ({
@@ -1073,6 +1141,10 @@ describe('task board tool', () => {
     const bad = await task($, { op: 'update', id: '9.9', status: 'completed' })
     expect(bad.deny).toContain('找不到')
     expect(await boardOf($)).toBe(String(added.result))
+    // a later change answers only the item it touched
+    await task($, { op: 'add', item: '寫文件' })
+    const updated = await task($, { op: 'update', id: '1.1', status: 'completed' })
+    expect(String(updated.result)).toBe(['任務看板（0/2 項目 · 細項 1/2）', '[>] 1 加看板', '  [x] 1.1 調查', '  [ ] 1.2 實作'].join('\n'))
   })
 
   test("a subagent's update marks the subtask its own", async ($, on) => {
