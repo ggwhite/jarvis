@@ -152,7 +152,7 @@ export function lessonRows(v: LessonsView, cols: number): LessonRow[] {
     ...candidates.flatMap(candidateRows),
     ...of('approved').map(l => approvedRow(l, v.session)),
     ...of('applied').map(appliedRow),
-    ...of('watching').map(l => plain([{ t: `${l.key}  ${t('lessons.strikes', { n: l.strikes })}`, color: THEME.muted }])),
+    ...of('watching').map(l => plain([{ t: `${l.key}  ${t('lessons.strikes', { n: l.strikes })}`, color: THEME.frame }])),
   ]
   if (listed.length === 0) listed.push(plain([{ t: t('lessons.none'), color: THEME.frame }]))
   const hidden = of('rejected').length + of('reverted').length
