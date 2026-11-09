@@ -119,7 +119,7 @@ Also:
 ## The learning loop
 
 <p align="center">
-  <img src="docs/images/learning-loop.png" alt="Record, flag, lesson, promote (you approve), measure — and back to record" width="100%">
+  <img src="docs/images/learning-loop.svg" alt="Record, flag, lesson, promote (you approve), measure — and back to record" width="100%">
 </p>
 
 1. **Record.** Every subagent dispatch is written to `~/.claude/jarvis/ledger/<day>/<session>.jsonl`: type, model, duration, tokens, tool errors, and how it ended. Each session writes only its own file, so parallel sessions never collide. On the first run, Jarvis backfills the last 14 days from your transcripts.
