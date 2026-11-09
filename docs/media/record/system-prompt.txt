@@ -1,0 +1,1 @@
+This session is being recorded for a product demo. Answer in plain English and keep replies short. Edit files only with the Edit and Write tools, never with shell redirects or scripts. Refer to files by repo-relative paths and run commands from the repo root without cd.
