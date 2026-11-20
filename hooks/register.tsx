@@ -1016,6 +1016,9 @@ export const register: Register = on => {
   // the 任務 page's window as last drawn on the cell grid; undefined while another page or the
   // desktop's own layout is drawn
   let tasksWindow: { top: number; max: number } | undefined
+  // any other page's window under the pinned title and tab bars as last drawn on the cell grid
+  // (max 0: the page fits); undefined while the 任務 page or Desktop is drawn
+  let pageWindow: { top: number; max: number } | undefined
 
   on('session.start', async ($, e, next) => {
     unknown.clear()
@@ -1811,11 +1814,16 @@ export const register: Register = on => {
         await update($, changes, () => [])
         // the commit tree, commit diff and stash diff pages go back to the repo list, as a diff page
         // does; the branches' gone and 只在遠端 groups fold; the 任務 page forgets its fold choices
-        // and goes back to its top
+        // and goes back to its top, as any page under the pinned bars does
+        pageWindow = undefined
         await update($, ui, (u): JarvisUi => {
-          const { goneOpen: _g, remoteOpen: _o, taskFolds: _t, taskTop: _p, ...kept } = u
+          const { goneOpen: _g, remoteOpen: _o, taskFolds: _t, taskTop: _p, pageTop: _q, ...kept } = u
           if (u.page !== 'commitTree' && u.page !== 'commitDiff' && u.page !== 'stashDiff')
-            return u.goneOpen === undefined && u.remoteOpen === undefined && u.taskFolds === undefined && u.taskTop === undefined
+            return u.goneOpen === undefined &&
+              u.remoteOpen === undefined &&
+              u.taskFolds === undefined &&
+              u.taskTop === undefined &&
+              u.pageTop === undefined
               ? u
               : kept
           const { commitRef: _r, repoBack: _b, repoView: _v, stashSha: _s, ...rest } = kept
@@ -1829,14 +1837,24 @@ export const register: Register = on => {
   })
 
   // The wheel over the 任務 page scrolls its board within the card while the board is taller
-  // than it; anywhere else the engine moves its own window.
+  // than it; over any other page taller than the rows under the pinned title and tab bars it
+  // moves the page under them; anywhere else the engine moves its own window.
   on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     const w = tasksWindow
-    if (w === undefined || w.max === 0 || (await read($, ui)).page !== 'tasks') return next(e)
-    const top = Math.min(w.max, Math.max(0, w.top + e.by))
-    if (top !== w.top) {
-      tasksWindow = { ...w, top }
-      await update($, ui, u => ({ ...u, taskTop: top }))
+    if (w !== undefined && w.max > 0 && (await read($, ui)).page === 'tasks') {
+      const top = Math.min(w.max, Math.max(0, w.top + e.by))
+      if (top !== w.top) {
+        tasksWindow = { ...w, top }
+        await update($, ui, u => ({ ...u, taskTop: top }))
+      }
+      return {}
+    }
+    const p = pageWindow
+    if (p === undefined || p.max === 0) return next(e)
+    const top = Math.min(p.max, Math.max(0, p.top + e.by))
+    if (top !== p.top) {
+      pageWindow = { ...p, top }
+      await update($, ui, u => ({ ...u, pageTop: top }))
     }
     return {}
   })
@@ -1865,6 +1883,7 @@ export const register: Register = on => {
     const shown = await read($, ui)
     const board = shown.page === 'tasks' ? await read($, tasks) : undefined
     tasksWindow = undefined
+    pageWindow = undefined
     // a pane in view with a squad member running (not waiting), booting, or a tasks page whose
     // work moves animates at once, not at the next idle tick
     drawnAt = now
@@ -2021,29 +2040,21 @@ export const register: Register = on => {
     }
     const total = await read($, eventTotal)
     // what a press changes, written from its onPress (state is not written while drawing)
-    // a press that changes the page starts the new one at its top: a page taller than the pane
-    // is scrolled by the engine's window, which would otherwise stay where the last page left it.
-    // Desktop fits each page to its rows and keeps its window as it was
-    const toTop = e.surface !== 'desktop'
+    // a press that changes the page starts the new one at its top: the first row shown under
+    // the pinned title and tab bars, the last page's, is dropped in the same write
     const setUi = (fn: (u: JarvisUi, recorded: number) => JarvisUi) => {
       void (async () => {
-        let moved = false
         try {
           const recorded = await read($, eventTotal)
           await update($, ui, u => {
             const next = fn(u, recorded)
-            moved = next.page !== u.page
-            return next
+            if (next.page === u.page) return next
+            pageWindow = undefined
+            const { pageTop: _q, ...rest } = next
+            return rest
           })
         } catch {
           // the pane stays as it was
-          return
-        }
-        if (!moved || !toTop) return
-        try {
-          await $.ui.scroll({ in: PANE, to: 'start' })
-        } catch {
-          // the window stays where it was
         }
       })()
     }
@@ -2154,6 +2165,10 @@ export const register: Register = on => {
       agentId: shown.agentId,
       paused: shown.paused,
       fresh: shown.paused ? Math.max(0, total - shown.pausedTotal) : 0,
+      ...(shown.pageTop === undefined ? {} : { pageTop: shown.pageTop }),
+      pageDrawn: (top: number, max: number) => {
+        pageWindow = { top, max }
+      },
       go: (page: JarvisPage) => setUi(u => ({ ...u, page })),
       open: (agentId: string, from?: JarvisPage) =>
         setUi(u => {

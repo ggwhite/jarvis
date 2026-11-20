@@ -1624,9 +1624,19 @@ const mainCard = (tree: Node): Node => cardOf(tree, /^[\uE000-\uF8FF] MAIN LINE/
 
 const TITLES = /^[\uE000-\uF8FF] (主線|派工流程|模型|省錢|子代理|進行中|最近事件|事件流|MAIN LINE|DISPATCH|MODELS)$/
 
+// the window a page taller than the pane is drawn in under the pinned title and tab bars: a Box
+// that clips with no border (a Desktop card clips inside its border)
+const isPageWindow = (n: Node): boolean => n.type === 'Box' && n.props?.['overflow'] === 'hidden' && n.props?.['borderStyle'] === undefined
+
+// the pane's top-level blocks, in order; the blocks of a page drawn in a window among them
+const paneBlocks = (tree: Node): (Node | string)[] =>
+  (tree.children ?? []).flatMap(k =>
+    typeof k !== 'string' && isPageWindow(k) ? (k.children ?? []).flatMap(w => (typeof w === 'string' ? [] : (w.children ?? []))) : [k],
+  )
+
 // the card titles each top-level block of the pane holds, in order: what shares a row
 const blockTitles = (tree: Node): string[][] =>
-  (tree.children ?? []).map(k => (typeof k === 'string' ? [] : findAllText(k, TITLES).map(t => unIcon(textOf(t)))))
+  paneBlocks(tree).map(k => (typeof k === 'string' ? [] : findAllText(k, TITLES).map(t => unIcon(textOf(t)))))
 
 // the rows of the card titled MODELS, as drawn, and the cells inside its border
 const modelCard = (tree: Node): { rows: string[]; inner: number } => {
@@ -3534,10 +3544,11 @@ describe('live check 3', () => {
 })
 
 describe('stats dashboard', () => {
-  // the rows the pane takes: a box of a set height takes it, a row the tallest of its
-  // children, a column their sum, a line one
+  // the rows the page takes: a box of a set height takes it, a row the tallest of its
+  // children, a column their sum, a line one; a page window the whole page it holds
   const paneRows = (n: Node | string): number => {
     if (typeof n === 'string' || n.type === 'Text') return 1
+    if (isPageWindow(n)) return (n.children ?? []).map(paneRows).reduce((a, b) => a + b, 0)
     const h = Number(n.props?.['height'])
     if (Number.isFinite(h) && h > 0) return h
     const kids = (n.children ?? []).map(paneRows)
@@ -3699,7 +3710,7 @@ describe('stats dashboard', () => {
     await press($, 'tab-stats')
     for (const [rows, cols] of [[20, 65], [18, 44]] as const) {
       const tree = await draw($, rows, cols)
-      const dispatch = (tree.children ?? []).find(k => typeof k !== 'string' && findText(k, /^[\uE000-\uF8FF] DISPATCH$/)) as Node
+      const dispatch = paneBlocks(tree).find(k => typeof k !== 'string' && findText(k, /^[\uE000-\uF8FF] DISPATCH$/)) as Node
       const card = (dispatch.children ?? [])[0] as Node
       const lines = (card.children ?? []).map(k => (typeof k === 'string' ? k : textOf(k)))
       // the title, then a row a role: the five and other (Plan)
@@ -3920,10 +3931,11 @@ describe('stats HUD', () => {
   })
 })
 
-// rows the pane draws: a card its own height, a row its tallest, a column the sum; a Button's
-// texts on one row
+// rows the page draws: a card its own height, a row its tallest, a column the sum; a Button's
+// texts on one row; a page window the whole page it holds, the rows past the pane included
 const paneRowsOf = (n: Node | string): number => {
   if (typeof n === 'string' || n.type === 'Text' || n.type === 'Button') return 1
+  if (isPageWindow(n)) return (n.children ?? []).map(paneRowsOf).reduce((a, b) => a + b, 0)
   const h = Number(n.props?.['height'])
   if (Number.isFinite(h) && h > 0) return h
   const kids = (n.children ?? []).map(paneRowsOf)
@@ -6338,5 +6350,140 @@ describe('pages taller than the pane draw in full for the engine to scroll', () 
     const tree = await draw($, 20, 80)
     expect(jobs(tree)).toHaveLength(30)
     expect(findText(tree, /還有/)).toBeUndefined()
+  })
+})
+
+describe('the title and tab bars stay pinned while a taller page scrolls under them', () => {
+  // the rows as a terminal paints them: a row Box side by side, a column stacked, a bordered
+  // card its two border rows around what it holds, a Box with a height cut or padded to it, a
+  // Box's margin above moving it (negative: up) within a parent whose overflow is hidden
+  const paint = (n: Node | string): string[] => {
+    if (typeof n === 'string' || n.type === 'Text' || n.type === 'Button') return [textOf(n)]
+    const kids = (n.children ?? []).map(paint)
+    let out: string[]
+    if (n.props?.flexDirection === 'row') {
+      const tall = Math.max(0, ...kids.map(k => k.length))
+      out = Array.from({ length: tall }, (_, i) => kids.map(k => k[i] ?? '').join(''))
+    } else out = kids.flat()
+    const h = Number(n.props?.['height'])
+    const fit = (rs: string[], k: number) => [...rs.slice(0, k), ...Array<string>(Math.max(0, k - rs.length)).fill('')]
+    if (n.props?.['borderStyle'] !== undefined) out = ['╭', ...(Number.isFinite(h) ? fit(out, h - 2) : out), '╰']
+    else if (Number.isFinite(h) && h > 0) out = fit(out, h)
+    const m = Number(n.props?.['marginTop'] ?? 0)
+    if (m < 0) out = out.slice(-m)
+    else if (m > 0) out = [...Array<string>(m).fill(''), ...out]
+    return out
+  }
+  const nodesOf = (n: Node | string, pred: (x: Node) => boolean): Node[] =>
+    typeof n === 'string' ? [] : [...(pred(n) ? [n] : []), ...(n.children ?? []).flatMap(k => nodesOf(k, pred))]
+  // the window's two Boxes: the one that clips and the one moved up within it
+  const windowed = (tree: Node) => nodesOf(tree, x => x.props?.['overflow'] === 'hidden' || typeof x.props?.['marginTop'] === 'number')
+  const wheel = ($: Engine, by: number) =>
+    $.ui.scroll({ component: 'Pane', requestId: 'jarvis', offset: 0, by, bodyRows: 30, contentRows: 30, origin: { kind: 'person' } })
+  const tallNow = async ($: Engine) => {
+    for (let i = 1; i <= 25; i += 1) await $.agent.spawn(spawnIn(`job ${i}`, 'worker'))
+    for (let i = 1; i <= 19; i += 1) await $.turn.complete(complete(`agent-${i}`))
+    await $.tool.call({ tool: 'Read', file_path: '/a/one.ts' })
+  }
+  const calls = async ($: Engine, n: number) => {
+    for (let i = 0; i < n; i += 1) await $.tool.call({ tool: 'Read', file_path: `/f/item${i}.ts` })
+  }
+
+  test('now: 25 subagents in 30 rows draw exactly 30 rows, the title and tab bars first', async ($, on) => {
+    engineAll(on)
+    await tallNow($)
+    const tree = await draw($, 30, 80)
+    // the pane its 30 rows: the two bars over a window of 28, the page in it taller
+    const win = nodesOf(tree, isPageWindow)
+    expect(win.map(w => w.props?.['height'])).toEqual([28])
+    expect(paneRowsOf(tree)).toBeGreaterThan(30)
+    const rows = paint(tree)
+    expect(rows).toHaveLength(30)
+    expect(rows[0]).toContain('J.A.R.V.I.S.')
+    expect(rows[1]).toContain('現況')
+    expect(rows[1]).toContain('事件')
+    // every finished subagent is still in the tree, the ones past the window too
+    expect(findAllText(tree, /^job \d+\s*$/)).toHaveLength(25)
+  })
+
+  test('now: the wheel moves the body under the pinned bars, clamped at either end', async ($, on) => {
+    engineAll(on)
+    await tallNow($)
+    const first = paint(await draw($, 30, 80))
+    expect(await wheel($, 5)).toEqual({})
+    const moved = paint(await draw($, 30, 80))
+    expect(moved).toHaveLength(30)
+    expect(moved.slice(0, 2)).toEqual(first.slice(0, 2))
+    expect(moved.slice(2, 25)).toEqual(first.slice(7, 30))
+    expect(moved.slice(2)).not.toEqual(first.slice(2))
+    // to the end: one more tick moves nothing, one back moves a row
+    expect(await wheel($, 1000)).toEqual({})
+    const end = paint(await draw($, 30, 80))
+    expect(end).toHaveLength(30)
+    expect(end.slice(0, 2)).toEqual(first.slice(0, 2))
+    expect(end[end.length - 1]).toBe('╰')
+    expect(await wheel($, 1)).toEqual({})
+    expect(paint(await draw($, 30, 80))).toEqual(end)
+    await wheel($, -1)
+    const back = paint(await draw($, 30, 80))
+    expect(back.slice(0, 2)).toEqual(first.slice(0, 2))
+    expect(back.slice(3)).toEqual(end.slice(2, 29))
+    await wheel($, -1000)
+    expect(paint(await draw($, 30, 80))).toEqual(first)
+  })
+
+  test('a page that fits draws no window and leaves the wheel to the engine', async ($, on) => {
+    engineAll(on)
+    const seen: number[] = []
+    on('ui.scroll', async (_$, e) => (seen.push(e.by), {}))
+    for (let i = 1; i <= 4; i += 1) await $.agent.spawn(spawnIn(`job ${i}`, 'worker'))
+    for (let i = 1; i <= 2; i += 1) await $.turn.complete(complete(`agent-${i}`))
+    const tree = await draw($, 40, 80)
+    expect(windowed(tree)).toHaveLength(0)
+    expect(paneRowsOf(tree)).toBeLessThanOrEqual(40)
+    await wheel($, 1)
+    expect(seen).toEqual([1])
+  })
+
+  test('a tab press starts the new page at its top', async ($, on) => {
+    engineAll(on)
+    await tallNow($)
+    await calls($, 40)
+    await draw($, 30, 80)
+    expect(await wheel($, 5)).toEqual({})
+    await press($, 'tab-log', 30, 80)
+    const log = paint(await draw($, 30, 80))
+    expect(log).toHaveLength(30)
+    expect(log[2]).toBe('╭')
+    expect(log[3]).toContain('事件')
+  })
+
+  test('a /clear starts the page at its top', async ($, on) => {
+    engineAll(on)
+    on('classic.SessionStart', async () => ({}))
+    await calls($, 40)
+    await press($, 'tab-log', 30, 80)
+    const top = paint(await draw($, 30, 80))
+    expect(top[2]).toBe('╭')
+    expect(await wheel($, 5)).toEqual({})
+    expect(paint(await draw($, 30, 80))[2]).not.toBe('╭')
+    await $.classic.SessionStart({ source: 'clear' } as never)
+    await calls($, 40)
+    const after = paint(await draw($, 30, 80))
+    expect(after[2]).toBe('╭')
+    expect(after[3]).toContain('事件')
+  })
+
+  test("Desktop keeps fitting its rows: no window, the wheel the engine's", async ($, on) => {
+    engineAll(on)
+    mock.env(on, { JARVIS_DESKTOP_LAYOUT: 'cells' })
+    const seen: number[] = []
+    on('ui.scroll', async (_$, e) => (seen.push(e.by), {}))
+    await tallNow($)
+    const desk = { surface: 'desktop' as const, component: 'Pane' as const, requestId: 'jarvis', viewport: { columns: 100, rows: 40 }, props: PANE_PROPS(30, 80) }
+    const tree = (await $.ui.render(desk)) as RenderElement as Node
+    expect(nodesOf(tree, x => typeof x.props?.['marginTop'] === 'number')).toHaveLength(0)
+    await wheel($, 1)
+    expect(seen).toEqual([1])
   })
 })

@@ -239,6 +239,11 @@ export type Ctx = {
   taskTop?: number
   scrollTasks?: (top: number) => void
   tasksDrawn?: (top: number, max: number) => void
+  // off Desktop, a page taller than the rows under the title and tab bars: its first row shown
+  // under them, and the window as drawn (its clamped first row and the last it can be, 0 when
+  // the page fits), for the wheel
+  pageTop?: number
+  pageDrawn?: (top: number, max: number) => void
   // the Lessons page: what it shows, read only while it is drawn, and the press that acts on a lesson
   lessons?: LessonsView
   lessonAct?: (op: LessonOp, key: string) => void
@@ -2857,6 +2862,31 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
 
   // held still, the suit asks for no frames
   ctx.onStandby?.(standby, suitPaused || svgOn ? undefined : suitRests ? SUIT_REST_TICK_MS : SUIT_TICK_MS)
+
+  // off Desktop, a page taller than the rows under the title and tab bars shows a window of
+  // them, moved by the wheel, the two bars pinned over it: the pane is its rows tall and the
+  // engine has nothing to scroll. The 任務 page scrolls its board within its own card.
+  const [titleRow, tabRow, ...body] = blocks
+  const headH = (titleRow?.h ?? 0) + (tabRow?.h ?? 0)
+  const bodyH = body.reduce((n, b) => n + b.h, 0) + (footer ? 1 : 0)
+  const windowRows = rows - headH
+  const pageMax = grow && page !== 'tasks' && windowRows > 0 ? Math.max(0, bodyH - windowRows) : 0
+  const pageTop = Math.min(pageMax, Math.max(0, ctx.pageTop ?? 0))
+  ctx.pageDrawn?.(pageTop, pageMax)
+  if (pageMax > 0) {
+    return (
+      <Box flexDirection="column">
+        {titleRow?.node}
+        {tabRow?.node}
+        <Box height={windowRows} overflow="hidden" flexDirection="column" flexShrink={0}>
+          <Box marginTop={-pageTop} flexDirection="column" flexShrink={0}>
+            {body.map(b => b.node)}
+            {footer ?? null}
+          </Box>
+        </Box>
+      </Box>
+    )
+  }
 
   return (
     <Box flexDirection="column">

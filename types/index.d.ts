@@ -284,6 +284,9 @@ export type JarvisUi = {
   // the 任務 page's first row shown when its board is taller than the card (absent: the top);
   // a /clear forgets it
   taskTop?: number
+  // off Desktop, the first row shown under the title and tab bars of a page taller than the
+  // pane (absent: the top); a page change or a /clear goes back to the top
+  pageTop?: number
 }
 
 declare module 'claude-code' {

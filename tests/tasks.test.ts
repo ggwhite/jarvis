@@ -1665,6 +1665,19 @@ describe('task board page', () => {
     expect(linesOf(await draw($))).toEqual(top)
   })
 
+  test('a board taller than the card draws in the pane as before: no page window moved around it', async ($, on) => {
+    world(on)
+    await tallTask($)
+    await openTasks($)
+    const marked = (n: Node | string): number =>
+      typeof n === 'string' ? 0 : (typeof n.props?.['marginTop'] === 'number' ? 1 : 0) + (n.children ?? []).reduce((s: number, k) => s + marked(k), 0)
+    expect(marked(await draw($))).toBe(0)
+    await wheel($, 3)
+    const root = await draw($)
+    expect(marked(root)).toBe(0)
+    expect(linesOf(root).some(l => l.includes('上面還有 3 列'))).toBe(true)
+  })
+
   test('the wheel on a board that fits, or on another page, is the engine\'s', async ($, on) => {
     world(on)
     const seen: number[] = []
