@@ -3667,13 +3667,21 @@ describe('stats dashboard', () => {
   test('short of rows: every role is still drawn, never … 還有 N 種; never past the width', async ($, on) => {
     engineAll(on)
     await press($, 'tab-stats')
-    const full = linesOf(await draw($, 60, 80)).length
-    for (const [rows, cols] of [[20, 80], [16, 120], [14, 50], [30, 64], [21, 80]] as const) {
+    // the whole page's height at each width, as a pane with rows to spare draws it
+    const fullAt = new Map<number, number>()
+    for (const cols of [80, 120, 50, 64]) fullAt.set(cols, paneRowsOf(await draw($, 60, cols)))
+    for (const [rows, cols] of [[20, 80], [16, 120], [14, 50], [30, 64], [21, 80], [40, 80], [40, 50]] as const) {
       const tree = await draw($, rows, cols)
+      const full = fullAt.get(cols) ?? 0
       expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
       expect(linesOf(tree).some(l => /還有 \d+ 種/.test(l))).toBe(false)
-      if (cols === 80) expect([rows, linesOf(tree).length]).toEqual([rows, Math.max(full, linesOf(tree).length)])
+      // fitting, within the rows as before; short, the whole page, no row more or less
+      expect([rows, cols, paneRowsOf(tree)]).toEqual([rows, cols, full])
+      if (full <= rows) expect([rows, cols, paneRowsOf(tree) <= rows]).toEqual([rows, cols, true])
     }
+    // both kinds are covered: a fitting pane and a short one
+    expect([...fullAt.values()].some(h => h <= 40)).toBe(true)
+    expect([...fullAt.values()].some(h => h > 14)).toBe(true)
   })
 
   test('where one dispatch row once fit: every role on its own row, ▶ for those running, not … 還有 N 種', async ($, on) => {
@@ -3699,6 +3707,15 @@ describe('stats dashboard', () => {
       expect(lines.join('\n')).not.toMatch(/還有/)
       for (const [i, role] of ['Explore', 'clerk', 'worker', 'verifier', 'fork'].entries()) expect([cols, (lines[i + 1] ?? '').includes(role)]).toEqual([cols, true])
       for (const l of lines) expect(cellWidth(l)).toBeLessThanOrEqual(cols - 4)
+      // each row's icon in the accent while its role runs (fork, other), else the frame gold;
+      // its name in the role's color
+      const roles = ['Explore', 'clerk', 'worker', 'verifier', 'fork', 'other'] as const
+      for (const [i, role] of roles.entries()) {
+        const row = (card.children ?? [])[i + 1] as Node
+        const [icon, name] = findAllText(row, /\S/)
+        expect([cols, role, icon?.props?.color]).toEqual([cols, role, role === 'fork' || role === 'other' ? THEME.accent : THEME.frame])
+        expect([cols, role, name?.props?.color]).toEqual([cols, role, ROLE_COLOR[role]])
+      }
       expect(lines[5]).toMatch(/▶1/)
       expect(findText(card, /^▶1$/)?.props?.color).toBe(THEME.accent)
     }

@@ -1247,15 +1247,23 @@ describe('fleet page', () => {
     const w = sampleWorld({ panes: [...SAMPLE_PANES, ...idle] })
     const clock = fleetEngine(on, w)
     await openFleet($, clock)
+    const seen = { fits: 0, short: 0 }
     for (const cols of [40, 44, 65, 100]) {
+      // the tightest stage drawn whole: what a pane too short for any stage draws
+      const least = linesOf(await draw($, 3, cols)).length
       for (const rows of [8, 10, 14, 24, 45]) {
         const tree = await draw($, rows, cols)
         expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
         const lines = linesOf(tree)
         expect([cols, rows, /還有 \d+ 艘/.test(lines.join('\n'))]).toEqual([cols, rows, false])
-        if (rows === 45) expect(lines.length).toBeLessThanOrEqual(rows)
+        // where a stage fits, inside the rows; where none does, the tightest whole, no row more
+        if (rows >= least) expect([cols, rows, lines.length <= rows]).toEqual([cols, rows, true])
+        else expect([cols, rows, lines.length]).toEqual([cols, rows, least])
+        seen[rows >= least ? 'fits' : 'short'] += 1
       }
     }
+    // both kinds are covered: panes a stage fits and panes none does
+    expect(seen.fits > 0 && seen.short > 0).toBe(true)
   })
 
   test('suits past 9 are a click away like the rest: no number drawn, no hotkey, no wider', async ($, on) => {
