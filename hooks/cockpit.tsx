@@ -456,6 +456,9 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   // Desktop draws the charts as pictures; any other surface, or a missing Svg, their glyphs
   const SvgEl = ctx.svg === true ? ui.Svg : undefined
   const svgOn = SvgEl !== undefined
+  // a page with more than its rows draws all of it, taller than the pane, for the engine to
+  // scroll; Desktop keeps fitting its rows
+  const grow = ctx.svg !== true
 
   const textNode = (s: Seg) => <Text {...style(s)}>{s.t}</Text>
 
@@ -1575,7 +1578,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     }
 
     const top: Line[] = [head, ...groups.map(modelRow), [{ t: '─'.repeat(inner), color: MUTED }]]
-    const height = Math.max(room, top.length + 3)
+    const height = Math.max(room, top.length + 3, grow ? top.length + 2 + runs.length : 0)
     const fit = Math.max(1, height - 2 - top.length)
     const list: Line[] =
       runs.length > fit
@@ -1643,7 +1646,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
   }
 
   // The legion: the busy suits first (cards or lines), then the idle (cards, lines or the
-  // summary), numbered in that order; cut by rows with a count when even lines do not fit.
+  // summary), numbered in that order; on Desktop cut by rows with a count when even lines do
+  // not fit, elsewhere drawn whole for the engine to scroll.
   // Desktop: a blank row between two cards (a row of idle cards one), when the page has the
   // rows for them all.
   const legionBlocks = (plan: FleetPlan, active: FleetSession[], idle: FleetSession[], room: number): Block[] => {
@@ -1682,7 +1686,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       }
     }
     const height = units.reduce((h, u) => h + u.b.h, 0)
-    if (plan.cut === undefined) {
+    if (plan.cut === undefined || grow) {
       const between = units.map((u, i) => i > 0 && u.card === true && units[i - 1]?.card === true)
       const gap = svgOn && plan.height + between.filter(Boolean).length <= room
       return units.flatMap((u, i) => (gap && between[i] ? [gapBlock(), u.b] : [u.b]))
@@ -2195,11 +2199,11 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       else if (g.entries.length === 0) body.push([sp(1), { t: g.pending ? tr('common.computing') : tr('changes.noUnpushed'), color: MUTED }])
       for (const e of g.entries) body.push(fileLine(e))
     }
-    const height = Math.max(6, room)
+    const beyond = cv.mode === 'session' ? Math.max(0, cv.total - MAX_LISTED) : 0
+    const height = Math.max(6, room, grow ? 2 + lines.length + body.length + (beyond > 0 ? 1 : 0) : 0)
     const fit = Math.max(1, height - 2 - lines.length)
     // file rows are the ready nodes (Buttons); a cut list says how many files it left out,
     // those past MAX_LISTED included
-    const beyond = cv.mode === 'session' ? Math.max(0, cv.total - MAX_LISTED) : 0
     if (body.length + (beyond > 0 ? 1 : 0) > fit) {
       const shownFiles = body.slice(0, fit - 1).filter(l => !Array.isArray(l)).length
       lines.push(...body.slice(0, fit - 1), [{ t: tr('changes.moreFiles', { n: files - shownFiles + beyond }), color: FRAME }])
@@ -2774,7 +2778,9 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     let shown = least
     while (shown < finishedUnits.length && listHeight(shown + 1) + recentRoom() <= room) shown += 1
     if (withRecent) recent = Math.max(recent, Math.min(total, room - listHeight(shown) - 3))
-    blocks.push(...(suit ? [suit] : []), agentBlock(shown, listHeight(shown)), ...gaps(listGap), flight)
+    // short of rows, every finished subagent is still listed, the cards after it as they were
+    const listedFinished = grow ? finishedUnits.length : shown
+    blocks.push(...(suit ? [suit] : []), agentBlock(listedFinished, listHeight(listedFinished)), ...gaps(listGap), flight)
     if (withRecent)
       blocks.push(...gaps(recentGap), eventCard([title(TITLE_ICON.recent, tr('title.recent'), PRIMARY)], view.events, recentH(recent), tr('log.noCalls'), false))
   } else if (page === 'log') {
@@ -2788,7 +2794,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
       [{ t: tr('log.total', { total, max: MAX_EVENTS }), color: FRAME }],
       cols - 4,
     )
-    blocks.push(eventCard(head, list, Math.max(MIN_EVENT_ROWS + 3, left()), tr('log.noCalls'), true))
+    blocks.push(eventCard(head, list, Math.max(MIN_EVENT_ROWS + 3, left(), grow ? eventRows(list).length + 3 : 0), tr('log.noCalls'), true))
   } else if (page === 'detail' && selected) {
     blocks.push(detailBlock(selected))
     const own = view.events.filter(ev => ev.actor === selected.id)
@@ -2799,7 +2805,7 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     )
     const gap = left() - cardGap >= MIN_EVENT_ROWS + 3 ? cardGap : 0
     blocks.push(...gaps(gap))
-    blocks.push(eventCard(head, own, Math.max(MIN_EVENT_ROWS + 3, left()), tr('log.subagentNoCalls'), true, false))
+    blocks.push(eventCard(head, own, Math.max(MIN_EVENT_ROWS + 3, left(), grow ? eventRows(own).length + 3 : 0), tr('log.subagentNoCalls'), true, false))
   } else if (page === 'roleDetail' && roleShown) {
     blocks.push(roleBlock(roleShown, left()))
   } else if (page === 'fleet') {
@@ -2822,7 +2828,8 @@ export function drawCockpit(ui: Ui, view: Cockpit, ctx: Ctx): RenderElement {
     blocks.push(lessonsBlock(left()))
   } else {
     const hint = view.summary.groups.length === 0
-    const shape = { cols, room: left() - (hint ? 1 : 0), roles: statsRoles.length, models: view.models.length }
+    // every role drawn however few the rows, but on Desktop
+    const shape = { cols, room: grow ? Infinity : left() - (hint ? 1 : 0), roles: statsRoles.length, models: view.models.length }
     const full = planStats(shape)
     // Desktop: a blank row between the stacked cards, the dispatch roles cut to make room;
     // left out when even the cut cards would not fit with them

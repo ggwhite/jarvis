@@ -2021,13 +2021,27 @@ export const register: Register = on => {
     }
     const total = await read($, eventTotal)
     // what a press changes, written from its onPress (state is not written while drawing)
+    // a press that changes the page starts the new one at its top: a page taller than the pane
+    // is scrolled by the engine's window, which would otherwise stay where the last page left it
     const setUi = (fn: (u: JarvisUi, recorded: number) => JarvisUi) => {
       void (async () => {
+        let moved = false
         try {
           const recorded = await read($, eventTotal)
-          await update($, ui, u => fn(u, recorded))
+          await update($, ui, u => {
+            const next = fn(u, recorded)
+            moved = next.page !== u.page
+            return next
+          })
         } catch {
           // the pane stays as it was
+          return
+        }
+        if (!moved) return
+        try {
+          await $.ui.scroll({ in: PANE, to: 'start' })
+        } catch {
+          // the window stays where it was
         }
       })()
     }

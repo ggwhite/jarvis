@@ -2904,3 +2904,37 @@ describe('Desktop native changes page through the engine', () => {
     expect((await shownDesk($)).props?.['backgroundColor']).not.toBe(DT.bg)
   })
 })
+
+describe('changes page taller than the pane', () => {
+  const paths = Array.from({ length: 30 }, (_, i) => `/tmp/file${i}.txt`)
+  const setup = (on: On) =>
+    world(on, {
+      files: Object.fromEntries(paths.map(p => [p, 1])),
+      results: Object.fromEntries(paths.map(p => [p, editResult(p, 'a')])),
+    })
+
+  test('30 files in 20 rows: every file is listed, none cut to … 還有 N 檔', async ($, on) => {
+    setup(on)
+    await start($)
+    for (const p of paths) await edit($, p)
+    await showChanges($, 80, 20)
+    await drawn($, 80, 20)
+    await settle()
+    const lines = await drawn($, 80, 20)
+    const text = lines.join('\n')
+    expect(text).toContain('file0.txt')
+    expect(text).toContain('file29.txt')
+    expect(text).not.toContain('還有')
+    expect(lines.length).toBeGreaterThan(20)
+  })
+
+  test('3 files in 20 rows: the card keeps the pane height', async ($, on) => {
+    setup(on)
+    await start($)
+    for (const p of paths.slice(0, 3)) await edit($, p)
+    await showChanges($, 80, 20)
+    await drawn($, 80, 20)
+    await settle()
+    expect((await drawn($, 80, 20)).length).toBeLessThanOrEqual(20)
+  })
+})

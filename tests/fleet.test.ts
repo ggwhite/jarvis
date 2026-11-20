@@ -1197,13 +1197,14 @@ describe('fleet page', () => {
     expect(lines.length).toBeLessThanOrEqual(30)
   })
 
-  test('too many busy suits for the rows are cut with a count', async ($, on) => {
+  test('too many busy suits for the rows are all drawn, past the pane, for the engine to scroll', async ($, on) => {
     const busy = Array.from({ length: 8 }, (_, i) => pane({ pane_id: `w1:b${i}`, label: `Busy ${i}`, agent_status: 'working', agent_session: { value: `busy-${i}` } }))
     const w = sampleWorld({ panes: busy })
     const clock = fleetEngine(on, w)
     const tree = await openFleet($, clock, 12, 80)
-    expect(linesOf(tree).join('\n')).toMatch(/… 還有 \d+ 艘/)
-    expect(linesOf(tree).length).toBeLessThanOrEqual(12)
+    expect(linesOf(tree).join('\n')).not.toMatch(/… 還有 \d+ 艘/)
+    expect(linesOf(tree).filter(l => /Busy \d/.test(l))).toHaveLength(8)
+    expect(linesOf(tree).length).toBeGreaterThan(12)
   })
 
   test('Σ reads SCANNING… until the first scan has caught up', async ($, on) => {
@@ -1241,7 +1242,7 @@ describe('fleet page', () => {
     expect(wide.some(l => l.includes('5H') && l.includes('7D'))).toBe(true)
   })
 
-  test('every width and height stays inside the pane', async ($, on) => {
+  test('every width stays inside the pane; every height too, but where the suits are drawn past it, none cut', async ($, on) => {
     const idle = Array.from({ length: 7 }, (_, i) => pane({ pane_id: `w1:i${i}`, label: `閒置任務 ${i} 很長的標題`, agent_session: { value: `idle-${i}` } }))
     const w = sampleWorld({ panes: [...SAMPLE_PANES, ...idle] })
     const clock = fleetEngine(on, w)
@@ -1250,7 +1251,9 @@ describe('fleet page', () => {
       for (const rows of [8, 10, 14, 24, 45]) {
         const tree = await draw($, rows, cols)
         expect(Math.max(...rowWidths(tree))).toBeLessThanOrEqual(cols)
-        expect(linesOf(tree).length).toBeLessThanOrEqual(rows)
+        const lines = linesOf(tree)
+        expect([cols, rows, /還有 \d+ 艘/.test(lines.join('\n'))]).toEqual([cols, rows, false])
+        if (rows === 45) expect(lines.length).toBeLessThanOrEqual(rows)
       }
     }
   })
